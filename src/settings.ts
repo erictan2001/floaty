@@ -28,6 +28,32 @@ const selectRows = new Map<string, HTMLElement>();
 // plugin kinds currently disabled (drives add-row + desktop list filtering)
 const disabledSet = new Set<string>();
 
+interface Live2dModelEntry {
+  name: string;
+  path: string;
+}
+// model library picked in the Live2D plugin card
+let live2dRoot = "";
+let live2dModels: Live2dModelEntry[] = [];
+
+function updateLive2dRootLabel(): void {
+  const path = document.getElementById("live2d-root");
+  if (path) {
+    path.textContent = live2dRoot || "no folder set";
+    path.title = live2dRoot;
+  }
+}
+
+function updateLive2dCount(): void {
+  const count = document.getElementById("live2d-count");
+  if (count) {
+    count.textContent =
+      live2dModels.length === 0
+        ? "no models scanned yet"
+        : `${live2dModels.length} model${live2dModels.length === 1 ? "" : "s"} found`;
+  }
+}
+
 if (!root) {
   document.body.textContent = "settings root missing";
   throw new Error("settings root missing");
@@ -113,6 +139,29 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
       }
     });
     card.append(kind, ident, del);
+    if (w.kind === "live2d") {
+      const sel = el("select", "select mini");
+      const cur = typeof w.data["model"] === "string" ? (w.data["model"] as string) : "";
+      const seen = new Set<string>();
+      const addOpt = (label: string, value: string): void => {
+        if (seen.has(value)) return;
+        seen.add(value);
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        sel.append(opt);
+      };
+      addOpt("Hijiki (bundled)", "");
+      for (const m of live2dModels) addOpt(m.name, m.path);
+      if (cur && !seen.has(cur)) {
+        addOpt(`${cur.split(/[/\\]/).pop() ?? cur} (current)`, cur);
+      }
+      sel.value = cur;
+      sel.addEventListener("change", () => {
+        void safe("set model", () => invoke("floaty_set_widget_model", { id: w.id, model: sel.value }));
+      });
+      card.insertBefore(sel, del);
+    }
     host.append(card);
   }
   void box;
@@ -284,6 +333,7 @@ function build(): void {
           floatiness: num("floatiness", 1),
           single_click: clickSelects.get("single_click")?.value ?? "drop",
           double_click: clickSelects.get("double_click")?.value ?? "launch",
+          live2d_root: live2dRoot,
         },
       }),
     );
@@ -342,6 +392,12 @@ function build(): void {
       const v = s[d.key];
       if (typeof v === "string") clickSelects.get(d.key)!.value = v;
     }
+    if (typeof s["live2d_root"] === "string" && (s["live2d_root"] as string)) {
+      live2dRoot = s["live2d_root"] as string;
+      updateLive2dRootLabel();
+      void loadManager();
+      void runModelScan();
+    }
   })();
 
   // current widgets
@@ -361,6 +417,20 @@ function build(): void {
     name: string;
     description: string;
     enabled: boolean;
+  }
+
+  async function runModelScan(): Promise<void> {
+    if (!live2dRoot) {
+      live2dModels = [];
+      updateLive2dCount();
+      return;
+    }
+    const found = await safe("scan models", () =>
+      invoke<Live2dModelEntry[]>("floaty_scan_models", { root: live2dRoot }),
+    );
+    if (found) live2dModels = found;
+    updateLive2dCount();
+    await refreshWidgets(box);
   }
 
   async function loadManager(): Promise<void> {
@@ -393,6 +463,40 @@ function build(): void {
       if (p.id === "pet") {
         const r = sliderRows.get("pet_speed");
         if (r) card.append(r);
+      } else if (p.id === "live2d") {
+        const row = el("div", "slider-row");
+        row.append(el("span", "slider-label", "models"));
+        const path = el("span", "folder-path", live2dRoot || "no folder set");
+        path.id = "live2d-root";
+        path.title = live2dRoot;
+        const browse = el("button", "pill small", "browse");
+        browse.addEventListener("click", async () => {
+          if (browse.disabled) return;
+          browse.disabled = true;
+          try {
+            const { open } = await import("@tauri-apps/plugin-dialog");
+            const picked = await open({ directory: true, multiple: false });
+            if (typeof picked === "string" && picked) {
+              live2dRoot = picked;
+              updateLive2dRootLabel();
+              await saveFloating();
+              await runModelScan();
+            }
+          } catch {
+            showError("folder picker failed");
+          } finally {
+            browse.disabled = false;
+          }
+        });
+        const scanBtn = el("button", "pill small ghost", "scan");
+        scanBtn.addEventListener("click", () => void runModelScan());
+        row.append(path, browse, scanBtn);
+        card.append(row);
+        const count = el("div", "count", "");
+        count.id = "live2d-count";
+        card.append(count);
+        updateLive2dRootLabel();
+        updateLive2dCount();
       } else if (p.id === "app") {
         for (const k of ["gravity", "bounce", "floatiness"]) {
           const r = sliderRows.get(k);

@@ -18,6 +18,8 @@ own small borderless window, so the rest of your desktop stays clickable.
   click again to collapse. Remove via the × like any widget.
 - **Live2D companion** — animated Hijiki model (pixi + Cubism 2 runtime
   vendored). Idles on its own, reacts to taps, drags anywhere by the body.
+  Point its plugin card at any model folder and pick per-widget models
+  from the scan (Cubism 2 `.model.json` / Cubism 3+ `.model3.json`).
 
 A **settings window** (tray icon → Settings; the tray itself is just Settings
 + Quit) hosts the plugin manager, scans/floats apps, lists what's on the

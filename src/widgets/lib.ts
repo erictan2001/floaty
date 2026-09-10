@@ -149,6 +149,7 @@ export interface FloatSettings {
   floatiness: number;
   single_click: string;
   double_click: string;
+  live2d_root: string;
   disabled: string[];
 }
 
@@ -159,6 +160,7 @@ const DEFAULT_SETTINGS: FloatSettings = {
   floatiness: 1,
   single_click: "drop",
   double_click: "launch",
+  live2d_root: "",
   disabled: [],
 };
 

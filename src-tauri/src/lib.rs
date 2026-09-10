@@ -102,6 +102,9 @@ struct FloatSettings {
     single_click: String,
     #[serde(default = "default_double_click")]
     double_click: String,
+    /// live2d model library root picked by the user
+    #[serde(default)]
+    live2d_root: String,
     /// plugin kinds whose windows stay closed
     #[serde(default)]
     disabled: Vec<String>,
@@ -159,6 +162,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             floatiness: default_floatiness(),
             single_click: default_single_click(),
             double_click: default_double_click(),
+            live2d_root: String::new(),
             disabled: Vec::new(),
         },
     }
@@ -184,6 +188,7 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             "drop" | "nothing" => settings.double_click,
             _ => "launch".to_string(),
         },
+        live2d_root: settings.live2d_root,
         disabled: settings.disabled,
     };
     if let Ok(json) = serde_json::to_string_pretty(&s) {
@@ -899,6 +904,103 @@ fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandl
     Ok(rec)
 }
 
+// ---------- live2d model library ----------
+
+#[derive(Debug, Clone, Serialize)]
+struct Live2dModelEntry {
+    name: String,
+    path: String,
+}
+
+/// Blocking walk for *.model.json / *.model3.json up to 3 levels deep.
+fn scan_models_blocking(root: String) -> Vec<Live2dModelEntry> {
+    let mut out: Vec<Live2dModelEntry> = vec![];
+    let base = std::path::PathBuf::from(&root);
+    if !base.is_dir() {
+        return out;
+    }
+    let mut stack: Vec<(std::path::PathBuf, u8)> = vec![(base, 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 3 || out.len() >= 200 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if depth < 3 {
+                    let hidden = p
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.starts_with('.'))
+                        .unwrap_or(true);
+                    if !hidden {
+                        stack.push((p, depth + 1));
+                    }
+                }
+                continue;
+            }
+            let hit = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|f| {
+                    let fl = f.to_ascii_lowercase();
+                    fl.ends_with(".model.json") || fl.ends_with(".model3.json")
+                })
+                .unwrap_or(false);
+            if !hit {
+                continue;
+            }
+            let name = p
+                .parent()
+                .and_then(|d| d.file_name())
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("model").to_string()
+                });
+            out.push(Live2dModelEntry {
+                name,
+                path: p.to_string_lossy().to_string(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.truncate(200);
+    out
+}
+
+#[tauri::command]
+async fn floaty_scan_models(root: String, app: AppHandle) -> Vec<Live2dModelEntry> {
+    let out = tauri::async_runtime::spawn_blocking(move || scan_models_blocking(root))
+        .await
+        .unwrap_or_default();
+    log_line(&app, &format!("model scan found {} models", out.len()));
+    out
+}
+
+#[tauri::command]
+fn floaty_set_widget_model(id: String, model: String, app: AppHandle) -> Result<(), String> {
+    {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let rec = guard.widgets.get_mut(&id).ok_or("widget not found")?;
+        if rec.kind != "live2d" {
+            return Err("not a live2d widget".into());
+        }
+        if let Some(obj) = rec.data.as_object_mut() {
+            obj.insert("model".to_string(), serde_json::Value::String(model));
+        }
+    }
+    persist(&app);
+    app.emit("floaty-live2d-changed", &id).ok();
+    log_line(&app, &format!("live2d model changed for {id}"));
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct LayoutItem {
     id: String,
@@ -1012,6 +1114,7 @@ fn floaty_log(msg: String, app: AppHandle) {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState(Mutex::new(StoreData::default())))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1142,6 +1245,8 @@ pub fn run() {
             floaty_launch_target,
             floaty_dropped,
             floaty_ungroup,
+            floaty_scan_models,
+            floaty_set_widget_model,
             floaty_layout,
             floaty_log
         ])

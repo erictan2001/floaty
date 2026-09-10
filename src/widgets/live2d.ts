@@ -1,3 +1,5 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import * as PIXI from "pixi.js";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display/cubism2";
 import {
@@ -11,6 +13,9 @@ import {
   watchPluginEnabled,
 } from "./lib";
 
+type L2DModel = Awaited<ReturnType<typeof Live2DModel.from>>;
+const BUNDLED_MODEL = "/live2d/hijiki/hijiki.model.json";
+
 async function ensureCore(): Promise<void> {
   if ((window as unknown as { Live2D?: unknown }).Live2D) return;
   await new Promise<void>((resolve, reject) => {
@@ -20,6 +25,12 @@ async function ensureCore(): Promise<void> {
     s.onerror = () => reject(new Error("live2d core failed to load"));
     document.head.append(s);
   });
+}
+
+/** Bundled web path stays as-is; user-library files go through the asset protocol. */
+function resolveModelUrl(model: string): string {
+  if (!model) return BUNDLED_MODEL;
+  return model.startsWith("/") ? model : convertFileSrc(model);
 }
 
 export function mountLive2D(root: HTMLElement, id: string): void {
@@ -37,6 +48,41 @@ export function mountLive2D(root: HTMLElement, id: string): void {
   root.append(wrap);
 
   let dragging = false;
+  let pixiApp: PIXI.Application | undefined;
+  let currentModel: L2DModel | undefined;
+
+  const fitModel = (model: L2DModel): void => {
+    model.scale.set(1);
+    const s = Math.min(window.innerWidth / model.width, window.innerHeight / model.height);
+    model.scale.set(Number.isFinite(s) && s > 0 ? s * 0.98 : 1);
+    model.anchor.set(0.5, 0.5);
+    model.position.set(window.innerWidth / 2, window.innerHeight / 2);
+  };
+
+  const showModel = async (url: string): Promise<void> => {
+    if (!pixiApp) return;
+    if (currentModel) {
+      try {
+        pixiApp.stage.removeChild(currentModel);
+        currentModel.destroy();
+      } catch {
+        /* ignore */
+      }
+      currentModel = undefined;
+    }
+    const model = await Live2DModel.from(url, { autoInteract: true });
+    currentModel = model;
+    pixiApp.stage.addChild(model);
+    fitModel(model);
+  };
+
+  const failedBox = (): void => {
+    if (wrap.querySelector(".live2d-failed")) return;
+    const f = document.createElement("div");
+    f.className = "live2d-failed";
+    f.textContent = "live2d failed to load";
+    wrap.append(f);
+  };
 
   void (async () => {
     const rec = await loadRecord(id);
@@ -53,7 +99,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
 
     try {
       await ensureCore();
-      const app = new PIXI.Application({
+      pixiApp = new PIXI.Application({
         view: canvas,
         backgroundAlpha: 0,
         antialias: true,
@@ -61,38 +107,33 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         autoDensity: true,
         resizeTo: window,
       });
-      const modelUrl =
-        typeof rec.data["model"] === "string" && (rec.data["model"] as string)
-          ? (rec.data["model"] as string)
-          : "/live2d/hijiki/hijiki.model.json";
-      const model = await Live2DModel.from(modelUrl, {
-        autoInteract: true,
+      const m = typeof rec.data["model"] === "string" ? (rec.data["model"] as string) : "";
+      await showModel(resolveModelUrl(m));
+      window.addEventListener("resize", () => {
+        if (currentModel) fitModel(currentModel);
       });
-      app.stage.addChild(model);
-      const fit = () => {
-        model.scale.set(1);
-        const s = Math.min(window.innerWidth / model.width, window.innerHeight / model.height);
-        model.scale.set(Number.isFinite(s) && s > 0 ? s * 0.98 : 1);
-        model.anchor.set(0.5, 0.5);
-        model.position.set(window.innerWidth / 2, window.innerHeight / 2);
-      };
-      fit();
-      window.addEventListener("resize", fit);
       // idle loop filler; IDLE priority never interrupts tap motions
       window.setInterval(() => {
+        if (!currentModel) return;
         try {
-          void model.motion("idle", undefined, MotionPriority.IDLE);
+          void currentModel.motion("idle", undefined, MotionPriority.IDLE);
         } catch {
           /* model idles on its own */
         }
       }, 20000);
     } catch {
-      const f = document.createElement("div");
-      f.className = "live2d-failed";
-      f.textContent = "live2d failed to load";
-      wrap.append(f);
+      failedBox();
       return;
     }
+    await listen<string>("floaty-live2d-changed", (e) => {
+      if (e.payload !== id) return;
+      void (async () => {
+        const r = await loadRecord(id);
+        if (!r) return;
+        const m = typeof r.data["model"] === "string" ? (r.data["model"] as string) : "";
+        await showModel(resolveModelUrl(m)).catch(() => undefined);
+      })();
+    }).catch(() => undefined);
     void appWin.show().catch(() => undefined);
   })();
 
