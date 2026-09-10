@@ -32,6 +32,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
   let expanded = false;
   let dragging = false;
   let suppressClickUntil = 0;
+  let itemDragMoved = false;
   let scale = 1;
   let px = 200;
   let py = 200;
@@ -190,6 +191,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
         b.addEventListener("pointerdown", (e) => {
           if (e.button !== 0) return;
           e.stopPropagation(); // not a folder-window drag
+          itemDragMoved = false;
           try {
             b.setPointerCapture(e.pointerId);
           } catch {
@@ -201,6 +203,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
           const onMove = (ev: PointerEvent) => {
             if (!out && Math.hypot(ev.screenX - sx, ev.screenY - sy) > 8) {
               out = true;
+              itemDragMoved = true;
               b.classList.add("dragging-out");
               suppressClickUntil = performance.now() + 300;
             }
@@ -235,7 +238,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
         });
         b.addEventListener("click", (e) => {
           e.stopPropagation();
-          if (performance.now() < suppressClickUntil) return; // was a drag, not a tap
+          if (itemDragMoved) { itemDragMoved = false; return; } // was a drag, not a tap
           b.classList.add("go");
           window.setTimeout(() => b.classList.remove("go"), 500);
           invoke("floaty_launch_target", { target: it.target }).catch(() => {
