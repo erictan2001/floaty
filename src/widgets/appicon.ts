@@ -126,6 +126,8 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     } else {
       invoke<string>("floaty_icon", { id: rec.id }).then(applyIcon).catch(() => undefined);
     }
+    // desktop layer (with the builder flag): icons live under real apps
+    void appWin.setAlwaysOnTop(false).catch(() => undefined);
     wrap.classList.remove("idle-hidden");
 
     try {

@@ -56,9 +56,31 @@ export function mountFolder(root: HTMLElement, id: string): void {
     if (!expanded) {
       const tile = document.createElement("div");
       tile.className = "ftile";
-      const glyph = document.createElement("div");
-      glyph.className = "ffolder";
-      tile.append(glyph);
+      // android-style preview: up to 4 mini icons packed in the folder
+      const shown = items.slice(0, 4);
+      if (shown.length === 0) {
+        const glyph = document.createElement("div");
+        glyph.className = "ffolder";
+        tile.append(glyph);
+      } else {
+        const minis = document.createElement("div");
+        minis.className = "fminis";
+        for (const it of shown) {
+          if (it.icon) {
+            const img = document.createElement("img");
+            img.src = it.icon;
+            img.alt = "";
+            img.draggable = false;
+            minis.append(img);
+          } else {
+            const ch = document.createElement("span");
+            ch.className = "fmini-letter";
+            ch.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
+            minis.append(ch);
+          }
+        }
+        tile.append(minis);
+      }
       if (items.length > 0) {
         const badge = document.createElement("div");
         badge.className = "fbadge";
@@ -88,6 +110,32 @@ export function mountFolder(root: HTMLElement, id: string): void {
       const nm = document.createElement("span");
       nm.className = "fhead-name";
       nm.textContent = folderName();
+      nm.title = "Click to rename";
+      nm.style.cursor = "text";
+      nm.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const input = document.createElement("input");
+        input.className = "fname-edit";
+        input.value = folderName();
+        input.maxLength = 24;
+        const commit = (save: boolean) => {
+          if (save && rec) {
+            rec.data["name"] = input.value.trim() || "Folder";
+            void saveRecord(rec).catch(() => undefined);
+          }
+          render();
+        };
+        input.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") commit(true);
+          else if (ev.key === "Escape") commit(false);
+        });
+        input.addEventListener("blur", () => commit(true));
+        input.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+        input.addEventListener("click", (ev) => ev.stopPropagation());
+        head.replaceChild(input, nm);
+        input.focus();
+        input.select();
+      });
       const shut = document.createElement("button");
       shut.className = "fshut";
       shut.title = "Collapse";
@@ -173,6 +221,8 @@ export function mountFolder(root: HTMLElement, id: string): void {
 
   void (async () => {
     await reload();
+    // belt and braces with the builder flag: folders live under real apps
+    void appWin.setAlwaysOnTop(false).catch(() => undefined);
     window.setInterval(() => void savePos(), 4000);
     window.addEventListener("beforeunload", () => void savePos());
     document.addEventListener("visibilitychange", () => {

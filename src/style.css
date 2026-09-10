@@ -490,6 +490,10 @@ body {
 .fitem.shake { animation: tileshake 0.45s ease; }
 .fletter { width: 36px; height: 36px; border-radius: 12px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 18px; display: grid; place-items: center; text-shadow: 0 1px 3px rgba(0,0,0,.3); }
 .flabel { max-width: 100%; font-size: 10.5px; font-weight: 700; color: #e8e4ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.fminis { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; width: 44px; height: 44px; }
+.fminis img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: rgba(255,255,255,.9); pointer-events: none; }
+.fmini-letter { border-radius: 6px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 10px; display: grid; place-items: center; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.fname-edit { flex: 1; min-width: 0; background: rgba(255,255,255,.1); color: #fff; border: 1px solid var(--accent); border-radius: 8px; padding: 3px 8px; font-size: 13px; font-weight: 700; font-family: inherit; outline: none; }
 
 /* ---------- settings page ---------- */
 body.settings-page {
