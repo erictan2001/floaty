@@ -172,6 +172,10 @@ body {
 .pill.small { padding: 6px 12px; font-size: 12px; }
 .pill.danger-btn { background: linear-gradient(135deg, #f43f5e, #be123c); box-shadow: 0 4px 12px rgba(244, 63, 94, 0.35); }
 .pomo-cycles { font-size: 11px; color: var(--ink-soft); margin-top: 6px; font-weight: 600; }
+.pomo-time { cursor: pointer; }
+.pomo-edit { display: flex; gap: 6px; justify-content: center; align-items: center; margin-top: 2px; }
+.pomo-num { width: 52px; border: 1px solid #d9d4f5; background: #fff; color: var(--ink); border-radius: 10px; padding: 6px 4px; font-size: 13px; font-weight: 700; text-align: center; outline: none; font-family: inherit; }
+.pomo-num:focus { border-color: var(--accent); }
 
 /* ---------- pet ---------- */
 .pet-wrap {
