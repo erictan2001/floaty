@@ -16,6 +16,8 @@ own small borderless window, so the rest of your desktop stays clickable.
 - **Group folders** — drag one app icon onto another to group them (or drop
   icons onto a folder). Click a folder to expand it into a launch grid;
   click again to collapse. Remove via the × like any widget.
+- **Live2D companion** — animated Hijiki model (pixi + Cubism 2 runtime
+  vendored). Idles on its own, reacts to taps, drags anywhere by the body.
 
 A **settings window** (tray icon → Settings; the tray itself is just Settings
 + Quit) hosts the plugin manager, scans/floats apps, lists what's on the
@@ -64,6 +66,7 @@ src/
     pet.ts       wandering pet plugin
     appicon.ts   gravity launcher plugin
     folder.ts    group folder plugin
+    live2d.ts    Live2D companion (lazy pixi chunk, Cubism 2 model)
 src-tauri/
   src/lib.rs     store, widget windows, tray, plugins, scan, launch, icons
   capabilities/  Tauri ACL grants (window ops, …)

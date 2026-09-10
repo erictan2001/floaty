@@ -69,6 +69,16 @@ export const plugins: FloatyPlugin[] = [
       return `${nm} (${n} app${n === 1 ? "" : "s"})`;
     },
   },
+  {
+    kind: "live2d",
+    name: "Live2D",
+    addLabel: "+ live2d",
+    // lazy: keeps ~600KB of pixi out of every other widget window
+    mount: (root, id) => {
+      void import("./live2d").then((m) => m.mountLive2D(root, id));
+    },
+    describe: namedPreview,
+  },
 ];
 
 export function pluginFor(kind: string): FloatyPlugin | undefined {

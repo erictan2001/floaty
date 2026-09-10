@@ -201,6 +201,7 @@ fn widget_size(kind: &str, data: &serde_json::Value) -> (f64, f64) {
         "clock" => (250.0, 330.0),
         "pet" => (170.0, 170.0),
         "app" => (92.0, 112.0),
+        "live2d" => (300.0, 400.0),
         "folder" => (92.0, 112.0),
         _ => (300.0, 330.0),
     };
@@ -273,6 +274,7 @@ fn default_data(kind: &str) -> serde_json::Value {
         "note" => serde_json::json!({ "text": "" }),
         "pet" => serde_json::json!({ "name": "bloop" }),
         "app" => serde_json::json!({ "name": "app", "target": "" }),
+        "live2d" => serde_json::json!({ "name": "Live2D" }),
         "folder" => serde_json::json!({ "name": "Folder", "items": [] }),
         _ => serde_json::json!({}),
     }
@@ -284,7 +286,7 @@ fn create_record_with(
     data: serde_json::Value,
     at: Option<(i32, i32)>,
 ) -> Result<WidgetRecord, String> {
-    if !matches!(kind, "note" | "clock" | "pet" | "app" | "folder") {
+    if !matches!(kind, "note" | "clock" | "pet" | "app" | "folder" | "live2d") {
         return Err("unknown widget kind".into());
     }
     {
@@ -564,6 +566,12 @@ fn all_plugins(disabled: &[String]) -> Vec<PluginInfo> {
             name: "Folder".to_string(),
             description: "Groups of launchers. Click to expand into a launch grid.".to_string(),
             enabled: is_on("folder"),
+        },
+        PluginInfo {
+            id: "live2d".to_string(),
+            name: "Live2D".to_string(),
+            description: "Animated Live2D companion. Drag it around, click it for motions.".to_string(),
+            enabled: is_on("live2d"),
         },
     ]
 }
