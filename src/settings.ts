@@ -244,6 +244,96 @@ function build(): void {
   results.id = "app-results";
   box.append(results);
 
+  // floating parameters + icon click behaviour (persisted backend-side,
+  // broadcast live to all widget windows)
+  sectionTitle(box, "floating");
+  const sliderDefs: Array<{ key: string; label: string; min: number; max: number; step: number }> = [
+    { key: "pet_speed", label: "pet speed", min: 0, max: 2, step: 0.1 },
+    { key: "gravity", label: "gravity", min: 0, max: 5000, step: 50 },
+    { key: "bounce", label: "bounce", min: 0, max: 0.9, step: 0.05 },
+  ];
+  const sliderInputs = new Map<string, HTMLInputElement>();
+  const sliderVals = new Map<string, HTMLElement>();
+  const clickSelects = new Map<string, HTMLSelectElement>();
+  let saveTimer: number | undefined;
+  async function saveFloating(): Promise<void> {
+    window.clearTimeout(saveTimer);
+    await new Promise<void>((resolve) => {
+      saveTimer = window.setTimeout(() => resolve(), 250);
+    });
+    const num = (k: string, fb: number): number => {
+      const v = Number(sliderInputs.get(k)?.value);
+      return Number.isFinite(v) ? v : fb;
+    };
+    await safe("save settings", () =>
+      invoke("floaty_set_settings", {
+        settings: {
+          pet_speed: num("pet_speed", 1),
+          gravity: num("gravity", 2600),
+          bounce: num("bounce", 0.45),
+          single_click: clickSelects.get("single_click")?.value ?? "drop",
+          double_click: clickSelects.get("double_click")?.value ?? "launch",
+        },
+      }),
+    );
+  }
+  for (const d of sliderDefs) {
+    const row = el("div", "slider-row");
+    row.append(el("span", "slider-label", d.label));
+    const input = el("input", "slider");
+    input.type = "range";
+    input.min = String(d.min);
+    input.max = String(d.max);
+    input.step = String(d.step);
+    const val = el("span", "slider-val", "");
+    input.addEventListener("input", () => {
+      val.textContent = input.value;
+      void saveFloating();
+    });
+    sliderInputs.set(d.key, input);
+    sliderVals.set(d.key, val);
+    row.append(input, val);
+    box.append(row);
+  }
+
+  sectionTitle(box, "icon clicks");
+  const clickDefs: Array<{ key: string; label: string; opts: string[] }> = [
+    { key: "single_click", label: "single click", opts: ["drop", "hop", "nothing"] },
+    { key: "double_click", label: "double click", opts: ["launch", "drop", "nothing"] },
+  ];
+  for (const d of clickDefs) {
+    const row = el("div", "slider-row");
+    row.append(el("span", "slider-label", d.label));
+    const sel = el("select", "select");
+    for (const o of d.opts) {
+      const opt = document.createElement("option");
+      opt.value = o;
+      opt.textContent = o;
+      sel.append(opt);
+    }
+    sel.addEventListener("change", () => void saveFloating());
+    clickSelects.set(d.key, sel);
+    row.append(sel);
+    box.append(row);
+  }
+  void (async () => {
+    const s = await safe("load settings", () =>
+      invoke<Record<string, unknown>>("floaty_get_settings"),
+    );
+    if (!s) return;
+    for (const d of sliderDefs) {
+      const v = s[d.key];
+      if (typeof v === "number") {
+        sliderInputs.get(d.key)!.value = String(v);
+        sliderVals.get(d.key)!.textContent = String(v);
+      }
+    }
+    for (const d of clickDefs) {
+      const v = s[d.key];
+      if (typeof v === "string") clickSelects.get(d.key)!.value = v;
+    }
+  })();
+
   // current widgets
   sectionTitle(box, "on your desktop");
   const list = el("div", "", "");

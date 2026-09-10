@@ -1,10 +1,11 @@
 import { PhysicalPosition } from "@tauri-apps/api/window";
-import { appWin, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord } from "./lib";
+import { appWin, currentSettings, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord, watchSettings } from "./lib";
 
 const WIN = 170; // must match Rust pet window size
 const TICK_MS = 33;
 
 export function mountPet(root: HTMLElement, id: string): void {
+  watchSettings();
   const wrap = document.createElement("div");
   wrap.className = "pet-wrap";
   wrap.innerHTML = `
@@ -200,7 +201,7 @@ export function mountPet(root: HTMLElement, id: string): void {
       pet.classList.add("sleeping");
     }
     const dt = TICK_MS / 1000;
-    const speed = asleep ? 0.15 : 1;
+    const speed = (asleep ? 0.15 : 1) * currentSettings().pet_speed;
     // gentle sine drift on top of straight wander
     const t = performance.now() / 1000;
     px += (vx * speed + Math.sin(t * 1.3) * 12) * dt;

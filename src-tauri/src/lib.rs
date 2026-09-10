@@ -4,7 +4,7 @@ use std::fs;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 // ---------- logging ----------
 
@@ -83,14 +83,123 @@ fn load_all(app: &AppHandle) -> Vec<WidgetRecord> {
     serde_json::from_slice(&bytes).unwrap_or_default()
 }
 
+// ---------- global floating settings ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FloatSettings {
+    #[serde(default = "default_pet_speed")]
+    pet_speed: f64,
+    #[serde(default = "default_gravity")]
+    gravity: f64,
+    #[serde(default = "default_bounce")]
+    bounce: f64,
+    #[serde(default = "default_single_click")]
+    single_click: String,
+    #[serde(default = "default_double_click")]
+    double_click: String,
+}
+
+fn default_pet_speed() -> f64 {
+    1.0
+}
+fn default_gravity() -> f64 {
+    2600.0
+}
+fn default_bounce() -> f64 {
+    0.45
+}
+fn default_single_click() -> String {
+    "drop".to_string()
+}
+fn default_double_click() -> String {
+    "launch".to_string()
+}
+
+fn settings_file(app: &AppHandle) -> std::path::PathBuf {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .expect("app data dir should resolve");
+    fs::create_dir_all(&dir).ok();
+    dir.join("floaty-settings.json")
+}
+
+fn load_settings(app: &AppHandle) -> FloatSettings {
+    let parsed: Option<FloatSettings> =
+        fs::read(settings_file(app)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    match parsed {
+        Some(s) => FloatSettings {
+            single_click: if s.single_click.is_empty() {
+                default_single_click()
+            } else {
+                s.single_click
+            },
+            double_click: if s.double_click.is_empty() {
+                default_double_click()
+            } else {
+                s.double_click
+            },
+            ..s
+        },
+        None => FloatSettings {
+            pet_speed: default_pet_speed(),
+            gravity: default_gravity(),
+            bounce: default_bounce(),
+            single_click: default_single_click(),
+            double_click: default_double_click(),
+        },
+    }
+}
+
+#[tauri::command]
+fn floaty_get_settings(app: AppHandle) -> FloatSettings {
+    load_settings(&app)
+}
+
+#[tauri::command]
+fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings {
+    let s = FloatSettings {
+        pet_speed: settings.pet_speed.clamp(0.0, 3.0),
+        gravity: settings.gravity.clamp(0.0, 8000.0),
+        bounce: settings.bounce.clamp(0.0, 0.95),
+        single_click: match settings.single_click.as_str() {
+            "hop" | "nothing" => settings.single_click,
+            _ => "drop".to_string(),
+        },
+        double_click: match settings.double_click.as_str() {
+            "drop" | "nothing" => settings.double_click,
+            _ => "launch".to_string(),
+        },
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&s) {
+        fs::write(settings_file(&app), json).ok();
+    }
+    app.emit("floaty-settings-changed", &s).ok();
+    log_line(&app, "settings updated");
+    s
+}
+
 // ---------- windows ----------
 
-fn widget_size(kind: &str) -> (f64, f64) {
-    match kind {
+fn widget_size(kind: &str, data: &serde_json::Value) -> (f64, f64) {
+    let base = match kind {
         "clock" => (250.0, 330.0),
         "pet" => (170.0, 170.0),
         "app" => (92.0, 112.0),
         _ => (300.0, 330.0),
+    };
+    // notes + clocks are resizable; restore the user's size when stored
+    if matches!(kind, "note" | "clock") {
+        let (mw, mh) = if kind == "clock" {
+            (200.0, 260.0)
+        } else {
+            (180.0, 140.0)
+        };
+        let w = data.get("w").and_then(|v| v.as_f64()).unwrap_or(base.0);
+        let h = data.get("h").and_then(|v| v.as_f64()).unwrap_or(base.1);
+        (w.clamp(mw, 1400.0), h.clamp(mh, 1400.0))
+    } else {
+        base
     }
 }
 
@@ -123,7 +232,7 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let (w, h) = widget_size(&rec.kind);
+    let (w, h) = widget_size(&rec.kind, &rec.data);
     let url = format!("index.html#/{}/{}", rec.kind, rec.id);
     log_line(app, &format!("spawn {} at {},{}", label, rec.x, rec.y));
     WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
@@ -133,7 +242,8 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
         .transparent(true)
         .decorations(false)
         .shadow(false)
-        .resizable(false)
+        // notes + clocks are user-resizable (corner handle in the webview)
+        .resizable(matches!(rec.kind.as_str(), "note" | "clock"))
         .skip_taskbar(true)
         // app icons live at desktop level under real apps; notes/clocks/pets
         // stay above everything
@@ -459,7 +569,7 @@ fn floaty_layout(app: AppHandle) -> Vec<LayoutItem> {
         .values()
         .filter(|r| r.kind == "app")
         .map(|r| {
-            let (w, h) = widget_size(&r.kind);
+            let (w, h) = widget_size(&r.kind, &r.data);
             LayoutItem {
                 id: r.id.clone(),
                 x: r.x,
@@ -674,6 +784,8 @@ pub fn run() {
             floaty_remove,
             floaty_show_settings,
             floaty_quit,
+            floaty_get_settings,
+            floaty_set_settings,
             floaty_scan_apps,
             floaty_add_launcher,
             floaty_icon,

@@ -2,20 +2,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition } from "@tauri-apps/api/window";
 import {
   appWin,
+  currentSettings,
   loadRecord,
   logicalPos,
   monitorArea,
   removeSelf,
   saveRecord,
   setLogicalPos,
+  watchSettings,
   type MonitorArea,
   type WidgetRecord,
 } from "./lib";
 
 const WIN_W = 92;
 const WIN_H = 112;
-const GRAVITY = 2600; // px/s^2
-const REST_FLOOR = 0.45;
 const REST_WALL = 0.6;
 
 interface LayoutItem {
@@ -42,6 +42,7 @@ function gradientFor(name: string): [string, string] {
 }
 
 export function mountLauncher(root: HTMLElement, id: string): void {
+  watchSettings();
   const wrap = document.createElement("div");
   wrap.className = "launcher idle-hidden";
   wrap.innerHTML = `
@@ -242,29 +243,54 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     window.addEventListener("pointercancel", onUp);
   });
 
-  wrap.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (performance.now() < suppressClickUntil) return; // was a drag, not a tap
-    // single click = drop with gravity (cancelled if a double-click follows)
-    window.clearTimeout(clickTimer);
-    clickTimer = window.setTimeout(() => {
-      settled = false;
-      wrap.classList.remove("rest");
-      vy = 0;
-      vx += (Math.random() - 0.5) * 60;
-      squash();
-    }, 260);
-  });
-  wrap.addEventListener("dblclick", (e) => {
-    e.stopPropagation();
-    window.clearTimeout(clickTimer);
-    if (!rec) return;
-    // launch without dropping: pin in place even if it was falling
+  const doDrop = () => {
+    settled = false;
+    wrap.classList.remove("rest");
+    vy = 0;
+    vx += (Math.random() - 0.5) * 60;
+    squash();
+  };
+  const doHop = () => {
+    settled = false;
+    wrap.classList.remove("rest");
+    vy = -420;
+    vx += (Math.random() - 0.5) * 120;
+    squash();
+  };
+  const doPin = () => {
     vx = 0;
     vy = 0;
     settled = true;
     wrap.classList.add("rest");
     void saveSoon();
+  };
+  wrap.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (performance.now() < suppressClickUntil) return; // was a drag, not a tap
+    // single-click action from settings (cancelled if a double-click follows)
+    window.clearTimeout(clickTimer);
+    clickTimer = window.setTimeout(() => {
+      const a = currentSettings().single_click;
+      if (a === "hop") doHop();
+      else if (a === "nothing") { /* stay put */ }
+      else doDrop();
+    }, 260);
+  });
+  wrap.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    window.clearTimeout(clickTimer);
+    const a = currentSettings().double_click;
+    if (a === "drop") {
+      doDrop();
+      return;
+    }
+    if (a === "nothing") {
+      doPin();
+      return;
+    }
+    if (!rec) return;
+    // launch without dropping: pin in place even if it was falling
+    doPin();
     tile.classList.add("launching");
     window.setTimeout(() => tile.classList.remove("launching"), 600);
     invoke("floaty_launch", { id: rec.id }).catch(() => {
@@ -282,8 +308,8 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     // Never drive the window before the stored position loads (ready),
     // or every icon first jumps to default coordinates and bunches up.
     if (ready && !dragging && !settled && !document.hidden) {
-      // gravity
-      vy += GRAVITY * dt;
+      // gravity (live from settings)
+      vy += currentSettings().gravity * dt;
       vx *= 1 - 0.12 * dt;
       x += vx * dt;
       y += vy * dt;
@@ -306,7 +332,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
           if (vy >= 0 && ourBottom >= o.y && ourBottom - o.y < 34) {
             y = o.y - WIN_H;
             if (Math.abs(vy) > 140) {
-              vy = -vy * REST_FLOOR;
+              vy = -vy * currentSettings().bounce;
               vx *= 0.9;
               squash();
             } else {
@@ -330,7 +356,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
       if (y >= floor) {
         y = floor;
         if (Math.abs(vy) > 110) {
-          vy = -vy * REST_FLOOR;
+          vy = -vy * currentSettings().bounce;
           vx *= 0.9;
           squash();
         } else {

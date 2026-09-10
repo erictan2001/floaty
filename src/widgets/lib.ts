@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { currentMonitor, getCurrentWindow, PhysicalPosition } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 
 export interface WidgetRecord {
   id: string;
@@ -137,4 +138,114 @@ export async function removeSelf(rec: WidgetRecord): Promise<void> {
   } catch {
     await appWin.close().catch(() => undefined);
   }
+}
+
+// ---------- global floating settings (cached, live-updated) ----------
+
+export interface FloatSettings {
+  pet_speed: number;
+  gravity: number;
+  bounce: number;
+  single_click: string;
+  double_click: string;
+}
+
+const DEFAULT_SETTINGS: FloatSettings = {
+  pet_speed: 1,
+  gravity: 2600,
+  bounce: 0.45,
+  single_click: "drop",
+  double_click: "launch",
+};
+
+let settingsCache: FloatSettings = { ...DEFAULT_SETTINGS };
+let settingsWatched = false;
+
+export function currentSettings(): FloatSettings {
+  return settingsCache;
+}
+
+export async function refreshSettings(): Promise<void> {
+  try {
+    const s = await invoke<FloatSettings>("floaty_get_settings");
+    settingsCache = { ...DEFAULT_SETTINGS, ...s };
+  } catch {
+    /* keep last */
+  }
+}
+
+/** Load once + stay live via backend change events. Safe to call per window. */
+export function watchSettings(): void {
+  if (settingsWatched) return;
+  settingsWatched = true;
+  void refreshSettings();
+  listen<FloatSettings>("floaty-settings-changed", (e) => {
+    settingsCache = { ...DEFAULT_SETTINGS, ...e.payload };
+  }).catch(() => undefined);
+}
+
+// ---------- resize handle (notes + clocks) ----------
+
+/** Bottom-right corner grip that resizes the window and persists its size. */
+export function addResizeHandle(
+  wrap: HTMLElement,
+  rec: WidgetRecord,
+  minW: number,
+  minH: number,
+): void {
+  wrap.style.position = "relative";
+  const grip = document.createElement("div");
+  grip.className = "resize-handle";
+  grip.title = "Resize";
+  wrap.append(grip);
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    void (async () => {
+      let scale = 1;
+      try {
+        const s = await appWin.scaleFactor();
+        if (s > 0) scale = s;
+      } catch {
+        /* keep */
+      }
+      let startW = 0;
+      let startH = 0;
+      try {
+        const sz = await appWin.innerSize();
+        startW = sz.width / scale;
+        startH = sz.height / scale;
+      } catch {
+        return;
+      }
+      const startSX = e.screenX;
+      const startSY = e.screenY;
+      const onMove = (ev: PointerEvent) => {
+        const w = Math.max(minW, startW + (ev.screenX - startSX));
+        const h = Math.max(minH, startH + (ev.screenY - startSY));
+        void appWin
+          .setSize(new PhysicalSize(Math.round(w * scale), Math.round(h * scale)))
+          .catch(() => undefined);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        void (async () => {
+          try {
+            const sz = await appWin.innerSize();
+            rec.data["w"] = Math.round(sz.width / scale);
+            rec.data["h"] = Math.round(sz.height / scale);
+            await saveRecord(rec);
+          } catch {
+            /* ignore */
+          }
+        })();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    })();
+  });
 }
