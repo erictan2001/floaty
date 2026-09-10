@@ -146,6 +146,7 @@ export interface FloatSettings {
   pet_speed: number;
   gravity: number;
   bounce: number;
+  floatiness: number;
   single_click: string;
   double_click: string;
 }
@@ -154,6 +155,7 @@ const DEFAULT_SETTINGS: FloatSettings = {
   pet_speed: 1,
   gravity: 2600,
   bounce: 0.45,
+  floatiness: 1,
   single_click: "drop",
   double_click: "launch",
 };

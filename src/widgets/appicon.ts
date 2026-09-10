@@ -304,6 +304,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   const frame = (now: number) => {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    wrap.style.setProperty("--float", String(currentSettings().floatiness));
     // pinned icons skip physics entirely — they stay where dropped.
     // Never drive the window before the stored position loads (ready),
     // or every icon first jumps to default coordinates and bunches up.

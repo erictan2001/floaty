@@ -46,6 +46,14 @@ export function mountClock(root: HTMLElement, id: string): void {
   wrap.append(time, date, pomo);
   root.append(wrap);
 
+  // scale content to fit: shrinking the window zooms out instead of hiding widgets
+  const fitClock = () => {
+    const z = Math.min(1, window.innerWidth / 250, window.innerHeight / 330);
+    wrap.style.setProperty("zoom", z > 0 ? String(z) : "1");
+  };
+  window.addEventListener("resize", fitClock);
+  fitClock();
+
   const tickClock = () => {
     const now = new Date();
     time.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

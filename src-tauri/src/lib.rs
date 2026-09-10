@@ -93,6 +93,8 @@ struct FloatSettings {
     gravity: f64,
     #[serde(default = "default_bounce")]
     bounce: f64,
+    #[serde(default = "default_floatiness")]
+    floatiness: f64,
     #[serde(default = "default_single_click")]
     single_click: String,
     #[serde(default = "default_double_click")]
@@ -107,6 +109,9 @@ fn default_gravity() -> f64 {
 }
 fn default_bounce() -> f64 {
     0.45
+}
+fn default_floatiness() -> f64 {
+    1.0
 }
 fn default_single_click() -> String {
     "drop".to_string()
@@ -145,6 +150,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             pet_speed: default_pet_speed(),
             gravity: default_gravity(),
             bounce: default_bounce(),
+            floatiness: default_floatiness(),
             single_click: default_single_click(),
             double_click: default_double_click(),
         },
@@ -162,6 +168,7 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
         pet_speed: settings.pet_speed.clamp(0.0, 3.0),
         gravity: settings.gravity.clamp(0.0, 8000.0),
         bounce: settings.bounce.clamp(0.0, 0.95),
+        floatiness: settings.floatiness.clamp(0.0, 2.0),
         single_click: match settings.single_click.as_str() {
             "hop" | "nothing" => settings.single_click,
             _ => "drop".to_string(),

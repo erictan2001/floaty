@@ -400,7 +400,7 @@ body {
 .launcher.rest .tile { animation: restbob 4s ease-in-out infinite; }
 @keyframes restbob {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2.5px); }
+  50% { transform: translateY(calc(var(--float, 1) * -2.5px)); }
 }
 
 /* ---------- settings page ---------- */

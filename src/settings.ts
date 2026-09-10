@@ -251,6 +251,7 @@ function build(): void {
     { key: "pet_speed", label: "pet speed", min: 0, max: 2, step: 0.1 },
     { key: "gravity", label: "gravity", min: 0, max: 5000, step: 50 },
     { key: "bounce", label: "bounce", min: 0, max: 0.9, step: 0.05 },
+    { key: "floatiness", label: "float", min: 0, max: 2, step: 0.1 },
   ];
   const sliderInputs = new Map<string, HTMLInputElement>();
   const sliderVals = new Map<string, HTMLElement>();
@@ -271,6 +272,7 @@ function build(): void {
           pet_speed: num("pet_speed", 1),
           gravity: num("gravity", 2600),
           bounce: num("bounce", 0.45),
+          floatiness: num("floatiness", 1),
           single_click: clickSelects.get("single_click")?.value ?? "drop",
           double_click: clickSelects.get("double_click")?.value ?? "launch",
         },
