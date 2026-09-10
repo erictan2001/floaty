@@ -234,6 +234,8 @@ export function mountLauncher(root: HTMLElement, id: string): void {
         settled = true;
         wrap.classList.add("rest");
         void saveSoon();
+        // group mode: backend merges us into whatever icon/folder we landed on
+        invoke("floaty_dropped", { id }).catch(() => undefined);
       }
       // a tap leaves `settled` untouched — click/dblclick decide what happens
       dragging = false;

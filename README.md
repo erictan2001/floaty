@@ -13,6 +13,9 @@ own small borderless window, so the rest of your desktop stays clickable.
   Desktop. Drag one anywhere and it pins there; single-click drops it with
   gravity (bounces, piles onto other icons); double-click launches the app
   in place. Shows the app's real icon when one can be resolved.
+- **Group folders** — drag one app icon onto another to group them (or drop
+  icons onto a folder). Click a folder to expand it into a launch grid;
+  click again to collapse. Remove via the × like any widget.
 
 A **settings window** (tray icon → Settings) adds widgets, scans/floats apps,
 lists what's on the desktop, and removes widgets. Everything — positions,
@@ -57,6 +60,7 @@ src/
     clock.ts     clock + pomodoro
     pet.ts       wandering pet (manual drag, hover-stop, dblclick pause)
     appicon.ts   gravity launcher (manual drag, pin / drop / launch, icons)
+    folder.ts    group folder (drag-drop grouping, expandable launch grid)
 src-tauri/
   src/lib.rs     store, widget windows, tray, app scan, launch, icon resolve
   capabilities/  Tauri ACL grants (window ops, …)

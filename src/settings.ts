@@ -96,6 +96,11 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
       ident.textContent = `${w.id} — ${w.data["name"] as string}`;
     } else if (w.kind === "note" && typeof w.data["text"] === "string") {
       ident.textContent = `${w.id} — ${(w.data["text"] as string).slice(0, 32)}`;
+    } else if (w.kind === "folder") {
+      const raw = w.data["items"];
+      const n = Array.isArray(raw) ? raw.length : 0;
+      const nm = typeof w.data["name"] === "string" ? (w.data["name"] as string) : "folder";
+      ident.textContent = `${w.id} — ${nm} (${n} app${n === 1 ? "" : "s"})`;
     }
     const del = el("button", "danger", "remove");
     del.addEventListener("click", async () => {
@@ -204,6 +209,7 @@ function build(): void {
     ["note", "+ note"],
     ["clock", "+ clock"],
     ["pet", "+ pet"],
+    ["folder", "+ folder"],
   ];
   for (const [kind, label] of defs) {
     const b = el("button", "pill", label);

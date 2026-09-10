@@ -407,6 +407,90 @@ body {
   50% { transform: translateY(calc(var(--float, 1) * -2.5px)); }
 }
 
+/* ---------- folders ---------- */
+.folder {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 6px;
+  cursor: grab;
+  position: relative;
+  overflow: hidden;
+}
+.folder:active { cursor: grabbing; }
+.folder.open {
+  background: rgba(24, 20, 44, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 20px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  padding: 10px;
+  align-items: stretch;
+  cursor: default;
+}
+.folder.open:active { cursor: default; }
+.ftile {
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #f59e0b, #b45309);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 10px 24px rgba(20, 16, 40, 0.4), inset 0 2px 3px rgba(255, 255, 255, 0.45), inset 0 -4px 8px rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  position: relative;
+}
+.ffolder {
+  width: 34px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.93);
+  border-radius: 4px 6px 6px 6px;
+  position: relative;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+}
+.ffolder::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -6px;
+  width: 16px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.93);
+  border-radius: 4px 4px 0 0;
+}
+.fbadge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #e11d63;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+  padding: 0 5px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+.folder:hover .launcher-x { opacity: 1; }
+.fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.fhead-dot { width: 24px; height: 18px; border-radius: 4px; background: linear-gradient(145deg, #f59e0b, #b45309); flex: 0 0 auto; box-shadow: 0 2px 5px rgba(0,0,0,.35); }
+.fhead-name { flex: 1; color: #fff; font-weight: 800; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fshut { border: none; background: rgba(255,255,255,.15); color: #fff; border-radius: 8px; width: 26px; height: 22px; cursor: pointer; font-weight: 800; font-size: 14px; line-height: 1; flex: 0 0 auto; }
+.fshut:hover { background: rgba(255,255,255,.3); }
+.fgrid { display: grid; gap: 8px; overflow: hidden; align-content: start; }
+.fempty { color: #8f88c7; font-size: 12px; text-align: center; grid-column: 1 / -1; padding: 12px 0; }
+.fitem { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); border-radius: 14px; padding: 8px 4px 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; min-width: 0; font-family: inherit; }
+.fitem:hover { background: rgba(255,255,255,.15); }
+.fitem img { width: 36px; height: 36px; object-fit: contain; pointer-events: none; }
+.fitem.go { animation: launchpop 0.6s ease; }
+.fitem.shake { animation: tileshake 0.45s ease; }
+.fletter { width: 36px; height: 36px; border-radius: 12px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 18px; display: grid; place-items: center; text-shadow: 0 1px 3px rgba(0,0,0,.3); }
+.flabel { max-width: 100%; font-size: 10.5px; font-weight: 700; color: #e8e4ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+
 /* ---------- settings page ---------- */
 body.settings-page {
   background: linear-gradient(160deg, #1e1b32 0%, #2d2660 55%, #134e4a 130%);
@@ -483,6 +567,7 @@ body.settings-page {
 .k-clock { background: #dbeafe; color: #1d4ed8; }
 .k-pet { background: #dcfce7; color: #15803d; }
 .k-app { background: #ede9fe; color: #6d28d9; }
+.k-folder { background: #fef3c7; color: #92400e; }
 .card .id {
   flex: 1;
   font-size: 12px;

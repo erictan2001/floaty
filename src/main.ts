@@ -4,6 +4,7 @@ import { mountClock } from "./widgets/clock";
 import { mountPet } from "./widgets/pet";
 
 import { mountLauncher } from "./widgets/appicon";
+import { mountFolder } from "./widgets/folder";
 
 const app = document.getElementById("app");
 if (app) {
@@ -14,5 +15,6 @@ if (app) {
   else if (kind === "clock" && id) mountClock(app, id);
   else if (kind === "pet" && id) mountPet(app, id);
   else if (kind === "app" && id) mountLauncher(app, id);
+  else if (kind === "folder" && id) mountFolder(app, id);
   // "manager" hidden window and unknown routes intentionally render nothing
 }

@@ -49,6 +49,9 @@ struct WidgetRecord {
 struct StoreData {
     widgets: HashMap<String, WidgetRecord>,
     next: u64,
+    /// ids removed at runtime (remove / folder-merge): late saves from dying
+    /// windows must not resurrect them
+    dead: HashSet<String>,
 }
 
 struct AppState(Mutex<StoreData>);
@@ -193,6 +196,7 @@ fn widget_size(kind: &str, data: &serde_json::Value) -> (f64, f64) {
         "clock" => (250.0, 330.0),
         "pet" => (170.0, 170.0),
         "app" => (92.0, 112.0),
+        "folder" => (92.0, 112.0),
         _ => (300.0, 330.0),
     };
     // notes + clocks are resizable; restore the user's size when stored
@@ -254,7 +258,7 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
         .skip_taskbar(true)
         // app icons live at desktop level under real apps; notes/clocks/pets
         // stay above everything
-        .always_on_top(rec.kind != "app")
+        .always_on_top(matches!(rec.kind.as_str(), "note" | "clock" | "pet"))
         .build()?;
     Ok(())
 }
@@ -264,6 +268,7 @@ fn default_data(kind: &str) -> serde_json::Value {
         "note" => serde_json::json!({ "text": "" }),
         "pet" => serde_json::json!({ "name": "bloop" }),
         "app" => serde_json::json!({ "name": "app", "target": "" }),
+        "folder" => serde_json::json!({ "name": "Folder", "items": [] }),
         _ => serde_json::json!({}),
     }
 }
@@ -274,7 +279,7 @@ fn create_record_with(
     data: serde_json::Value,
     at: Option<(i32, i32)>,
 ) -> Result<WidgetRecord, String> {
-    if !matches!(kind, "note" | "clock" | "pet" | "app") {
+    if !matches!(kind, "note" | "clock" | "pet" | "app" | "folder") {
         return Err("unknown widget kind".into());
     }
     let rec = {
@@ -515,6 +520,96 @@ fn floaty_add_launcher(name: String, path: String, app: AppHandle) -> Result<Wid
     create_record_with(&app, "app", data, Some((200, 40)))
 }
 
+// ---------- folders ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FolderItem {
+    name: String,
+    target: String,
+    #[serde(default)]
+    icon: String,
+}
+
+fn folder_items(rec: &WidgetRecord) -> Vec<FolderItem> {
+    rec.data
+        .get("items")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn set_folder_items(rec: &mut WidgetRecord, items: &[FolderItem]) {
+    if let Some(obj) = rec.data.as_object_mut() {
+        obj.insert(
+            "items".to_string(),
+            serde_json::to_value(items).unwrap_or(serde_json::Value::Null),
+        );
+    }
+}
+
+fn launcher_item(rec: &WidgetRecord) -> Option<FolderItem> {
+    if rec.kind != "app" {
+        return None;
+    }
+    Some(FolderItem {
+        name: rec
+            .data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("app")
+            .to_string(),
+        target: rec
+            .data
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        icon: rec
+            .data
+            .get("icon")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+/// Close a widget window off the command thread (same reason as creation).
+fn close_widget_async(app: &AppHandle, id: &str) {
+    let handle = app.clone();
+    let owned = id.to_string();
+    std::thread::spawn(move || {
+        let h2 = handle.clone();
+        let id2 = owned.clone();
+        if let Err(e) = handle.run_on_main_thread(move || {
+            if let Some(w) = h2.get_webview_window(&widget_label(&id2)) {
+                if let Err(e) = w.close() {
+                    log_line(&h2, &format!("close window FAILED for {id2}: {e}"));
+                }
+            }
+        }) {
+            log_line(&handle, &format!("main-thread dispatch FAILED for {owned}: {e}"));
+        }
+    });
+}
+
+fn launch_target(app: &AppHandle, target: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW avoids a console flash; `start` resolves exe/lnk/urls
+        const NO_WINDOW: u32 = 0x08000000;
+        const DETACHED: u32 = 0x00000008;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", target])
+            .creation_flags(NO_WINDOW | DETACHED)
+            .spawn()
+            .map_err(|e| {
+                log_line(app, &format!("launch FAILED: {e}"));
+                e.to_string()
+            })?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn floaty_launch(id: String, app: AppHandle) -> Result<(), String> {
     let target = {
@@ -536,22 +631,127 @@ fn floaty_launch(id: String, app: AppHandle) -> Result<(), String> {
         return Err("launcher has no target".into());
     }
     log_line(&app, &format!("launch {id} -> {target}"));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW avoids a console flash; `start` resolves exe/lnk/urls
-        const NO_WINDOW: u32 = 0x08000000;
-        const DETACHED: u32 = 0x00000008;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &target])
-            .creation_flags(NO_WINDOW | DETACHED)
-            .spawn()
-            .map_err(|e| {
-                log_line(&app, &format!("launch FAILED: {e}"));
-                e.to_string()
-            })?;
+    launch_target(&app, &target)
+}
+
+#[tauri::command]
+fn floaty_launch_target(target: String, app: AppHandle) -> Result<(), String> {
+    if target.trim().is_empty() {
+        return Err("empty target".into());
     }
-    Ok(())
+    log_line(&app, "launch target from folder");
+    launch_target(&app, &target)
+}
+
+/// Called (fire-and-forget) when an app icon is dropped after a manual drag.
+/// If the drop point lands on another icon/folder window, merge them.
+/// Returns the folder id when a merge happened.
+#[tauri::command]
+fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
+    // live physical rect of the dropped icon; compare in physical px throughout
+    let me = app.get_webview_window(&widget_label(&id))?;
+    let (mp, ms) = (me.outer_position().ok()?, me.inner_size().ok()?);
+    let cx = mp.x + ms.width as i32 / 2;
+    let cy = mp.y + ms.height as i32 / 2;
+
+    // candidate targets (snapshot under the lock, probe windows after release)
+    let cands: Vec<(String, String)> = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().ok()?;
+        guard
+            .widgets
+            .iter()
+            .filter(|(oid, r)| *oid != &id && (r.kind == "app" || r.kind == "folder"))
+            .map(|(oid, r)| (oid.clone(), r.kind.clone()))
+            .collect()
+    };
+    let mut hit: Option<(String, String)> = None;
+    for (oid, kind) in cands {
+        if let Some(w) = app.get_webview_window(&widget_label(&oid)) {
+            if let (Ok(p), Ok(s)) = (w.outer_position(), w.inner_size()) {
+                let x = p.x - 12;
+                let y = p.y - 12;
+                let ww = s.width as i32 + 24;
+                let hh = s.height as i32 + 24;
+                if cx >= x && cx < x + ww && cy >= y && cy < y + hh {
+                    hit = Some((oid, kind));
+                    break;
+                }
+            }
+        }
+    }
+    let (target_id, target_kind) = hit?;
+
+    // snapshot the dragged item, then remove it (tombstone blocks its late
+    // saves from resurrecting it)
+    let mut dragged = {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().ok()?;
+        let rec = guard.widgets.get(&id)?;
+        let item = launcher_item(rec)?;
+        if item.target.trim().is_empty() {
+            return None;
+        }
+        guard.widgets.remove(&id);
+        guard.dead.insert(id.clone());
+        item
+    };
+    persist(&app);
+    close_widget_async(&app, &id);
+
+    if target_kind == "folder" {
+        {
+            let state = app.state::<AppState>();
+            let mut guard = state.0.lock().ok()?;
+            let rec = guard.widgets.get_mut(&target_id)?;
+            let mut items = folder_items(rec);
+            if !items.iter().any(|it| it.target == dragged.target) {
+                if dragged.icon.is_empty() {
+                    dragged.icon = resolve_icon_data_url(&dragged.target).unwrap_or_default();
+                }
+                items.push(dragged);
+                set_folder_items(rec, &items);
+            }
+        }
+        persist(&app);
+        app.emit("floaty-folder-changed", &target_id).ok();
+        log_line(&app, &format!("merged {id} into folder {target_id}"));
+        return Some(target_id);
+    }
+
+    // target is an app icon: fold both into a new folder at its spot
+    let titem = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().ok()?;
+        let trec = guard.widgets.get(&target_id)?;
+        launcher_item(trec)?
+    };
+    let mut items = vec![titem, dragged];
+    for it in items.iter_mut() {
+        if it.icon.is_empty() {
+            it.icon = resolve_icon_data_url(&it.target).unwrap_or_default();
+        }
+    }
+    let (tx, ty) = {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().ok()?;
+        let trec = guard.widgets.remove(&target_id)?;
+        guard.dead.insert(target_id.clone());
+        (trec.x, trec.y)
+    };
+    persist(&app);
+    close_widget_async(&app, &target_id);
+    let data = serde_json::json!({ "name": "Folder", "items": items });
+    match create_record_with(&app, "folder", data, Some((tx, ty))) {
+        Ok(rec) => {
+            log_line(&app, &format!("grouped {id} + {target_id} into {}", rec.id));
+            Some(rec.id)
+        }
+        Err(e) => {
+            log_line(&app, &format!("folder create FAILED: {e}"));
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -609,6 +809,9 @@ fn floaty_create(kind: String, app: AppHandle) -> Result<WidgetRecord, String> {
 fn floaty_save(record: WidgetRecord, app: AppHandle) {
     let state = app.state::<AppState>();
     if let Ok(mut guard) = state.0.lock() {
+        if guard.dead.contains(&record.id) {
+            return; // removed meanwhile (remove / folder-merge)
+        }
         guard.widgets.insert(record.id.clone(), record);
     }
     persist(&app);
@@ -620,6 +823,7 @@ fn floaty_remove(id: String, app: AppHandle) {
     let state: State<'_, AppState> = app.state::<AppState>();
     if let Ok(mut guard) = state.0.lock() {
         guard.widgets.remove(&id);
+        guard.dead.insert(id.clone());
     }
     persist(&app);
     // Close off the command thread: like creation, window ops must not block
@@ -797,6 +1001,8 @@ pub fn run() {
             floaty_add_launcher,
             floaty_icon,
             floaty_launch,
+            floaty_launch_target,
+            floaty_dropped,
             floaty_layout,
             floaty_log
         ])
