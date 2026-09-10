@@ -613,6 +613,8 @@ body.settings-page {
 .slider-val { flex: 0 0 44px; text-align: right; font-size: 12px; font-weight: 700; color: #5eead4; font-variant-numeric: tabular-nums; }
 .select { flex: 1; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.16); border-radius: 10px; padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer; }
 .select option { background: #2d2660; }
+.check-row { display: flex; gap: 10px; align-items: center; font-size: 13px; color: #e8e4ff; cursor: pointer; margin-bottom: 8px; }
+.check-row input[type="checkbox"] { accent-color: #6c5ce7; width: 16px; height: 16px; cursor: pointer; flex: 0 0 auto; }
 /* themed scrollbar */
 body.settings-page { scrollbar-width: thin; scrollbar-color: #6c5ce7 transparent; }
 body.settings-page::-webkit-scrollbar { width: 10px; }

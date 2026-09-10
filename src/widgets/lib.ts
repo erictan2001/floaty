@@ -149,6 +149,7 @@ export interface FloatSettings {
   floatiness: number;
   single_click: string;
   double_click: string;
+  on_top: boolean;
 }
 
 const DEFAULT_SETTINGS: FloatSettings = {
@@ -158,6 +159,7 @@ const DEFAULT_SETTINGS: FloatSettings = {
   floatiness: 1,
   single_click: "drop",
   double_click: "launch",
+  on_top: true,
 };
 
 let settingsCache: FloatSettings = { ...DEFAULT_SETTINGS };

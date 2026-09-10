@@ -102,6 +102,8 @@ struct FloatSettings {
     single_click: String,
     #[serde(default = "default_double_click")]
     double_click: String,
+    #[serde(default = "default_on_top")]
+    on_top: bool,
 }
 
 fn default_pet_speed() -> f64 {
@@ -121,6 +123,9 @@ fn default_single_click() -> String {
 }
 fn default_double_click() -> String {
     "launch".to_string()
+}
+fn default_on_top() -> bool {
+    true
 }
 
 fn settings_file(app: &AppHandle) -> std::path::PathBuf {
@@ -156,6 +161,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             floatiness: default_floatiness(),
             single_click: default_single_click(),
             double_click: default_double_click(),
+            on_top: default_on_top(),
         },
     }
 }
@@ -180,11 +186,34 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             "drop" | "nothing" => settings.double_click,
             _ => "launch".to_string(),
         },
+        on_top: settings.on_top,
     };
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         fs::write(settings_file(&app), json).ok();
     }
     app.emit("floaty-settings-changed", &s).ok();
+    // apply the on-top switch to live widget windows (off-thread like
+    // other window ops); icons/folders always stay desktop-level
+    let handle = app.clone();
+    let on_top = s.on_top;
+    std::thread::spawn(move || {
+        for (label, w) in handle.webview_windows() {
+            if let Some(wid) = label.strip_prefix("widget-") {
+                let kind: Option<String> = handle
+                    .state::<AppState>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.widgets.get(wid).map(|r| r.kind.clone()));
+                if let Some(k) = kind {
+                    let top = on_top && matches!(k.as_str(), "note" | "clock" | "pet");
+                    if let Err(e) = w.set_always_on_top(top) {
+                        log_line(&handle, &format!("set_always_on_top FAILED for {wid}: {e}"));
+                    }
+                }
+            }
+        }
+    });
     log_line(&app, "settings updated");
     s
 }
@@ -256,9 +285,9 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
         // notes + clocks are user-resizable (corner handle in the webview)
         .resizable(matches!(rec.kind.as_str(), "note" | "clock"))
         .skip_taskbar(true)
-        // app icons live at desktop level under real apps; notes/clocks/pets
-        // stay above everything
-        .always_on_top(matches!(rec.kind.as_str(), "note" | "clock" | "pet"))
+        // app icons + folders always live at desktop level under real apps;
+        // notes/clock/pet stay above only while the on-top switch is on
+        .always_on_top(load_settings(app).on_top && matches!(rec.kind.as_str(), "note" | "clock" | "pet"))
         .build()?;
     Ok(())
 }
