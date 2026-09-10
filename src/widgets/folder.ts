@@ -243,7 +243,8 @@ export function mountFolder(root: HTMLElement, id: string): void {
   wrap.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || dragging) return;
     const t = e.target as HTMLElement;
-    if (t.closest("button")) return; // × / collapse / items handle themselves
+    // buttons and text fields handle themselves (rename input stays usable)
+    if (t.closest("button, input, textarea")) return;
     e.stopPropagation();
     dragging = true;
     try {
@@ -286,7 +287,10 @@ export function mountFolder(root: HTMLElement, id: string): void {
   wrap.addEventListener("click", (e) => {
     e.stopPropagation();
     if (dragging || performance.now() < suppressClickUntil) return;
-    expanded = !expanded;
+    // collapse only via the – button, so clicks inside the open panel
+    // (rename field included) never fold it away by accident
+    if (expanded) return;
+    expanded = true;
     render();
   });
   wrap.addEventListener("contextmenu", (e) => e.preventDefault());
