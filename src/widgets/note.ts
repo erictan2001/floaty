@@ -1,7 +1,8 @@
 import { PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, addResizeHandle, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, trackPosition } from "./lib";
+import { addPinMenu, addResizeHandle, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, watchPluginEnabled } from "./lib";
 
 export function mountNote(root: HTMLElement, id: string): void {
+  watchPluginEnabled("note");
   const wrap = document.createElement("div");
   wrap.className = "bubble note";
   const area = document.createElement("textarea");

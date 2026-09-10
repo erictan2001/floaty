@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { pluginFor } from "./widgets/plugin";
+import { pluginFor, plugins } from "./widgets/plugin";
 import "./style.css";
 
 interface WidgetRecord {
@@ -25,6 +25,8 @@ let refreshSeq = 0;
 // shared control rows, built once below and moved into plugin cards
 const sliderRows = new Map<string, HTMLElement>();
 const selectRows = new Map<string, HTMLElement>();
+// plugin kinds currently disabled (drives add-row + desktop list filtering)
+const disabledSet = new Set<string>();
 
 if (!root) {
   document.body.textContent = "settings root missing";
@@ -88,11 +90,12 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
     host.append(el("div", "empty", "couldn't load widgets"));
     return;
   }
-  if (list.length === 0) {
+  const visible = list.filter((w) => !disabledSet.has(w.kind));
+  if (visible.length === 0) {
     host.append(el("div", "empty", "no floaties yet — add one above, or use the tray icon"));
     return;
   }
-  for (const w of [...list].sort((a, b) => a.id.localeCompare(b.id))) {
+  for (const w of [...visible].sort((a, b) => a.id.localeCompare(b.id))) {
     const card = el("div", "card");
     const kind = el("span", `kind k-${w.kind}`, w.kind);
     const ident = el("span", "id", w.id);
@@ -189,6 +192,30 @@ async function scan(box: HTMLElement): Promise<void> {
   void box;
 }
 
+function renderAddRow(box: HTMLElement): void {
+  const host = document.getElementById("add-row");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const p of plugins) {
+    if (!p.addLabel || disabledSet.has(p.kind)) continue;
+    const b = el("button", "pill", p.addLabel);
+    b.addEventListener("click", async () => {
+      if ((b as HTMLButtonElement).disabled) return;
+      (b as HTMLButtonElement).disabled = true;
+      try {
+        const rec = await safe("add widget", () => invoke<WidgetRecord>("floaty_create", { kind: p.kind }));
+        if (rec) await refreshWidgets(box);
+      } finally {
+        (b as HTMLButtonElement).disabled = false;
+      }
+    });
+    host.append(b);
+  }
+  if (!host.hasChildNodes()) {
+    host.append(el("div", "empty", "all plugins disabled"));
+  }
+}
+
 function build(): void {
   if (!root) return;
   root.innerHTML = "";
@@ -198,29 +225,10 @@ function build(): void {
   const sub = el("p", "sub", "widgets living on your desktop");
   box.append(sub);
 
-  // quick add
+  // quick add (buttons rendered per enabled plugin by the manager)
   sectionTitle(box, "new floatie");
   const addRow = el("div", "add-row");
-  const defs: Array<[string, string]> = [
-    ["note", "+ note"],
-    ["clock", "+ clock"],
-    ["pet", "+ pet"],
-    ["folder", "+ folder"],
-  ];
-  for (const [kind, label] of defs) {
-    const b = el("button", "pill", label);
-    b.addEventListener("click", async () => {
-      if ((b as HTMLButtonElement).disabled) return;
-      (b as HTMLButtonElement).disabled = true;
-      try {
-        const rec = await safe("add widget", () => invoke<WidgetRecord>("floaty_create", { kind }));
-        if (rec) await refreshWidgets(box);
-      } finally {
-        (b as HTMLButtonElement).disabled = false;
-      }
-    });
-    addRow.append(b);
-  }
+  addRow.id = "add-row";
   box.append(addRow);
 
   // app launchers
@@ -358,6 +366,8 @@ function build(): void {
   async function loadManager(): Promise<void> {
     const list = await safe("load plugins", () => invoke<PluginState[]>("floaty_plugins"));
     if (!list) return;
+    disabledSet.clear();
+    for (const p of list) if (!p.enabled) disabledSet.add(p.id);
     pluginHost.innerHTML = "";
     for (const p of list) {
       const card = el("div", "card plugin-card");
@@ -373,7 +383,6 @@ function build(): void {
           invoke("floaty_set_plugin_enabled", { id: p.id, enabled: chk.checked }),
         );
         chk.disabled = false;
-        await refreshWidgets(box);
         void loadManager();
       });
       tog.append(chk, el("span", "", "enabled"));
@@ -396,6 +405,8 @@ function build(): void {
       }
       pluginHost.append(card);
     }
+    renderAddRow(box);
+    await refreshWidgets(box);
   }
   import("@tauri-apps/api/event")
     .then((m) => m.listen("floaty-plugins-changed", () => void loadManager()))
@@ -415,7 +426,6 @@ function build(): void {
   box.append(foot);
 
   root.append(box);
-  void refreshWidgets(box);
   void scan(box);
   void loadManager();
 }

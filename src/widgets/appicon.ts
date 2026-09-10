@@ -10,6 +10,7 @@ import {
   removeSelf,
   saveRecord,
   setLogicalPos,
+  watchPluginEnabled,
   watchSettings,
   type MonitorArea,
   type WidgetRecord,
@@ -44,6 +45,7 @@ function gradientFor(name: string): [string, string] {
 
 export function mountLauncher(root: HTMLElement, id: string): void {
   watchSettings();
+  watchPluginEnabled("app");
   const wrap = document.createElement("div");
   wrap.className = "launcher idle-hidden";
   wrap.innerHTML = `

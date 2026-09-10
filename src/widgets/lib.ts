@@ -303,3 +303,21 @@ export function addPinMenu(wrap: HTMLElement, getRec: () => WidgetRecord | undef
     }, 0);
   });
 }
+
+// ---------- plugin enable/disable ----------
+
+interface PluginStateMsg {
+  id: string;
+  enabled: boolean;
+}
+
+/** Close this window itself when its plugin is disabled (no main-thread
+ * round-trip needed, so it works even when backend window ops stall). */
+export function watchPluginEnabled(kind: string): void {
+  listen<PluginStateMsg[]>("floaty-plugins-changed", (e) => {
+    const p = e.payload.find((p) => p.id === kind);
+    if (p && !p.enabled) {
+      void appWin.close().catch(() => undefined);
+    }
+  }).catch(() => undefined);
+}

@@ -1030,16 +1030,11 @@ pub fn run() {
                 guard.next = max_n;
             }
 
-            // tray
-            let add_note = MenuItem::with_id(app, "add-note", "Add note", true, None::<&str>)?;
-            let add_clock =
-                MenuItem::with_id(app, "add-clock", "Add clock", true, None::<&str>)?;
-            let add_pet = MenuItem::with_id(app, "add-pet", "Add pet", true, None::<&str>)?;
+            // tray: settings + quit only (widgets are managed via settings)
             let settings =
                 MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Floaty", true, None::<&str>)?;
-            let menu =
-                Menu::with_items(app, &[&add_note, &add_clock, &add_pet, &settings, &quit])?;
+            let menu = Menu::with_items(app, &[&settings, &quit])?;
             let icon = app
                 .default_window_icon()
                 .cloned()
@@ -1050,15 +1045,6 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "add-note" => {
-                        create_record(app, "note").ok();
-                    }
-                    "add-clock" => {
-                        create_record(app, "clock").ok();
-                    }
-                    "add-pet" => {
-                        create_record(app, "pet").ok();
-                    }
                     "settings" => {
                         if let Err(e) = show_settings(app) {
                             log_line(app, &format!("tray settings FAILED: {e}"));

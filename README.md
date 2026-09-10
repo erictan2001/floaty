@@ -17,10 +17,12 @@ own small borderless window, so the rest of your desktop stays clickable.
   icons onto a folder). Click a folder to expand it into a launch grid;
   click again to collapse. Remove via the × like any widget.
 
-A **settings window** (tray icon → Settings) adds widgets, scans/floats apps,
-lists what's on the desktop, and removes widgets. Everything — positions,
-pinned states, note text, resolved icons — persists in `floaty-store.json`
-and restores on launch.
+A **settings window** (tray icon → Settings; the tray itself is just Settings
++ Quit) hosts the plugin manager, scans/floats apps, lists what's on the
+desktop, and removes widgets. Everything — positions, pinned states, note
+text, resolved icons — persists in `floaty-store.json` and restores on
+launch. Disabling a plugin closes its windows outright (records are kept);
+nothing disabled is loaded, listed, or creatable until re-enabled.
 
 ## Run (dev)
 

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, appWin, currentSettings, loadRecord, removeSelf, saveRecord, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, currentSettings, loadRecord, removeSelf, saveRecord, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 
 interface FolderItem {
   name: string;
@@ -14,6 +14,7 @@ const WIN_H = 112;
 const CELL = 84;
 
 export function mountFolder(root: HTMLElement, id: string): void {
+  watchPluginEnabled("folder");
   const wrap = document.createElement("div");
   wrap.className = "folder";
   root.append(wrap);

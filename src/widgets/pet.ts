@@ -1,11 +1,12 @@
 import { PhysicalPosition } from "@tauri-apps/api/window";
-import { addPinMenu, appWin, currentSettings, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord, watchSettings } from "./lib";
+import { addPinMenu, appWin, currentSettings, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord, watchPluginEnabled, watchSettings } from "./lib";
 
 const WIN = 170; // must match Rust pet window size
 const TICK_MS = 33;
 
 export function mountPet(root: HTMLElement, id: string): void {
   watchSettings();
+  watchPluginEnabled("pet");
   const wrap = document.createElement("div");
   wrap.className = "pet-wrap";
   wrap.innerHTML = `

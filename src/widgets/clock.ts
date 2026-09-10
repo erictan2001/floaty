@@ -1,5 +1,5 @@
 import { PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, type WidgetRecord } from "./lib";
+import { addPinMenu, addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, watchPluginEnabled, type WidgetRecord } from "./lib";
 
 const DEFAULT_FOCUS_S = 25 * 60;
 const DEFAULT_BREAK_S = 5 * 60;
@@ -11,6 +11,7 @@ function fmt(total: number): string {
 }
 
 export function mountClock(root: HTMLElement, id: string): void {
+  watchPluginEnabled("clock");
   const wrap = document.createElement("div");
   wrap.className = "bubble clock";
 
