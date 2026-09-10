@@ -421,9 +421,10 @@ body {
 }
 .folder:active { cursor: grabbing; }
 .folder.open {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
+  background: rgba(24, 20, 44, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 20px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
   padding: 10px;
   align-items: stretch;
   cursor: default;
@@ -474,6 +475,12 @@ body {
   place-items: center;
   padding: 0 5px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+/* collapsed folder floats bare: no bubble behind the preview */
+.folder:not(.open) .ftile {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 .folder:hover .launcher-x { opacity: 1; }
 .fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
