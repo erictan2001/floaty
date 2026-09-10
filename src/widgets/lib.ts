@@ -149,7 +149,6 @@ export interface FloatSettings {
   floatiness: number;
   single_click: string;
   double_click: string;
-  on_top: boolean;
 }
 
 const DEFAULT_SETTINGS: FloatSettings = {
@@ -159,7 +158,6 @@ const DEFAULT_SETTINGS: FloatSettings = {
   floatiness: 1,
   single_click: "drop",
   double_click: "launch",
-  on_top: true,
 };
 
 let settingsCache: FloatSettings = { ...DEFAULT_SETTINGS };
@@ -251,5 +249,55 @@ export function addResizeHandle(
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     })();
+  });
+}
+
+// ---------- pin-on-top context menu ----------
+
+/** Right-click menu with a per-widget pin-on-top toggle. Applies instantly
+ * and persists in the record; everything defaults to the desktop layer. */
+export function addPinMenu(wrap: HTMLElement, getRec: () => WidgetRecord | undefined): void {
+  const cur = getRec();
+  if (cur && cur.data["on_top"] === true) {
+    void appWin.setAlwaysOnTop(true).catch(() => undefined);
+  }
+  wrap.addEventListener("contextmenu", (e) => {
+    const t = e.target as HTMLElement | null;
+    if (t instanceof Element && t.closest("textarea, input")) return; // keep native edit menus
+    e.preventDefault();
+    e.stopPropagation();
+    document.querySelectorAll(".pin-menu").forEach((m) => m.remove());
+    const rec = getRec();
+    if (!rec) return;
+    const menu = document.createElement("div");
+    menu.className = "pin-menu";
+    const label = document.createElement("label");
+    label.className = "pin-row";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = rec.data["on_top"] === true;
+    box.addEventListener("click", (ev) => ev.stopPropagation());
+    box.addEventListener("change", () => {
+      rec.data["on_top"] = box.checked;
+      void appWin.setAlwaysOnTop(box.checked).catch(() => undefined);
+      void saveRecord(rec).catch(() => undefined);
+      menu.remove();
+    });
+    const txt = document.createElement("span");
+    txt.textContent = "Pin on top";
+    label.append(box, txt);
+    menu.append(label);
+    menu.style.left = `${Math.max(4, Math.min(e.clientX, window.innerWidth - 140))}px`;
+    menu.style.top = `${Math.max(4, Math.min(e.clientY, window.innerHeight - 48))}px`;
+    document.body.append(menu);
+    window.setTimeout(() => {
+      const dismiss = (ev: PointerEvent) => {
+        if (!menu.contains(ev.target as Node)) {
+          menu.remove();
+          window.removeEventListener("pointerdown", dismiss, true);
+        }
+      };
+      window.addEventListener("pointerdown", dismiss, true);
+    }, 0);
   });
 }

@@ -490,6 +490,11 @@ body {
 .fitem.shake { animation: tileshake 0.45s ease; }
 .fletter { width: 36px; height: 36px; border-radius: 12px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 18px; display: grid; place-items: center; text-shadow: 0 1px 3px rgba(0,0,0,.3); }
 .flabel { max-width: 100%; font-size: 10.5px; font-weight: 700; color: #e8e4ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+/* right-click pin menu */
+.pin-menu { position: fixed; z-index: 50; background: rgba(24,20,44,.96); border: 1px solid rgba(255,255,255,.2); border-radius: 12px; box-shadow: 0 10px 26px rgba(0,0,0,.5); padding: 6px; }
+.pin-row { display: flex; gap: 8px; align-items: center; font-size: 12.5px; font-weight: 600; color: #e8e4ff; cursor: pointer; padding: 6px 10px; border-radius: 8px; white-space: nowrap; }
+.pin-row:hover { background: rgba(255,255,255,.1); }
+.pin-row input[type="checkbox"] { accent-color: #6c5ce7; width: 15px; height: 15px; cursor: pointer; }
 .fminis { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; width: 44px; height: 44px; }
 .fminis img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: rgba(255,255,255,.9); pointer-events: none; }
 .fmini-letter { border-radius: 6px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 10px; display: grid; place-items: center; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
@@ -613,8 +618,6 @@ body.settings-page {
 .slider-val { flex: 0 0 44px; text-align: right; font-size: 12px; font-weight: 700; color: #5eead4; font-variant-numeric: tabular-nums; }
 .select { flex: 1; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.16); border-radius: 10px; padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer; }
 .select option { background: #2d2660; }
-.check-row { display: flex; gap: 10px; align-items: center; font-size: 13px; color: #e8e4ff; cursor: pointer; margin-bottom: 8px; }
-.check-row input[type="checkbox"] { accent-color: #6c5ce7; width: 16px; height: 16px; cursor: pointer; flex: 0 0 auto; }
 /* themed scrollbar */
 body.settings-page { scrollbar-width: thin; scrollbar-color: #6c5ce7 transparent; }
 body.settings-page::-webkit-scrollbar { width: 10px; }

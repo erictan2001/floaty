@@ -262,7 +262,6 @@ function build(): void {
   const sliderInputs = new Map<string, HTMLInputElement>();
   const sliderVals = new Map<string, HTMLElement>();
   const clickSelects = new Map<string, HTMLSelectElement>();
-  let topBox!: HTMLInputElement;
   let saveTimer: number | undefined;
   async function saveFloating(): Promise<void> {
     window.clearTimeout(saveTimer);
@@ -282,7 +281,6 @@ function build(): void {
           floatiness: num("floatiness", 1),
           single_click: clickSelects.get("single_click")?.value ?? "drop",
           double_click: clickSelects.get("double_click")?.value ?? "launch",
-          on_top: topBox.checked,
         },
       }),
     );
@@ -342,17 +340,7 @@ function build(): void {
       const v = s[d.key];
       if (typeof v === "string") clickSelects.get(d.key)!.value = v;
     }
-    if (typeof s["on_top"] === "boolean") topBox.checked = s["on_top"];
   })();
-
-  sectionTitle(box, "windows");
-  const topRow = el("label", "check-row");
-  topBox = el("input", "");
-  topBox.type = "checkbox";
-  topBox.checked = true;
-  topBox.addEventListener("change", () => void saveFloating());
-  topRow.append(topBox, el("span", "", "Keep notes, clock & pet above other apps"));
-  box.append(topRow);
 
   // current widgets
   sectionTitle(box, "on your desktop");

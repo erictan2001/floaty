@@ -78,8 +78,8 @@ src-tauri/
   raced the motion loops.
 - Window create/close runs off the command thread — blocking it on the
   main-thread dispatch froze the settings UI.
-- App icons sit at desktop level (`always_on_top` off); notes/clock/pet stay
-  above other windows.
+- Everything sits at desktop level under real apps by default; right-click
+  any widget for a pin-on-top toggle (persisted per widget).
 - Frontend errors/rejections are forwarded to the backend log via
   `floaty_log`. Log + store live in `%APPDATA%\com.floaty.app\`
   (`floaty.log`, `floaty-store.json`).

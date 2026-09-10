@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { PhysicalPosition } from "@tauri-apps/api/window";
 import {
+  addPinMenu,
   appWin,
   currentSettings,
   loadRecord,
@@ -128,6 +129,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     }
     // desktop layer (with the builder flag): icons live under real apps
     void appWin.setAlwaysOnTop(false).catch(() => undefined);
+    addPinMenu(wrap, () => rec);
     wrap.classList.remove("idle-hidden");
 
     try {

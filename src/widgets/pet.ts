@@ -1,5 +1,5 @@
 import { PhysicalPosition } from "@tauri-apps/api/window";
-import { appWin, currentSettings, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord, watchSettings } from "./lib";
+import { addPinMenu, appWin, currentSettings, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord, watchSettings } from "./lib";
 
 const WIN = 170; // must match Rust pet window size
 const TICK_MS = 33;
@@ -74,6 +74,7 @@ export function mountPet(root: HTMLElement, id: string): void {
         void saveRecord(rec);
       };
       window.setInterval(() => saveNow?.(), 4000);
+      addPinMenu(wrap, () => rec);
       window.addEventListener("beforeunload", () => saveNow?.());
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) saveNow?.();

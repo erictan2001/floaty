@@ -1,5 +1,5 @@
 import { PhysicalSize } from "@tauri-apps/api/window";
-import { addResizeHandle, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, trackPosition } from "./lib";
+import { addPinMenu, addResizeHandle, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, trackPosition } from "./lib";
 
 export function mountNote(root: HTMLElement, id: string): void {
   const wrap = document.createElement("div");
@@ -14,6 +14,7 @@ export function mountNote(root: HTMLElement, id: string): void {
     const rec = await loadRecord(id);
     if (!rec) return;
     wrap.prepend(makeBar("floaty note", () => void removeSelf(rec)));
+    addPinMenu(wrap, () => rec);
     // restore saved size
     const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 0;
     const h = typeof rec.data["h"] === "number" ? (rec.data["h"] as number) : 0;

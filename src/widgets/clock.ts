@@ -1,5 +1,5 @@
 import { PhysicalSize } from "@tauri-apps/api/window";
-import { addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, type WidgetRecord } from "./lib";
+import { addPinMenu, addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, type WidgetRecord } from "./lib";
 
 const DEFAULT_FOCUS_S = 25 * 60;
 const DEFAULT_BREAK_S = 5 * 60;
@@ -186,6 +186,7 @@ export function mountClock(root: HTMLElement, id: string): void {
     const rec = await loadRecord(id);
     if (!rec) return;
     wrap.prepend(makeBar("floaty clock", () => void removeSelf(rec)));
+    addPinMenu(wrap, () => rec);
     recRef = rec;
     // restore saved timer lengths (seconds, clamped to 1m..3h)
     const fs = typeof rec.data["focus_s"] === "number"

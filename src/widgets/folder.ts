@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
-import { appWin, loadRecord, removeSelf, saveRecord, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, loadRecord, removeSelf, saveRecord, type WidgetRecord } from "./lib";
 
 interface FolderItem {
   name: string;
@@ -19,6 +19,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
   root.append(wrap);
 
   let rec: WidgetRecord | undefined;
+  let pinArmed = false;
   let items: FolderItem[] = [];
   let expanded = false;
   let dragging = false;
@@ -191,7 +192,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       }
       wrap.append(head, grid);
       const rows = Math.max(1, Math.ceil(items.length / cols));
-      void setWindowSize(cols * CELL + 20, 64 + rows * 100 + 16);
+      void setWindowSize(Math.max(cols * CELL + 20, 220), 64 + rows * 100 + 16);
     }
   };
 
@@ -202,6 +203,10 @@ export function mountFolder(root: HTMLElement, id: string): void {
       return;
     }
     rec = r;
+    if (!pinArmed) {
+      pinArmed = true;
+      addPinMenu(wrap, () => rec);
+    }
     const raw = r.data["items"];
     items = Array.isArray(raw)
       ? (raw as FolderItem[]).filter((it) => it && typeof it.target === "string")
