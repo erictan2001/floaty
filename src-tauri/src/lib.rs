@@ -102,6 +102,9 @@ struct FloatSettings {
     single_click: String,
     #[serde(default = "default_double_click")]
     double_click: String,
+    /// plugin kinds whose windows stay closed
+    #[serde(default)]
+    disabled: Vec<String>,
 }
 
 fn default_pet_speed() -> f64 {
@@ -156,6 +159,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             floatiness: default_floatiness(),
             single_click: default_single_click(),
             double_click: default_double_click(),
+            disabled: Vec::new(),
         },
     }
 }
@@ -180,6 +184,7 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             "drop" | "nothing" => settings.double_click,
             _ => "launch".to_string(),
         },
+        disabled: settings.disabled,
     };
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         fs::write(settings_file(&app), json).ok();
@@ -281,6 +286,13 @@ fn create_record_with(
 ) -> Result<WidgetRecord, String> {
     if !matches!(kind, "note" | "clock" | "pet" | "app" | "folder") {
         return Err("unknown widget kind".into());
+    }
+    {
+        let s = load_settings(app);
+        if s.disabled.iter().any(|d| d == kind) {
+            // creating a disabled plugin's widget re-enables the plugin
+            set_plugin_enabled(app, kind, true);
+        }
     }
     let rec = {
         let state = app.state::<AppState>();
@@ -508,6 +520,100 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
     }
     persist(&app);
     Ok(data_url)
+}
+
+// ---------- plugins ----------
+
+#[derive(Debug, Clone, Serialize)]
+struct PluginInfo {
+    id: String,
+    name: String,
+    description: String,
+    enabled: bool,
+}
+
+fn all_plugins(disabled: &[String]) -> Vec<PluginInfo> {
+    let is_on = |kind: &str| !disabled.iter().any(|d| d == kind);
+    vec![
+        PluginInfo {
+            id: "note".to_string(),
+            name: "Note".to_string(),
+            description: "Sticky notes with autosave. Drag by the top bar, resize by the corner.".to_string(),
+            enabled: is_on("note"),
+        },
+        PluginInfo {
+            id: "clock".to_string(),
+            name: "Clock".to_string(),
+            description: "Clock plus pomodoro timer. Tap the timer to edit lengths.".to_string(),
+            enabled: is_on("clock"),
+        },
+        PluginInfo {
+            id: "pet".to_string(),
+            name: "Pet".to_string(),
+            description: "A wandering blob. Hover to calm it, double-click to freeze it.".to_string(),
+            enabled: is_on("pet"),
+        },
+        PluginInfo {
+            id: "app".to_string(),
+            name: "App launcher".to_string(),
+            description: "Gravity icons for real apps. Pin, drop, launch; icons group into folders.".to_string(),
+            enabled: is_on("app"),
+        },
+        PluginInfo {
+            id: "folder".to_string(),
+            name: "Folder".to_string(),
+            description: "Groups of launchers. Click to expand into a launch grid.".to_string(),
+            enabled: is_on("folder"),
+        },
+    ]
+}
+
+fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
+    let mut s = load_settings(app);
+    if enabled {
+        s.disabled.retain(|d| d != id);
+    } else if !s.disabled.iter().any(|d| d == id) {
+        s.disabled.push(id.to_string());
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&s) {
+        fs::write(settings_file(app), json).ok();
+    }
+    app.emit("floaty-plugins-changed", &all_plugins(&s.disabled)).ok();
+}
+
+#[tauri::command]
+fn floaty_plugins(app: AppHandle) -> Vec<PluginInfo> {
+    all_plugins(&load_settings(&app).disabled)
+}
+
+#[tauri::command]
+fn floaty_set_plugin_enabled(id: String, enabled: bool, app: AppHandle) {
+    log_line(&app, &format!("plugin {id} enabled={enabled}"));
+    set_plugin_enabled(&app, &id, enabled);
+    // close (disable) or respawn (enable) this kind's windows
+    let ids: Vec<String> = app
+        .state::<AppState>()
+        .0
+        .lock()
+        .map(|g| g.widgets.values().filter(|r| r.kind == id).map(|r| r.id.clone()).collect())
+        .unwrap_or_default();
+    if enabled {
+        for wid in ids {
+            let rec: Option<WidgetRecord> = app
+                .state::<AppState>()
+                .0
+                .lock()
+                .ok()
+                .and_then(|g| g.widgets.get(&wid).cloned());
+            if let Some(r) = rec {
+                spawn_widget_async(&app, &r);
+            }
+        }
+    } else {
+        for wid in &ids {
+            close_widget_async(&app, wid);
+        }
+    }
 }
 
 #[tauri::command]
@@ -1011,7 +1117,11 @@ pub fn run() {
                     persist(&handle);
                 }
             } else {
+                let disabled_kinds = load_settings(&handle).disabled;
                 for rec in &ids {
+                    if disabled_kinds.iter().any(|d| d == &rec.kind) {
+                        continue;
+                    }
                     if let Err(e) = spawn_widget(&handle, rec) {
                         log_line(&handle, &format!("restore spawn FAILED {}: {e}", rec.id));
                     }
@@ -1027,6 +1137,8 @@ pub fn run() {
             floaty_remove,
             floaty_show_settings,
             floaty_quit,
+            floaty_plugins,
+            floaty_set_plugin_enabled,
             floaty_get_settings,
             floaty_set_settings,
             floaty_scan_apps,

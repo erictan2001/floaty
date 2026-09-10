@@ -51,22 +51,35 @@ Windows 10 needs the WebView2 runtime (Win11 ships it).
 index.html / settings.html  entry pages (widget host / settings UI)
 src/
   bootstrap.ts   error forwarding + widget router (hash: #/note/:id …)
-  main.ts        mounts note / clock / pet / launcher by route
-  settings.ts    settings page (add, scan, float, remove)
+  main.ts        mounts the routed plugin
+  settings.ts    settings page: plugin manager, app scan, desktop list
   style.css      all widget + settings styling
   widgets/
-    lib.ts       window-pos helpers (logical px), store access, drag bar
-    note.ts      sticky note
-    clock.ts     clock + pomodoro
-    pet.ts       wandering pet (manual drag, hover-stop, dblclick pause)
-    appicon.ts   gravity launcher (manual drag, pin / drop / launch, icons)
-    folder.ts    group folder (drag-drop grouping, expandable launch grid)
+    plugin.ts    plugin registry (kind, name, mount, list labels)
+    lib.ts       window-pos helpers, store access, drag bar, settings cache
+    note.ts      sticky note plugin
+    clock.ts     clock + pomodoro plugin
+    pet.ts       wandering pet plugin
+    appicon.ts   gravity launcher plugin
+    folder.ts    group folder plugin
 src-tauri/
-  src/lib.rs     store, widget windows, tray, app scan, launch, icon resolve
+  src/lib.rs     store, widget windows, tray, plugins, scan, launch, icons
   capabilities/  Tauri ACL grants (window ops, …)
   tauri.conf.json
   icons/         tray + bundle icons (source: assets/icon.png)
 ```
+
+## Plugins
+
+Each floatie is a plugin registered in `src/widgets/plugin.ts` (kind, name,
+mount function, list labels) with matching backend support (`default_data`,
+`widget_size`, create allowlist in `src-tauri/src/lib.rs`). The settings
+**Plugins** section lists them with enable toggles and per-plugin parameters
+(pet speed lives on the pet card; gravity, bounce, float and click behaviour
+on the launcher card). Disabling a plugin closes its windows (records are
+kept); re-enabling respawns them; creating a widget re-enables its plugin.
+Global values live in `floaty-settings.json` with per-widget data in
+`floaty-store.json`.
 
 ## Notes
 

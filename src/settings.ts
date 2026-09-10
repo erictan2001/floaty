@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { pluginFor } from "./widgets/plugin";
 import "./style.css";
 
 interface WidgetRecord {
@@ -21,6 +22,9 @@ let appsCache: DiscoveredApp[] = [];
 let filter = "";
 let scanning = false;
 let refreshSeq = 0;
+// shared control rows, built once below and moved into plugin cards
+const sliderRows = new Map<string, HTMLElement>();
+const selectRows = new Map<string, HTMLElement>();
 
 if (!root) {
   document.body.textContent = "settings root missing";
@@ -92,16 +96,8 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
     const card = el("div", "card");
     const kind = el("span", `kind k-${w.kind}`, w.kind);
     const ident = el("span", "id", w.id);
-    if (w.kind === "app" && typeof w.data["name"] === "string") {
-      ident.textContent = `${w.id} — ${w.data["name"] as string}`;
-    } else if (w.kind === "note" && typeof w.data["text"] === "string") {
-      ident.textContent = `${w.id} — ${(w.data["text"] as string).slice(0, 32)}`;
-    } else if (w.kind === "folder") {
-      const raw = w.data["items"];
-      const n = Array.isArray(raw) ? raw.length : 0;
-      const nm = typeof w.data["name"] === "string" ? (w.data["name"] as string) : "folder";
-      ident.textContent = `${w.id} — ${nm} (${n} app${n === 1 ? "" : "s"})`;
-    }
+    const detail = pluginFor(w.kind)?.describe(w);
+    ident.textContent = detail ? `${w.id} — ${detail}` : w.id;
     const del = el("button", "danger", "remove");
     del.addEventListener("click", async () => {
       if ((del as HTMLButtonElement).disabled) return;
@@ -250,9 +246,8 @@ function build(): void {
   results.id = "app-results";
   box.append(results);
 
-  // floating parameters + icon click behaviour (persisted backend-side,
-  // broadcast live to all widget windows)
-  sectionTitle(box, "floating");
+  // floating parameters + icon click behaviour live in the plugin cards
+  // below; the shared rows are built here and moved into those cards
   const sliderDefs: Array<{ key: string; label: string; min: number; max: number; step: number }> = [
     { key: "pet_speed", label: "pet speed", min: 0, max: 2, step: 0.1 },
     { key: "gravity", label: "gravity", min: 0, max: 5000, step: 50 },
@@ -300,11 +295,10 @@ function build(): void {
     });
     sliderInputs.set(d.key, input);
     sliderVals.set(d.key, val);
+    sliderRows.set(d.key, row);
     row.append(input, val);
-    box.append(row);
   }
 
-  sectionTitle(box, "icon clicks");
   const clickDefs: Array<{ key: string; label: string; opts: string[] }> = [
     { key: "single_click", label: "single click", opts: ["drop", "hop", "nothing"] },
     { key: "double_click", label: "double click", opts: ["launch", "drop", "nothing"] },
@@ -321,8 +315,8 @@ function build(): void {
     }
     sel.addEventListener("change", () => void saveFloating());
     clickSelects.set(d.key, sel);
+    selectRows.set(d.key, row);
     row.append(sel);
-    box.append(row);
   }
   void (async () => {
     const s = await safe("load settings", () =>
@@ -348,6 +342,65 @@ function build(): void {
   list.id = "widget-list";
   box.append(list);
 
+  // plugin manager: enable toggles + per-plugin parameters
+  sectionTitle(box, "plugins");
+  const pluginHost = el("div", "");
+  pluginHost.id = "plugin-list";
+  box.append(pluginHost);
+
+  interface PluginState {
+    id: string;
+    name: string;
+    description: string;
+    enabled: boolean;
+  }
+
+  async function loadManager(): Promise<void> {
+    const list = await safe("load plugins", () => invoke<PluginState[]>("floaty_plugins"));
+    if (!list) return;
+    pluginHost.innerHTML = "";
+    for (const p of list) {
+      const card = el("div", "card plugin-card");
+      const head = el("div", "plugin-head");
+      head.append(el("span", `kind k-${p.id}`, p.id), el("span", "id", p.name));
+      const tog = el("label", "plugin-toggle");
+      const chk = el("input", "");
+      chk.type = "checkbox";
+      chk.checked = p.enabled;
+      chk.addEventListener("change", async () => {
+        chk.disabled = true;
+        await safe("toggle plugin", () =>
+          invoke("floaty_set_plugin_enabled", { id: p.id, enabled: chk.checked }),
+        );
+        chk.disabled = false;
+        await refreshWidgets(box);
+        void loadManager();
+      });
+      tog.append(chk, el("span", "", "enabled"));
+      head.append(tog);
+      card.append(head);
+      card.append(el("p", "hint", p.description));
+      // this plugin's parameters (shared rows moved in here)
+      if (p.id === "pet") {
+        const r = sliderRows.get("pet_speed");
+        if (r) card.append(r);
+      } else if (p.id === "app") {
+        for (const k of ["gravity", "bounce", "floatiness"]) {
+          const r = sliderRows.get(k);
+          if (r) card.append(r);
+        }
+        for (const k of ["single_click", "double_click"]) {
+          const r = selectRows.get(k);
+          if (r) card.append(r);
+        }
+      }
+      pluginHost.append(card);
+    }
+  }
+  import("@tauri-apps/api/event")
+    .then((m) => m.listen("floaty-plugins-changed", () => void loadManager()))
+    .catch(() => undefined);
+
   // footer
   const foot = el("div", "foot-row");
   const hide = el("button", "pill ghost", "close settings");
@@ -364,6 +417,7 @@ function build(): void {
   root.append(box);
   void refreshWidgets(box);
   void scan(box);
+  void loadManager();
 }
 
 try {
