@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, appWin, loadRecord, removeSelf, saveRecord, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, currentSettings, loadRecord, removeSelf, saveRecord, watchSettings, type WidgetRecord } from "./lib";
 
 interface FolderItem {
   name: string;
@@ -17,6 +17,14 @@ export function mountFolder(root: HTMLElement, id: string): void {
   const wrap = document.createElement("div");
   wrap.className = "folder";
   root.append(wrap);
+
+  // idle bob follows the shared float setting, like launcher icons
+  watchSettings();
+  const syncFloat = () => {
+    wrap.style.setProperty("--float", String(currentSettings().floatiness));
+  };
+  syncFloat();
+  window.setInterval(syncFloat, 1000);
 
   let rec: WidgetRecord | undefined;
   let pinArmed = false;
