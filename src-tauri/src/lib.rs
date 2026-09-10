@@ -871,6 +871,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             log_line(&handle, "=== floaty starting ===");
+            log_line(&handle, &format!("backend build {}", env!("FLOATY_BUILD_MARK")));
 
             // restore persisted widgets into state
             let saved = load_all(&handle);
