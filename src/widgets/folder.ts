@@ -178,8 +178,56 @@ export function mountFolder(root: HTMLElement, id: string): void {
         lab.className = "flabel";
         lab.textContent = it.name;
         b.append(lab);
+        // drag an item out past the window edge to unfloat it as its own icon
+        b.addEventListener("pointerdown", (e) => {
+          if (e.button !== 0) return;
+          e.stopPropagation(); // not a folder-window drag
+          try {
+            b.setPointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+          const sx = e.screenX;
+          const sy = e.screenY;
+          let out = false;
+          const onMove = (ev: PointerEvent) => {
+            if (!out && Math.hypot(ev.screenX - sx, ev.screenY - sy) > 8) {
+              out = true;
+              b.classList.add("dragging-out");
+              suppressClickUntil = performance.now() + 300;
+            }
+          };
+          const onUp = (ev: PointerEvent) => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+            try {
+              if (b.hasPointerCapture(e.pointerId)) b.releasePointerCapture(e.pointerId);
+            } catch {
+              /* ignore */
+            }
+            b.classList.remove("dragging-out");
+            if (!out) return; // plain tap: the click handler below launches
+            const inside =
+              ev.clientX >= 0 &&
+              ev.clientY >= 0 &&
+              ev.clientX < window.innerWidth &&
+              ev.clientY < window.innerHeight;
+            if (inside) return; // dragged but stayed inside: cancel, don't launch
+            const nx = Math.round(px + ev.clientX - 46);
+            const ny = Math.round(py + ev.clientY - 56);
+            const index = items.indexOf(it);
+            invoke("floaty_ungroup", { folderId: id, index, x: nx, y: ny }).catch(
+              () => undefined,
+            );
+          };
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp);
+          window.addEventListener("pointercancel", onUp);
+        });
         b.addEventListener("click", (e) => {
           e.stopPropagation();
+          if (performance.now() < suppressClickUntil) return; // was a drag, not a tap
           b.classList.add("go");
           window.setTimeout(() => b.classList.remove("go"), 500);
           invoke("floaty_launch_target", { target: it.target }).catch(() => {

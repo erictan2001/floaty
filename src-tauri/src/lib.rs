@@ -754,6 +754,37 @@ fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
     }
 }
 
+/// Pull one app out of a folder: remove the item, float it as its own
+/// pinned launcher where the cursor released it.
+#[tauri::command]
+fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandle) -> Result<WidgetRecord, String> {
+    let item = {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let rec = guard.widgets.get_mut(&folder_id).ok_or("folder not found")?;
+        if rec.kind != "folder" {
+            return Err("not a folder".into());
+        }
+        let mut items = folder_items(rec);
+        if index >= items.len() {
+            return Err("bad index".into());
+        }
+        let item = items.remove(index);
+        if item.target.trim().is_empty() {
+            return Err("empty target".into());
+        }
+        set_folder_items(rec, &items);
+        item
+    };
+    persist(&app);
+    app.emit("floaty-folder-changed", &folder_id).ok();
+    let mut data = serde_json::json!({ "name": item.name, "target": item.target, "icon": item.icon });
+    data["pinned"] = serde_json::Value::Bool(true);
+    let rec = create_record_with(&app, "app", data, Some((x, y)))?;
+    log_line(&app, &format!("ungrouped {} from {folder_id} as {}", item.name, rec.id));
+    Ok(rec)
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct LayoutItem {
     id: String,
@@ -1004,6 +1035,7 @@ pub fn run() {
             floaty_launch,
             floaty_launch_target,
             floaty_dropped,
+            floaty_ungroup,
             floaty_layout,
             floaty_log
         ])
