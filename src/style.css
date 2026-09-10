@@ -407,7 +407,9 @@ body {
 body.settings-page {
   background: linear-gradient(160deg, #1e1b32 0%, #2d2660 55%, #134e4a 130%);
   background-attachment: fixed;
-  overflow: auto;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
   user-select: auto;
   -webkit-user-select: auto;
 }
