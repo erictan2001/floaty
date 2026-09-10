@@ -148,11 +148,9 @@ export function mountPet(root: HTMLElement, id: string): void {
     asleep = false;
     pet.classList.remove("sleeping");
     squash();
-    try {
-      wrap.setPointerCapture(e.pointerId);
-    } catch {
-      /* capture unsupported — window-level listeners still cover the drag */
-    }
+    // capture lazily on first real movement: capturing at press time retargets
+    // the tap's click to wrap, breaking clicks on inner elements (rename etc.)
+    let captured = false;
     const startPX = px;
     const startPY = py;
     const startSX = e.screenX;
@@ -170,6 +168,14 @@ export function mountPet(root: HTMLElement, id: string): void {
       lastTouch = performance.now();
       if (Math.hypot(ev.screenX - startSX, ev.screenY - startSY) > 4) {
         suppressClickUntil = performance.now() + 300;
+        if (!captured) {
+          captured = true;
+          try {
+            wrap.setPointerCapture(e.pointerId);
+          } catch {
+            /* capture unsupported — window-level listeners still cover the drag */
+          }
+        }
       }
       void appWin
         .setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)))

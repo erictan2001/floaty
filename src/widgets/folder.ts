@@ -247,11 +247,8 @@ export function mountFolder(root: HTMLElement, id: string): void {
     if (t.closest("button, input, textarea")) return;
     e.stopPropagation();
     dragging = true;
-    try {
-      wrap.setPointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
+    // capture lazily on first real movement (see pet.ts: eager capture eats taps)
+    let captured = false;
     const startX = px;
     const startY = py;
     const startSX = e.screenX;
@@ -263,6 +260,14 @@ export function mountFolder(root: HTMLElement, id: string): void {
       if (Math.hypot(ev.screenX - startSX, ev.screenY - startSY) > 4) {
         moved = true;
         suppressClickUntil = performance.now() + 300;
+        if (!captured) {
+          captured = true;
+          try {
+            wrap.setPointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+        }
       }
       void appWin
         .setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)))

@@ -196,11 +196,8 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     dragging = true;
     wrap.classList.add("held");
     squash();
-    try {
-      wrap.setPointerCapture(e.pointerId);
-    } catch {
-      /* capture unsupported — window-level listeners still cover the drag */
-    }
+    // capture lazily on first real movement (see pet.ts: eager capture eats taps)
+    let captured = false;
     const startX = x;
     const startY = y;
     const startSX = e.screenX;
@@ -216,6 +213,14 @@ export function mountLauncher(root: HTMLElement, id: string): void {
       if (Math.hypot(ev.screenX - startSX, ev.screenY - startSY) > 4) {
         moved = true;
         suppressClickUntil = performance.now() + 300;
+        if (!captured) {
+          captured = true;
+          try {
+            wrap.setPointerCapture(e.pointerId);
+          } catch {
+            /* capture unsupported — window-level listeners still cover the drag */
+          }
+        }
       }
       void appWin
         .setPosition(new PhysicalPosition(Math.round(x * scale), Math.round(y * scale)))
