@@ -142,18 +142,25 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
     if (w.kind === "live2d") {
       const sel = el("select", "select mini");
       const cur = typeof w.data["model"] === "string" ? (w.data["model"] as string) : "";
-      const seen = new Set<string>();
+      const seenValues = new Set<string>();
+      const seenLabels = new Set<string>();
       const addOpt = (label: string, value: string): void => {
-        if (seen.has(value)) return;
-        seen.add(value);
+        if (seenValues.has(value)) return;
+        seenValues.add(value);
+        let finalLabel = label;
+        if (seenLabels.has(finalLabel)) {
+          const parent = value.split(/[/\\]/).slice(-2, -1)[0];
+          if (parent) finalLabel = `${label} (${parent})`;
+        }
+        seenLabels.add(finalLabel);
         const opt = document.createElement("option");
         opt.value = value;
-        opt.textContent = label;
+        opt.textContent = finalLabel;
         sel.append(opt);
       };
       addOpt("Hijiki (bundled)", "");
       for (const m of live2dModels) addOpt(m.name, m.path);
-      if (cur && !seen.has(cur)) {
+      if (cur && !seenValues.has(cur)) {
         addOpt(`${cur.split(/[/\\]/).pop() ?? cur} (current)`, cur);
       }
       sel.value = cur;

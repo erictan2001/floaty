@@ -1,8 +1,10 @@
+import { invoke } from "@tauri-apps/api/core";
 import { mountNote } from "./note";
 import { mountClock } from "./clock";
 import { mountPet } from "./pet";
 import { mountLauncher } from "./appicon";
 import { mountFolder } from "./folder";
+import { ensureLive2DCore } from "./lib";
 
 export interface PluginRecord {
   id: string;
@@ -73,9 +75,24 @@ export const plugins: FloatyPlugin[] = [
     kind: "live2d",
     name: "Live2D",
     addLabel: "+ live2d",
-    // lazy: keeps ~600KB of pixi out of every other widget window
+    // lazy: keeps pixi out of every other widget window. Core MUST load
+    // before the import — cubism2 throws at module evaluation without it.
     mount: (root, id) => {
-      void import("./live2d").then((m) => m.mountLive2D(root, id));
+      void (async () => {
+        try {
+          await ensureLive2DCore();
+          const m = await import("./live2d");
+          m.mountLive2D(root, id);
+        } catch (e) {
+          invoke("floaty_log", { msg: `[webview live2d/${id}] mount failed: ${String(e)}` }).catch(
+            () => undefined,
+          );
+          const f = document.createElement("div");
+          f.className = "live2d-failed";
+          f.textContent = "live2d failed to load";
+          root.append(f);
+        }
+      })();
     },
     describe: namedPreview,
   },

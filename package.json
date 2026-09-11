@@ -16,6 +16,7 @@
     "vite": "^6.0.3"
   },
   "dependencies": {
+    "@pixi/unsafe-eval": "^6.5.10",
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "live2d-widget-model-hijiki": "^1.0.5",
     "pixi-live2d-display": "^0.4.0",

@@ -323,3 +323,32 @@ export function watchPluginEnabled(kind: string): void {
     }
   }).catch(() => undefined);
 }
+
+let live2dCorePromise: Promise<void> | undefined;
+/** Loads both Cubism 2 and Cubism 4 core runtimes. Must resolve BEFORE
+ * pixi-live2d-display is imported — it throws at module evaluation if
+ * either window.Live2D or window.Live2DCubismCore is absent. */
+export function ensureLive2DCore(): Promise<void> {
+  const win = window as unknown as { Live2D?: unknown; Live2DCubismCore?: unknown };
+  if (win.Live2D && win.Live2DCubismCore) return Promise.resolve();
+  if (!live2dCorePromise) {
+    const loadScript = (src: string) =>
+      new Promise<void>((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`Failed to load ${src}`));
+        document.head.append(s);
+      });
+    live2dCorePromise = Promise.all([
+      win.Live2D ? Promise.resolve() : loadScript("/live2d.min.js"),
+      win.Live2DCubismCore ? Promise.resolve() : loadScript("/live2dcubismcore.min.js"),
+    ])
+      .then(() => undefined)
+      .catch((err) => {
+        live2dCorePromise = undefined;
+        throw err;
+      });
+  }
+  return live2dCorePromise;
+}
