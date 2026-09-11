@@ -1,5 +1,6 @@
 import { PhysicalPosition } from "@tauri-apps/api/window";
 import { addPinMenu, appWin, currentSettings, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord, watchPluginEnabled, watchSettings } from "./lib";
+import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin";
 
 const WIN = 170; // must match Rust pet window size
 const TICK_MS = 33;
@@ -227,3 +228,18 @@ export function mountPet(root: HTMLElement, id: string): void {
       .catch(() => undefined);
   }, TICK_MS);
 }
+
+export const petPlugin: FloatyPlugin = {
+  kind: "pet",
+  name: "Pet",
+  addLabel: "+ pet",
+  mount: mountPet,
+  describe: (rec: PluginRecord) => {
+    const n = rec.data["name"];
+    return typeof n === "string" && n ? n : undefined;
+  },
+  renderSettings: (card: HTMLElement, ctx: PluginSettingsContext) => {
+    const r = ctx.getSharedRow("pet_speed");
+    if (r) card.append(r);
+  },
+};

@@ -16,10 +16,14 @@ own small borderless window, so the rest of your desktop stays clickable.
 - **Group folders** — drag one app icon onto another to group them (or drop
   icons onto a folder). Click a folder to expand it into a launch grid;
   click again to collapse. Remove via the × like any widget.
-- **Live2D companion** — animated Hijiki model (pixi + Cubism 2 runtime
-  vendored). Idles on its own, reacts to taps, drags anywhere by the body.
-  Point its plugin card at any model folder and pick per-widget models
-  from the scan (Cubism 2 `.model.json` / Cubism 3+ `.model3.json`).
+- **Desktop files & folders** — point Floaty to any root directory. Files and
+  subdirectories become interactive floaties. Dragging a file or directory out of
+  a folder moves it on disk into the desktop parent directory and spawns it as a new
+  desktop floatie. Dragging files/folders onto folder floaties moves them into the folder on disk.
+- **Live2D companion** — interactive desktop companion (pixi + Cubism 2/3/4
+  runtimes). Follows cursor across desktop, reacts to head/body taps, idles,
+  and drags anywhere. Point its plugin card at any model library folder
+  and pick per-widget models from the scan (Cubism 2 `.model.json` / Cubism 3+ `.model3.json`).
 
 A **settings window** (tray icon → Settings; the tray itself is just Settings
 + Quit) hosts the plugin manager, scans/floats apps, lists what's on the
@@ -61,29 +65,35 @@ src/
   settings.ts    settings page: plugin manager, app scan, desktop list
   style.css      all widget + settings styling
   widgets/
-    plugin.ts    plugin registry (kind, name, mount, list labels)
-    lib.ts       window-pos helpers, store access, drag bar, settings cache
-    note.ts      sticky note plugin
-    clock.ts     clock + pomodoro plugin
-    pet.ts       wandering pet plugin
-    appicon.ts   gravity launcher plugin
-    folder.ts    group folder plugin
-    live2d.ts    Live2D companion (lazy pixi chunk, Cubism 2 model)
+    plugin.ts       plugin registry & FloatyPlugin interface
+    live2dPlugin.ts lazy-loading wrapper for Live2D
+    lib.ts          window-pos helpers, store access, drag bar, settings cache
+    note.ts         sticky note plugin
+    clock.ts        clock + pomodoro plugin
+    pet.ts          wandering pet plugin
+    appicon.ts      gravity launcher plugin
+    folder.ts       group folder plugin
+    live2d.ts       Live2D companion (lazy pixi chunk, Cubism 2/3/4 model)
 src-tauri/
-  src/lib.rs     store, widget windows, tray, plugins, scan, launch, icons
-  capabilities/  Tauri ACL grants (window ops, …)
+  src/lib.rs        store, widget windows, tray, scan, launch, icons
+  src/plugins.rs    backend plugin registry, sizing, resizability, default data
+  capabilities/     Tauri ACL grants (window ops, …)
   tauri.conf.json
-  icons/         tray + bundle icons (source: assets/icon.png)
+  icons/            tray + bundle icons (source: assets/icon.png)
 ```
 
 ## Plugins
 
-Each floatie is a plugin registered in `src/widgets/plugin.ts` (kind, name,
-mount function, list labels) with matching backend support (`default_data`,
-`widget_size`, create allowlist in `src-tauri/src/lib.rs`). The settings
-**Plugins** section lists them with enable toggles and per-plugin parameters
-(pet speed lives on the pet card; gravity, bounce, float and click behaviour
-on the launcher card). Disabling a plugin closes its windows (records are
+Each floatie is a modular plugin implementing the `FloatyPlugin` interface in
+`src/widgets/plugin.ts` and registered in `src-tauri/src/plugins.rs`.
+
+Adding a new plugin requires only adding the widget module and registering it — no
+invasive edits across settings or backend dispatcher files.
+
+For a full contributor guide with code templates, see **[docs/PLUGINS.md](docs/PLUGINS.md)**.
+
+The settings **Plugins** section lists plugins with enable toggles and delegating
+per-plugin parameter cards. Disabling a plugin closes its windows (records are
 kept); re-enabling respawns them; creating a widget re-enables its plugin.
 Global values live in `floaty-settings.json` with per-widget data in
 `floaty-store.json`.

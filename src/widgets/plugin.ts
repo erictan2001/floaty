@@ -1,103 +1,93 @@
-import { invoke } from "@tauri-apps/api/core";
-import { mountNote } from "./note";
-import { mountClock } from "./clock";
-import { mountPet } from "./pet";
-import { mountLauncher } from "./appicon";
-import { mountFolder } from "./folder";
-import { ensureLive2DCore } from "./lib";
+import type { FloatSettings } from "./lib";
+import { notePlugin } from "./note";
+import { clockPlugin } from "./clock";
+import { petPlugin } from "./pet";
+import { appPlugin } from "./appicon";
+import { folderPlugin } from "./folder";
+import { live2dPlugin } from "./live2dPlugin";
 
 export interface PluginRecord {
   id: string;
+  kind?: string;
+  x?: number;
+  y?: number;
   data: Record<string, unknown>;
 }
 
+export interface WidgetControlContext {
+  /** Safely run an asynchronous backend invocation with error reporting */
+  safe: <T>(label: string, fn: () => Promise<T>) => Promise<T | undefined>;
+  /** Request refreshing the widget list on the settings page */
+  refreshWidgets: () => Promise<void>;
+  /** Show an error banner in settings */
+  showError: (msg: string) => void;
+}
+
+export interface PluginSettingsContext {
+  /** Get current global floating settings */
+  getSettings: () => FloatSettings;
+  /** Retrieve a shared parameter row element (e.g. 'pet_speed', 'gravity', etc.) */
+  getSharedRow: (name: string) => HTMLElement | undefined;
+  /** Safely run an asynchronous backend invocation with error reporting */
+  safe: <T>(label: string, fn: () => Promise<T>) => Promise<T | undefined>;
+  /** Show an error banner in settings */
+  showError: (msg: string) => void;
+  /** Request refreshing the widget list on the settings page */
+  refreshWidgets: () => Promise<void>;
+  /** Save modified global settings */
+  updateSettings: (patch: Partial<FloatSettings>) => Promise<void>;
+}
+
 export interface FloatyPlugin {
-  kind: string;
-  name: string;
-  /** quick-add button label; absent when the plugin isn't directly creatable */
-  addLabel?: string;
-  mount: (root: HTMLElement, id: string) => void;
-  /** short detail for the settings widget list, or undefined for just the id */
+  /** Unique plugin identifier (e.g. "note", "clock", "pet", "live2d") */
+  readonly kind: string;
+  /** Human-readable display name shown in settings */
+  readonly name: string;
+  /** Quick-add button label (e.g. "+ note"). If omitted, no button is shown in "+ New floatie" */
+  readonly addLabel?: string;
+  /** Mount the widget DOM into the container for the given record ID */
+  mount: (root: HTMLElement, id: string) => void | Promise<void>;
+  /** Detail summary shown in the "On your desktop" list (or undefined for just the ID) */
   describe: (rec: PluginRecord) => string | undefined;
+  /** Optional custom controls to insert into the widget's card in "On your desktop" */
+  renderWidgetControls?: (
+    card: HTMLElement,
+    rec: PluginRecord,
+    ctx: WidgetControlContext,
+    deleteBtn: HTMLElement,
+  ) => void | Promise<void>;
+  /** Optional custom rows or controls appended to the plugin's card in the "Plugins" list */
+  renderSettings?: (card: HTMLElement, ctx: PluginSettingsContext) => void | Promise<void>;
 }
 
-function textPreview(rec: PluginRecord, max: number): string | undefined {
-  const t = rec.data["text"];
-  return typeof t === "string" && t ? t.slice(0, max) : undefined;
-}
+const registry = new Map<string, FloatyPlugin>();
 
-function namedPreview(rec: PluginRecord): string | undefined {
-  const n = rec.data["name"];
-  return typeof n === "string" && n ? n : undefined;
+export function registerPlugin(plugin: FloatyPlugin): void {
+  registry.set(plugin.kind, plugin);
 }
-
-export const plugins: FloatyPlugin[] = [
-  {
-    kind: "note",
-    name: "Note",
-    addLabel: "+ note",
-    mount: mountNote,
-    describe: (r) => textPreview(r, 32),
-  },
-  {
-    kind: "clock",
-    name: "Clock",
-    addLabel: "+ clock",
-    mount: mountClock,
-    describe: () => undefined,
-  },
-  {
-    kind: "pet",
-    name: "Pet",
-    addLabel: "+ pet",
-    mount: mountPet,
-    describe: namedPreview,
-  },
-  {
-    kind: "app",
-    name: "App launcher",
-    mount: mountLauncher,
-    describe: namedPreview,
-  },
-  {
-    kind: "folder",
-    name: "Folder",
-    addLabel: "+ folder",
-    mount: mountFolder,
-    describe: (r) => {
-      const raw = r.data["items"];
-      const n = Array.isArray(raw) ? raw.length : 0;
-      const nm = namedPreview(r) ?? "folder";
-      return `${nm} (${n} app${n === 1 ? "" : "s"})`;
-    },
-  },
-  {
-    kind: "live2d",
-    name: "Live2D",
-    addLabel: "+ live2d",
-    // lazy: keeps pixi out of every other widget window. Core MUST load
-    // before the import — cubism2 throws at module evaluation without it.
-    mount: (root, id) => {
-      void (async () => {
-        try {
-          await ensureLive2DCore();
-          const m = await import("./live2d");
-          m.mountLive2D(root, id);
-        } catch (e) {
-          invoke("floaty_log", { msg: `[webview live2d/${id}] mount failed: ${String(e)}` }).catch(
-            () => undefined,
-          );
-          const f = document.createElement("div");
-          f.className = "live2d-failed";
-          f.textContent = "live2d failed to load";
-          root.append(f);
-        }
-      })();
-    },
-    describe: namedPreview,
-  },
-];
 
 export function pluginFor(kind: string): FloatyPlugin | undefined {
-  return plugins.find((p) => p.kind === kind);
+  return registry.get(kind);
 }
+
+export function allPlugins(): FloatyPlugin[] {
+  return Array.from(registry.values());
+}
+
+// Built-in plugin registrations
+registerPlugin(notePlugin);
+registerPlugin(clockPlugin);
+registerPlugin(petPlugin);
+registerPlugin(appPlugin);
+registerPlugin(folderPlugin);
+registerPlugin(live2dPlugin);
+
+/** Exported array for backward compatibility and simple iteration */
+export const plugins: FloatyPlugin[] = [
+  notePlugin,
+  clockPlugin,
+  petPlugin,
+  appPlugin,
+  folderPlugin,
+  live2dPlugin,
+];

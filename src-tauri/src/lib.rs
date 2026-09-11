@@ -6,6 +6,9 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+mod plugins;
+use plugins::PluginInfo;
+
 // ---------- logging ----------
 
 fn log_line(app: &AppHandle, msg: &str) {
@@ -105,9 +108,19 @@ struct FloatSettings {
     /// live2d model library root picked by the user
     #[serde(default)]
     live2d_root: String,
+    /// root directory where files and folders should be floaties
+    #[serde(default)]
+    files_root: String,
     /// plugin kinds whose windows stay closed
     #[serde(default)]
     disabled: Vec<String>,
+    /// keep widgets visible on desktop when Show Desktop (Win+D) is triggered
+    #[serde(default = "default_stay_on_desktop")]
+    stay_on_desktop: bool,
+}
+
+fn default_stay_on_desktop() -> bool {
+    true
 }
 
 fn default_pet_speed() -> f64 {
@@ -163,7 +176,9 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             single_click: default_single_click(),
             double_click: default_double_click(),
             live2d_root: String::new(),
+            files_root: String::new(),
             disabled: Vec::new(),
+            stay_on_desktop: default_stay_on_desktop(),
         },
     }
 }
@@ -189,41 +204,289 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             _ => "launch".to_string(),
         },
         live2d_root: settings.live2d_root,
+        files_root: settings.files_root,
         disabled: settings.disabled,
+        stay_on_desktop: settings.stay_on_desktop,
     };
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         fs::write(settings_file(&app), json).ok();
+    }
+    #[cfg(windows)]
+    {
+        desktop_pin::set_stay_on_desktop_global(s.stay_on_desktop);
+        for (label, win) in app.webview_windows() {
+            if label.starts_with("widget-") {
+                if let Ok(hwnd) = win.hwnd() {
+                    desktop_pin::apply_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+                }
+            }
+        }
     }
     app.emit("floaty-settings-changed", &s).ok();
     log_line(&app, "settings updated");
     s
 }
 
-// ---------- windows ----------
+// ---------- desktop window pinning (stay on desktop / Win+D) ----------
 
-fn widget_size(kind: &str, data: &serde_json::Value) -> (f64, f64) {
-    let base = match kind {
-        "clock" => (250.0, 330.0),
-        "pet" => (170.0, 170.0),
-        "app" => (92.0, 112.0),
-        "live2d" => (300.0, 400.0),
-        "folder" => (92.0, 112.0),
-        _ => (300.0, 330.0),
-    };
-    // notes + clocks are resizable; restore the user's size when stored
-    if matches!(kind, "note" | "clock") {
-        let (mw, mh) = if kind == "clock" {
-            (200.0, 260.0)
-        } else {
-            (180.0, 140.0)
-        };
-        let w = data.get("w").and_then(|v| v.as_f64()).unwrap_or(base.0);
-        let h = data.get("h").and_then(|v| v.as_f64()).unwrap_or(base.1);
-        (w.clamp(mw, 1400.0), h.clamp(mh, 1400.0))
-    } else {
-        base
+#[cfg(windows)]
+mod desktop_pin {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub static STAY_ON_DESKTOP_ACTIVE: AtomicBool = AtomicBool::new(true);
+
+    pub fn set_stay_on_desktop_global(active: bool) {
+        STAY_ON_DESKTOP_ACTIVE.store(active, Ordering::SeqCst);
+    }
+
+    const GWLP_HWNDPARENT: i32 = -8;
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_TOOLWINDOW: isize = 0x00000080;
+    const WS_EX_APPWINDOW: isize = 0x00040000;
+
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+    const SWP_HIDEWINDOW: u32 = 0x0080;
+
+    const WM_SYSCOMMAND: u32 = 0x0112;
+    const SC_MINIMIZE: usize = 0xF020;
+    const WM_WINDOWPOSCHANGING: u32 = 0x0046;
+    const WM_SIZE: u32 = 0x0005;
+    const SIZE_MINIMIZED: usize = 1;
+    const SW_RESTORE: i32 = 9;
+
+    const SUBCLASS_ID: usize = 0x464C5459; // 'FLTY'
+
+    #[repr(C)]
+    struct WINDOWPOS {
+        hwnd: isize,
+        hwnd_insert_after: isize,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    }
+
+    #[allow(non_snake_case)]
+    #[repr(C)]
+    struct ITaskbarListVtbl {
+        pub QueryInterface: unsafe extern "system" fn(this: *mut std::ffi::c_void, riid: *const u8, ppv: *mut *mut std::ffi::c_void) -> i32,
+        pub AddRef: unsafe extern "system" fn(this: *mut std::ffi::c_void) -> u32,
+        pub Release: unsafe extern "system" fn(this: *mut std::ffi::c_void) -> u32,
+        pub HrInit: unsafe extern "system" fn(this: *mut std::ffi::c_void) -> i32,
+        pub AddTab: unsafe extern "system" fn(this: *mut std::ffi::c_void, hwnd: isize) -> i32,
+        pub DeleteTab: unsafe extern "system" fn(this: *mut std::ffi::c_void, hwnd: isize) -> i32,
+        pub ActivateTab: unsafe extern "system" fn(this: *mut std::ffi::c_void, hwnd: isize) -> i32,
+        pub SetActiveAlt: unsafe extern "system" fn(this: *mut std::ffi::c_void, hwnd: isize) -> i32,
+    }
+
+    #[allow(non_snake_case)]
+    #[repr(C)]
+    struct ITaskbarList {
+        pub lpVtbl: *const ITaskbarListVtbl,
+    }
+
+    #[allow(non_snake_case)]
+    #[link(name = "user32")]
+    #[link(name = "comctl32")]
+    #[link(name = "ole32")]
+    extern "system" {
+        pub fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> isize;
+        pub fn FindWindowExW(
+            hWndParent: isize,
+            hWndChildAfter: isize,
+            lpszClass: *const u16,
+            lpszWindow: *const u16,
+        ) -> isize;
+        pub fn GetShellWindow() -> isize;
+        pub fn GetWindowLongPtrW(hWnd: isize, nIndex: i32) -> isize;
+        pub fn SetWindowLongPtrW(hWnd: isize, nIndex: i32, dwNewLong: isize) -> isize;
+        pub fn SetWindowPos(
+            hWnd: isize,
+            hWndInsertAfter: isize,
+            X: i32,
+            Y: i32,
+            cx: i32,
+            cy: i32,
+            uFlags: u32,
+        ) -> isize;
+        pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        pub fn SetWindowSubclass(
+            hWnd: isize,
+            pfnSubclass: unsafe extern "system" fn(
+                hWnd: isize,
+                uMsg: u32,
+                wParam: usize,
+                lParam: isize,
+                uIdSubclass: usize,
+                dwRefData: usize,
+            ) -> isize,
+            uIdSubclass: usize,
+            dwRefData: usize,
+        ) -> i32;
+        pub fn DefSubclassProc(hWnd: isize, uMsg: u32, wParam: usize, lParam: isize) -> isize;
+        pub fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> isize;
+        pub fn SetThreadDesktop(hDesktop: isize) -> i32;
+        pub fn CoCreateInstance(
+            rclsid: *const u8,
+            pUnkOuter: *mut std::ffi::c_void,
+            dwClsContext: u32,
+            riid: *const u8,
+            ppv: *mut *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    pub fn delete_taskbar_tab(hwnd: isize) {
+        unsafe {
+            // CLSID_TaskbarList {56FDF342-FD6D-11d0-958A-006097C9A090}
+            let clsid: [u8; 16] = [0x42, 0xF3, 0xFD, 0x56, 0x6D, 0xFD, 0xd0, 0x11, 0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90];
+            // IID_ITaskbarList {56FDF344-FD6D-11d0-958A-006097C9A090}
+            let iid: [u8; 16] = [0x44, 0xF3, 0xFD, 0x56, 0x6D, 0xFD, 0xd0, 0x11, 0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90];
+            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            if CoCreateInstance(clsid.as_ptr(), std::ptr::null_mut(), 1, iid.as_ptr(), &mut ptr) == 0 && !ptr.is_null() {
+                let tbl = ptr as *mut ITaskbarList;
+                let vtbl = &*(*tbl).lpVtbl;
+                let _ = (vtbl.HrInit)(ptr);
+                let _ = (vtbl.DeleteTab)(ptr, hwnd);
+                let _ = (vtbl.Release)(ptr);
+            }
+        }
+    }
+
+    pub fn remove_from_taskbar(hwnd: isize) {
+        unsafe {
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let new_style = (ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW;
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+            SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+            delete_taskbar_tab(hwnd);
+        }
+    }
+
+    pub fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn ensure_input_desktop() {
+        unsafe {
+            let dt = OpenInputDesktop(0, 0, 0x01FF);
+            if dt != 0 {
+                SetThreadDesktop(dt);
+            }
+        }
+    }
+
+    pub fn get_desktop_shell_hwnd() -> isize {
+        ensure_input_desktop();
+        let progman_cls = to_wide("Progman");
+        let defview_cls = to_wide("SHELLDLL_DefView");
+        let workerw_cls = to_wide("WorkerW");
+
+        // 1. Try finding SHELLDLL_DefView directly under Progman (Win 11 24H2+, etc.)
+        let progman = unsafe { FindWindowW(progman_cls.as_ptr(), std::ptr::null()) };
+        if progman != 0 {
+            let defview = unsafe { FindWindowExW(progman, 0, defview_cls.as_ptr(), std::ptr::null()) };
+            if defview != 0 {
+                return defview;
+            }
+        }
+
+        // 2. Try finding SHELLDLL_DefView under top-level WorkerW windows (Win 10 / earlier Win 11)
+        let mut workerw = unsafe { FindWindowExW(0, 0, workerw_cls.as_ptr(), std::ptr::null()) };
+        while workerw != 0 {
+            let defview = unsafe { FindWindowExW(workerw, 0, defview_cls.as_ptr(), std::ptr::null()) };
+            if defview != 0 {
+                return defview;
+            }
+            workerw = unsafe { FindWindowExW(0, workerw, workerw_cls.as_ptr(), std::ptr::null()) };
+        }
+
+        // 3. Fallback to GetShellWindow() or Progman
+        let shell = unsafe { GetShellWindow() };
+        if shell != 0 {
+            return shell;
+        }
+        progman
+    }
+
+    unsafe extern "system" fn widget_subclass_proc(
+        hwnd: isize,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        _id_subclass: usize,
+        _ref_data: usize,
+    ) -> isize {
+        // Enforce WS_EX_TOOLWINDOW is preserved so taskbar never shows the window
+        if msg == WM_WINDOWPOSCHANGING {
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            if (ex_style & WS_EX_TOOLWINDOW) == 0 || (ex_style & WS_EX_APPWINDOW) != 0 {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW);
+            }
+        }
+
+        if STAY_ON_DESKTOP_ACTIVE.load(Ordering::Relaxed) {
+            // Block SC_MINIMIZE syscommand
+            if msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_MINIMIZE {
+                return 0;
+            }
+            // Strip SWP_HIDEWINDOW when Windows tries to hide windows on Win+D / Show Desktop
+            if msg == WM_WINDOWPOSCHANGING && lparam != 0 {
+                let wp = &mut *(lparam as *mut WINDOWPOS);
+                if (wp.flags & SWP_HIDEWINDOW) != 0 {
+                    wp.flags &= !SWP_HIDEWINDOW;
+                }
+            }
+            // If window receives SIZE_MINIMIZED, restore it
+            if msg == WM_SIZE && wparam == SIZE_MINIMIZED {
+                ShowWindow(hwnd, SW_RESTORE);
+                return 0;
+            }
+        }
+        DefSubclassProc(hwnd, msg, wparam, lparam)
+    }
+
+    pub fn apply_desktop_pin(hwnd: isize, stay_on_desktop: bool) {
+        unsafe {
+            remove_from_taskbar(hwnd);
+
+            // Register subclass (idempotent if already registered)
+            SetWindowSubclass(hwnd, widget_subclass_proc, SUBCLASS_ID, 0);
+
+            if stay_on_desktop {
+                let desktop_hwnd = get_desktop_shell_hwnd();
+                if desktop_hwnd != 0 {
+                    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, desktop_hwnd);
+                }
+            } else {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+            }
+            SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
     }
 }
+
+// ---------- windows ----------
 
 fn widget_label(id: &str) -> String {
     format!("widget-{id}")
@@ -254,35 +517,31 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let (w, h) = widget_size(&rec.kind, &rec.data);
+    let (w, h) = plugins::widget_size(&rec.kind, &rec.data);
     let url = format!("index.html#/{}/{}", rec.kind, rec.id);
     log_line(app, &format!("spawn {} at {},{}", label, rec.x, rec.y));
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title("Floaty")
         .inner_size(w, h)
         .position(rec.x as f64, rec.y as f64)
         .transparent(true)
         .decorations(false)
         .shadow(false)
-        // notes + clocks are user-resizable (corner handle in the webview)
-        .resizable(matches!(rec.kind.as_str(), "note" | "clock"))
+        // delegates resizability to the plugin definition
+        .resizable(plugins::is_resizable(&rec.kind))
         .skip_taskbar(true)
         // desktop layer for everything by default; per-widget pin-on-top
         // lives in the webview (right-click menu) instead
         .always_on_top(false)
         .build()?;
-    Ok(())
-}
-
-fn default_data(kind: &str) -> serde_json::Value {
-    match kind {
-        "note" => serde_json::json!({ "text": "" }),
-        "pet" => serde_json::json!({ "name": "bloop" }),
-        "app" => serde_json::json!({ "name": "app", "target": "" }),
-        "live2d" => serde_json::json!({ "name": "Live2D" }),
-        "folder" => serde_json::json!({ "name": "Folder", "items": [] }),
-        _ => serde_json::json!({}),
+    #[cfg(windows)]
+    {
+        let stay = load_settings(app).stay_on_desktop;
+        if let Ok(hwnd) = win.hwnd() {
+            desktop_pin::apply_desktop_pin(hwnd.0 as isize, stay);
+        }
     }
+    Ok(())
 }
 
 fn create_record_with(
@@ -291,7 +550,7 @@ fn create_record_with(
     data: serde_json::Value,
     at: Option<(i32, i32)>,
 ) -> Result<WidgetRecord, String> {
-    if !matches!(kind, "note" | "clock" | "pet" | "app" | "folder" | "live2d") {
+    if !plugins::is_valid_kind(kind) {
         return Err("unknown widget kind".into());
     }
     {
@@ -327,7 +586,7 @@ fn create_record_with(
 }
 
 fn create_record(app: &AppHandle, kind: &str) -> Result<WidgetRecord, String> {
-    let data = default_data(kind);
+    let data = plugins::default_data(kind);
     create_record_with(app, kind, data, None)
 }
 
@@ -434,173 +693,340 @@ async fn floaty_scan_apps(app: AppHandle) -> Vec<DiscoveredApp> {
     out
 }
 
-/// Check if an icon data url is low resolution (legacy 32x32 extraction)
+/// Check if an icon data url is low resolution (legacy 32x32 extraction or missing)
 fn is_low_res_icon(s: &str) -> bool {
-    if s.is_empty() {
+    if s.is_empty() || s == "none" {
         return true;
     }
     s.starts_with("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg")
         || s.contains("AAAAACAAAAAg")
         || s.contains("AAAACAAAAAg")
-        || s.len() < 5000
 }
 
-/// Resolve a launcher's high-resolution app icon: .lnk shortcut targets, MSI advertised
-/// shortcuts, explicit IconLocations, or direct binaries. Extracts up to 256x256 (or
-/// highest available native resolution) via PrivateExtractIcons and Shell ImageList,
-/// returned as a PNG data URL.
-fn resolve_icon_data_url(lnk_path: &str) -> Option<String> {
+/// Standalone base64 encoder with zero external dependencies
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        result.push(CHARS[(b0 >> 2) as usize] as char);
+        result.push(CHARS[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[(((b1 & 0xF) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(b2 & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+/// Parse ICO binary format directly in Rust and extract the largest embedded PNG frame if available
+fn try_extract_png_from_ico_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 22 {
+        return None;
+    }
+    let id_type = u16::from_le_bytes([bytes[2], bytes[3]]);
+    if id_type != 1 {
+        return None;
+    }
+    let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+    if count == 0 || bytes.len() < 6 + count * 16 {
+        return None;
+    }
+
+    let mut best_width = 0u32;
+    let mut best_data: Option<&[u8]> = None;
+
+    for i in 0..count {
+        let entry = 6 + i * 16;
+        let raw_w = bytes[entry] as u32;
+        let w = if raw_w == 0 { 256 } else { raw_w };
+        let bytes_in_res = u32::from_le_bytes([
+            bytes[entry + 8],
+            bytes[entry + 9],
+            bytes[entry + 10],
+            bytes[entry + 11],
+        ]) as usize;
+        let image_offset = u32::from_le_bytes([
+            bytes[entry + 12],
+            bytes[entry + 13],
+            bytes[entry + 14],
+            bytes[entry + 15],
+        ]) as usize;
+
+        if image_offset + bytes_in_res <= bytes.len() && bytes_in_res >= 8 {
+            let img = &bytes[image_offset..image_offset + bytes_in_res];
+            // PNG magic signature: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
+            if img.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+                if w > best_width {
+                    best_width = w;
+                    best_data = Some(img);
+                }
+            }
+        }
+    }
+
+    best_data.map(|d| d.to_vec())
+}
+
+/// Instantly extract a PNG frame from an ICO file on disk in Rust (sub-millisecond)
+fn try_extract_fast_ico(ico_path: &str) -> Option<String> {
+    let p = std::path::Path::new(ico_path);
+    if !p.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(p).ok()?;
+    let png = try_extract_png_from_ico_bytes(&bytes)?;
+    Some(format!("data:image/png;base64,{}", base64_encode(&png)))
+}
+
+/// Instantly extract Steam game and internet shortcut (.url) icons in Rust (sub-millisecond)
+fn try_extract_fast_url(url_path: &str) -> Option<String> {
+    let p = std::path::Path::new(url_path);
+    if !p.is_file() {
+        return None;
+    }
+    let content = std::fs::read_to_string(p).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("IconFile=") {
+            let ico_path = rest.trim();
+            if ico_path.ends_with(".ico") || ico_path.ends_with(".ICO") {
+                if let Some(data_url) = try_extract_fast_ico(ico_path) {
+                    return Some(data_url);
+                }
+            }
+        }
+    }
+    None
+}
+
+static ICON_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn resolve_icons_batch(paths: &[String]) -> HashMap<String, String> {
+    let mut results = HashMap::new();
+    let mut needed = Vec::new();
+
+    if let Ok(guard) = ICON_CACHE.lock() {
+        for p in paths {
+            if let Some(cached) = guard.get(p) {
+                if cached != "none" && !is_low_res_icon(cached) {
+                    results.insert(p.clone(), cached.clone());
+                    continue;
+                }
+            }
+            needed.push(p.clone());
+        }
+    } else {
+        needed.extend_from_slice(paths);
+    }
+
+    if needed.is_empty() {
+        return results;
+    }
+
+    // 1. Rust-native fast path for .url and .ico (executes in 0ms without spawning processes)
+    let mut still_needed = Vec::new();
+    for p in &needed {
+        let fast_res = if p.ends_with(".url") || p.ends_with(".URL") {
+            try_extract_fast_url(p)
+        } else if p.ends_with(".ico") || p.ends_with(".ICO") {
+            try_extract_fast_ico(p)
+        } else {
+            None
+        };
+
+        if let Some(icon_data) = fast_res {
+            results.insert(p.clone(), icon_data.clone());
+            if let Ok(mut guard) = ICON_CACHE.lock() {
+                guard.insert(p.clone(), icon_data);
+            }
+        } else {
+            still_needed.push(p.clone());
+        }
+    }
+
+    if still_needed.is_empty() {
+        return results;
+    }
+
     #[cfg(windows)]
     {
+        use std::io::Write as _;
         use std::os::windows::process::CommandExt;
         const NO_WINDOW: u32 = 0x08000000;
+
         let script = r#"
 Add-Type -AssemblyName System.Drawing;
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class ShellIcons {
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern uint PrivateExtractIcons(
-        string szFileName, int nIconIndex, int cxIcon, int cyIcon,
-        out IntPtr phicon, out uint piconid, uint nIcons, uint flags);
-    [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
-    [DllImport("shell32.dll")] public static extern int SHGetImageList(int iImageList, ref Guid riid, out IntPtr ppv);
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct SHFILEINFO {
-        public IntPtr hIcon;
-        public int iIcon;
-        public uint dwAttributes;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
-    }
-    [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    public interface IImageList { [PreserveSig] int GetIcon(int i, int flags, out IntPtr picon); }
-    public static IntPtr ExtractFromShell(string path) {
+
+function Get-IconB64($filePath) {
+    if ([string]::IsNullOrEmpty($filePath) -or -not [System.IO.File]::Exists($filePath)) { return $null }
+
+    if ($filePath.EndsWith('.ico', [StringComparison]::OrdinalIgnoreCase)) {
         try {
-            SHFILEINFO sfi = new SHFILEINFO();
-            IntPtr res = SHGetFileInfo(path, 0, ref sfi, (uint)Marshal.SizeOf(sfi), 0x000004000);
-            if (res == IntPtr.Zero) return IntPtr.Zero;
-            Guid iid = new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
-            IntPtr pImageList;
-            int hr = SHGetImageList(4, ref iid, out pImageList);
-            if (hr != 0 || pImageList == IntPtr.Zero) {
-                hr = SHGetImageList(2, ref iid, out pImageList);
-                if (hr != 0 || pImageList == IntPtr.Zero) return IntPtr.Zero;
+            $bytes = [System.IO.File]::ReadAllBytes($filePath)
+            if ($bytes.Length -ge 22) {
+                $cnt = [BitConverter]::ToUInt16($bytes, 4)
+                $bestIdx = -1; $bestW = 0
+                for ($i = 0; $i -lt $cnt; $i++) {
+                    $off = 6 + $i * 16
+                    $w = [int]$bytes[$off]
+                    if ($w -eq 0) { $w = 256 }
+                    $imgOff = [BitConverter]::ToUInt32($bytes, $off + 12)
+                    if ($imgOff + 8 -le $bytes.Length -and $bytes[$imgOff] -eq 0x89 -and $bytes[$imgOff+1] -eq 0x50) {
+                        if ($w -gt $bestW) { $bestW = $w; $bestIdx = $i }
+                    }
+                }
+                if ($bestIdx -ge 0) {
+                    $off = 6 + $bestIdx * 16
+                    $imgOff = [BitConverter]::ToUInt32($bytes, $off + 12)
+                    $imgLen = [BitConverter]::ToUInt32($bytes, $off + 8)
+                    if ($imgOff + $imgLen -le $bytes.Length) {
+                        return [Convert]::ToBase64String($bytes, $imgOff, $imgLen)
+                    }
+                }
             }
-            IImageList imgList = (IImageList)Marshal.GetObjectForIUnknown(pImageList);
-            IntPtr hIcon = IntPtr.Zero;
-            imgList.GetIcon(sfi.iIcon, 1, out hIcon);
-            Marshal.Release(pImageList);
-            return hIcon;
-        } catch { return IntPtr.Zero; }
+        } catch {}
+
+        try {
+            $ico = New-Object System.Drawing.Icon($filePath, 256, 256)
+            $bmp = $ico.ToBitmap()
+            $ms = New-Object IO.MemoryStream
+            $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $res = [Convert]::ToBase64String($ms.ToArray())
+            $ms.Dispose(); $bmp.Dispose(); $ico.Dispose()
+            return $res
+        } catch {}
+
+        try {
+            $bmp = [System.Drawing.Bitmap]::FromFile($filePath)
+            $ms = New-Object IO.MemoryStream
+            $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $res = [Convert]::ToBase64String($ms.ToArray())
+            $ms.Dispose(); $bmp.Dispose()
+            return $res
+        } catch {}
     }
-}
-"@;
 
-$path = $env:FLOATY_ICON_PATH;
-if (-not (Test-Path $path)) { exit 1 };
-
-$iconFile = $path;
-$iconIdx = 0;
-$targetPath = $path;
-
-if ($path.EndsWith('.lnk', [StringComparison]::OrdinalIgnoreCase)) {
     try {
-        $sh = New-Object -ComObject WScript.Shell;
-        $sc = $sh.CreateShortcut($path);
-        $targetPath = $sc.TargetPath;
-        $iconLoc = $sc.IconLocation;
-        if (-not [string]::IsNullOrEmpty($iconLoc)) {
-            $parts = $iconLoc.Split(',');
-            if (-not [string]::IsNullOrEmpty($parts[0])) {
-                $iconFile = $parts[0];
-                if ($parts.Length -gt 1) { [void][int]::TryParse($parts[1], [ref]$iconIdx) }
-            }
+        $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($filePath)
+        if ($null -ne $ico) {
+            $ms = New-Object IO.MemoryStream
+            $bmp = $ico.ToBitmap()
+            $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $res = [Convert]::ToBase64String($ms.ToArray())
+            $ms.Dispose(); $bmp.Dispose(); $ico.Dispose()
+            return $res
         }
     } catch {}
 
-    if ([string]::IsNullOrEmpty($targetPath)) {
+    return $null
+}
+
+$sh = $null
+$input | ForEach-Object {
+    $p = $_.Trim()
+    if ([string]::IsNullOrEmpty($p) -or -not [System.IO.File]::Exists($p)) { return }
+    $b64 = $null
+
+    if ($p.EndsWith('.url', [StringComparison]::OrdinalIgnoreCase)) {
         try {
-            $shApp = New-Object -ComObject Shell.Application;
-            $dir = [IO.Path]::GetDirectoryName($path);
-            $fn = [IO.Path]::GetFileName($path);
-            $folder = $shApp.Namespace($dir);
-            $item = $folder.ParseName($fn);
-            $link = $item.GetLink;
-            if ($link -and $link.Target -and $link.Target.Path) {
-                $targetPath = $link.Target.Path;
+            $txt = [System.IO.File]::ReadAllText($p)
+            if ($txt -match 'IconFile=([^\r\n]+)') {
+                $icoPath = $matches[1].Trim()
+                $b64 = Get-IconB64 $icoPath
             }
         } catch {}
     }
-    if ($iconFile -eq $path -and -not [string]::IsNullOrEmpty($targetPath)) {
-        $iconFile = $targetPath;
+
+    if ([string]::IsNullOrEmpty($b64) -and $p.EndsWith('.lnk', [StringComparison]::OrdinalIgnoreCase)) {
+        try {
+            if ($null -eq $sh) { $sh = New-Object -ComObject WScript.Shell }
+            $sc = $sh.CreateShortcut($p)
+            if (-not [string]::IsNullOrEmpty($sc.IconLocation)) {
+                $loc = ($sc.IconLocation -split ',')[0].Trim()
+                if (-not [string]::IsNullOrEmpty($loc) -and [System.IO.File]::Exists($loc)) {
+                    $b64 = Get-IconB64 $loc
+                }
+            }
+            if ([string]::IsNullOrEmpty($b64) -and -not [string]::IsNullOrEmpty($sc.TargetPath)) {
+                if ([System.IO.File]::Exists($sc.TargetPath)) {
+                    $b64 = Get-IconB64 $sc.TargetPath
+                }
+            }
+        } catch {}
+    }
+
+    if ([string]::IsNullOrEmpty($b64)) {
+        $b64 = Get-IconB64 $p
+    }
+
+    if (-not [string]::IsNullOrEmpty($b64)) {
+        [Console]::Out.WriteLine($p + '|' + $b64)
+    } else {
+        [Console]::Out.WriteLine($p + '|none')
     }
 }
-
-$hIcon = [IntPtr]::Zero;
-$iconId = 0;
-if (-not [string]::IsNullOrEmpty($iconFile) -and (Test-Path $iconFile)) {
-    [void][ShellIcons]::PrivateExtractIcons($iconFile, $iconIdx, 256, 256, [ref]$hIcon, [ref]$iconId, 1, 0);
-}
-if ($hIcon -eq [IntPtr]::Zero -and -not [string]::IsNullOrEmpty($targetPath) -and $targetPath -ne $iconFile -and (Test-Path $targetPath)) {
-    [void][ShellIcons]::PrivateExtractIcons($targetPath, 0, 256, 256, [ref]$hIcon, [ref]$iconId, 1, 0);
-}
-if ($hIcon -eq [IntPtr]::Zero -and -not [string]::IsNullOrEmpty($targetPath) -and (Test-Path $targetPath)) {
-    $hIcon = [ShellIcons]::ExtractFromShell($targetPath);
-}
-if ($hIcon -eq [IntPtr]::Zero) {
-    $hIcon = [ShellIcons]::ExtractFromShell($path);
-}
-
-$ico = $null;
-if ($hIcon -ne [IntPtr]::Zero) {
-    $ico = [System.Drawing.Icon]::FromHandle($hIcon);
-} else {
-    $check = if (-not [string]::IsNullOrEmpty($targetPath) -and (Test-Path $targetPath)) { $targetPath } else { $path };
-    try { $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($check) } catch {}
-}
-
-if ($null -eq $ico) { exit 2 };
-
-$bmp = $ico.ToBitmap();
-$ms = New-Object IO.MemoryStream;
-$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);
-$b64 = [Convert]::ToBase64String($ms.ToArray());
-$ms.Dispose();
-$bmp.Dispose();
-if ($hIcon -ne [IntPtr]::Zero) { [void][ShellIcons]::DestroyIcon($hIcon) };
-[Console]::Out.Write($b64);
 "#;
 
-        let out = std::process::Command::new("powershell")
+        if let Ok(mut child) = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("FLOATY_ICON_PATH", lnk_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
             .creation_flags(NO_WINDOW)
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                for p in &still_needed {
+                    let _ = writeln!(stdin, "{}", p);
+                }
+            }
+            if let Ok(output) = child.wait_with_output() {
+                if output.status.success() {
+                    let raw = String::from_utf8_lossy(&output.stdout);
+                    let mut cache_guard = ICON_CACHE.lock().ok();
+                    for line in raw.lines() {
+                        let trimmed = line.trim();
+                        if let Some((p, b64)) = trimmed.split_once('|') {
+                            let val = if b64 == "none" {
+                                "none".to_string()
+                            } else {
+                                format!("data:image/png;base64,{b64}")
+                            };
+                            results.insert(p.to_string(), val.clone());
+                            if let Some(ref mut cg) = cache_guard {
+                                cg.insert(p.to_string(), val);
+                            }
+                        }
+                    }
+                }
+            }
         }
-        let raw = String::from_utf8_lossy(&out.stdout);
-        let b64 = raw
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| {
-                l.len() >= 100
-                    && l.bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
-            })
-            .last()?
-            .to_string();
-        Some(format!("data:image/png;base64,{b64}"))
     }
-    #[cfg(not(windows))]
-    {
-        let _ = lnk_path;
+
+    results
+}
+
+fn resolve_icon_data_url(lnk_path: &str) -> Option<String> {
+    if let Ok(guard) = ICON_CACHE.lock() {
+        if let Some(cached) = guard.get(lnk_path) {
+            return if cached == "none" { None } else { Some(cached.clone()) };
+        }
+    }
+    let map = resolve_icons_batch(&[lnk_path.to_string()]);
+    let res = map.get(lnk_path)?;
+    if res == "none" {
         None
+    } else {
+        Some(res.clone())
     }
 }
 
@@ -640,7 +1066,7 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
     let data_url = tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target_clone))
         .await
         .map_err(|e| e.to_string())?
-        .ok_or("no icon found")?;
+        .unwrap_or_else(|| "none".to_string());
     {
         let state = app.state::<AppState>();
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -679,35 +1105,6 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
             .collect()
     };
 
-    if !to_upgrade.is_empty() {
-        log_line(app, &format!("upgrade_low_res_icons: upgrading {} app icons", to_upgrade.len()));
-    }
-
-    for (id, target) in to_upgrade {
-        let target_clone = target.clone();
-        if let Ok(Some(hi_res)) =
-            tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target_clone)).await
-        {
-            {
-                let state = app.state::<AppState>();
-                let mut guard = state.0.lock();
-                if let Ok(ref mut g) = guard {
-                    if let Some(r) = g.widgets.get_mut(&id) {
-                        if let Some(obj) = r.data.as_object_mut() {
-                            obj.insert(
-                                "icon".to_string(),
-                                serde_json::Value::String(hi_res.clone()),
-                            );
-                        }
-                    }
-                }
-            }
-            persist(app);
-            app.emit("floaty-icon-refreshed", &id).ok();
-            log_line(app, &format!("upgraded icon for {id} to high-res"));
-        }
-    }
-
     let folders_to_check: Vec<(String, Vec<(usize, String)>)> = {
         let state = app.state::<AppState>();
         let Ok(guard) = state.0.lock() else { return };
@@ -721,7 +1118,7 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, it)| {
-                        if is_low_res_icon(&it.icon) && !it.target.trim().is_empty() {
+                        if !it.is_dir && is_low_res_icon(&it.icon) && !it.target.trim().is_empty() {
                             Some((idx, it.target.clone()))
                         } else {
                             None
@@ -737,93 +1134,134 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
             .collect()
     };
 
-    if !folders_to_check.is_empty() {
-        log_line(app, &format!("upgrade_low_res_icons: upgrading icons in {} folders", folders_to_check.len()));
+    if to_upgrade.is_empty() && folders_to_check.is_empty() {
+        return;
     }
 
-    for (folder_id, needed) in folders_to_check {
-        let mut changed = false;
-        for (idx, target) in needed {
-            let target_clone = target.clone();
-            if let Ok(Some(hi_res)) =
-                tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target_clone)).await
-            {
-                let state = app.state::<AppState>();
-                let mut guard = state.0.lock();
-                if let Ok(ref mut g) = guard {
-                    if let Some(r) = g.widgets.get_mut(&folder_id) {
-                        let mut items = folder_items(r);
-                        if idx < items.len() {
-                            items[idx].icon = hi_res;
-                            set_folder_items(r, &items);
-                            changed = true;
+    let mut all_paths: Vec<String> = to_upgrade.iter().map(|(_, t)| t.clone()).collect();
+    for (_, needed) in &folders_to_check {
+        for (_, t) in needed {
+            all_paths.push(t.clone());
+        }
+    }
+    all_paths.sort();
+    all_paths.dedup();
+
+    log_line(app, &format!("upgrade_low_res_icons: batch resolving {} icons", all_paths.len()));
+
+    let icon_map = tauri::async_runtime::spawn_blocking(move || {
+        resolve_icons_batch(&all_paths)
+    }).await.unwrap_or_default();
+
+    let mut changed = false;
+    {
+        let state = app.state::<AppState>();
+        let Ok(mut guard) = state.0.lock() else { return };
+        for (id, target) in &to_upgrade {
+            if let Some(hi_res) = icon_map.get(target) {
+                if hi_res != "none" {
+                    if let Some(r) = guard.widgets.get_mut(id) {
+                        let cur = r.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
+                        if cur != hi_res {
+                            if let Some(obj) = r.data.as_object_mut() {
+                                obj.insert("icon".to_string(), serde_json::Value::String(hi_res.clone()));
+                                changed = true;
+                            }
                         }
                     }
                 }
             }
         }
-        if changed {
-            persist(app);
-            app.emit("floaty-folder-changed", &folder_id).ok();
-            log_line(
-                app,
-                &format!("upgraded folder icons for {folder_id} to high-res"),
-            );
+        for (folder_id, needed) in &folders_to_check {
+            if let Some(r) = guard.widgets.get_mut(folder_id) {
+                let mut items = folder_items(r);
+                let mut folder_changed = false;
+                for (idx, target) in needed {
+                    if let Some(hi_res) = icon_map.get(target) {
+                        if hi_res != "none" && *idx < items.len() && items[*idx].icon != *hi_res {
+                            items[*idx].icon = hi_res.clone();
+                            folder_changed = true;
+                            changed = true;
+                        }
+                    }
+                }
+                if folder_changed {
+                    set_folder_items(r, &items);
+                }
+            }
         }
+    }
+
+    if changed {
+        persist(app);
+        for (id, _) in &to_upgrade {
+            app.emit("floaty-icon-refreshed", id).ok();
+        }
+        for (folder_id, _) in &folders_to_check {
+            app.emit("floaty-folder-changed", folder_id).ok();
+        }
+        log_line(app, "upgrade_low_res_icons: batch upgrade complete");
     }
 }
 
+#[tauri::command]
+async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Result<(), String> {
+    let needed: Vec<String> = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let rec = guard.widgets.get(&folder_id).ok_or("folder not found")?;
+        let items = folder_items(rec);
+        items
+            .into_iter()
+            .filter(|it| !it.is_dir && is_low_res_icon(&it.icon) && !it.target.trim().is_empty())
+            .map(|it| it.target)
+            .collect()
+    };
+
+    if needed.is_empty() {
+        return Ok(());
+    }
+
+    let icon_map = tauri::async_runtime::spawn_blocking(move || {
+        resolve_icons_batch(&needed)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let changed = {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        if let Some(rec) = guard.widgets.get_mut(&folder_id) {
+            let mut items = folder_items(rec);
+            let mut modified = false;
+            for it in &mut items {
+                if let Some(icon) = icon_map.get(&it.target) {
+                    if icon != "none" && it.icon != *icon {
+                        it.icon = icon.clone();
+                        modified = true;
+                    }
+                }
+            }
+            if modified {
+                set_folder_items(rec, &items);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    if changed {
+        persist(&app);
+        app.emit("floaty-folder-changed", &folder_id).ok();
+    }
+
+    Ok(())
+}
+
 // ---------- plugins ----------
-
-#[derive(Debug, Clone, Serialize)]
-struct PluginInfo {
-    id: String,
-    name: String,
-    description: String,
-    enabled: bool,
-}
-
-fn all_plugins(disabled: &[String]) -> Vec<PluginInfo> {
-    let is_on = |kind: &str| !disabled.iter().any(|d| d == kind);
-    vec![
-        PluginInfo {
-            id: "note".to_string(),
-            name: "Note".to_string(),
-            description: "Sticky notes with autosave. Drag by the top bar, resize by the corner.".to_string(),
-            enabled: is_on("note"),
-        },
-        PluginInfo {
-            id: "clock".to_string(),
-            name: "Clock".to_string(),
-            description: "Clock plus pomodoro timer. Tap the timer to edit lengths.".to_string(),
-            enabled: is_on("clock"),
-        },
-        PluginInfo {
-            id: "pet".to_string(),
-            name: "Pet".to_string(),
-            description: "A wandering blob. Hover to calm it, double-click to freeze it.".to_string(),
-            enabled: is_on("pet"),
-        },
-        PluginInfo {
-            id: "app".to_string(),
-            name: "App launcher".to_string(),
-            description: "Gravity icons for real apps. Pin, drop, launch; icons group into folders.".to_string(),
-            enabled: is_on("app"),
-        },
-        PluginInfo {
-            id: "folder".to_string(),
-            name: "Folder".to_string(),
-            description: "Groups of launchers. Click to expand into a launch grid.".to_string(),
-            enabled: is_on("folder"),
-        },
-        PluginInfo {
-            id: "live2d".to_string(),
-            name: "Live2D".to_string(),
-            description: "Animated Live2D companion. Drag it around, click it for motions.".to_string(),
-            enabled: is_on("live2d"),
-        },
-    ]
-}
 
 fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
     let mut s = load_settings(app);
@@ -835,12 +1273,12 @@ fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         fs::write(settings_file(app), json).ok();
     }
-    app.emit("floaty-plugins-changed", &all_plugins(&s.disabled)).ok();
+    app.emit("floaty-plugins-changed", &plugins::all_plugin_info(&s.disabled)).ok();
 }
 
 #[tauri::command]
 fn floaty_plugins(app: AppHandle) -> Vec<PluginInfo> {
-    all_plugins(&load_settings(&app).disabled)
+    plugins::all_plugin_info(&load_settings(&app).disabled)
 }
 
 #[tauri::command]
@@ -891,6 +1329,8 @@ struct FolderItem {
     target: String,
     #[serde(default)]
     icon: String,
+    #[serde(default)]
+    is_dir: bool,
 }
 
 fn folder_items(rec: &WidgetRecord) -> Vec<FolderItem> {
@@ -909,30 +1349,105 @@ fn set_folder_items(rec: &mut WidgetRecord, items: &[FolderItem]) {
     }
 }
 
-fn launcher_item(rec: &WidgetRecord) -> Option<FolderItem> {
-    if rec.kind != "app" {
-        return None;
+fn widget_as_folder_item(rec: &WidgetRecord) -> Option<FolderItem> {
+    if rec.kind == "app" {
+        Some(FolderItem {
+            name: rec
+                .data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("app")
+                .to_string(),
+            target: rec
+                .data
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            icon: rec
+                .data
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            is_dir: false,
+        })
+    } else if rec.kind == "folder" {
+        let path = rec.data.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        if path.is_empty() {
+            return None;
+        }
+        Some(FolderItem {
+            name: rec
+                .data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Folder")
+                .to_string(),
+            target: path.to_string(),
+            icon: String::new(),
+            is_dir: true,
+        })
+    } else {
+        None
     }
-    Some(FolderItem {
-        name: rec
-            .data
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("app")
-            .to_string(),
-        target: rec
-            .data
-            .get("target")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        icon: rec
-            .data
-            .get("icon")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-    })
+}
+
+fn unique_dest_path(dest_dir: &std::path::Path, file_name: &std::ffi::OsStr) -> std::path::PathBuf {
+    let original = dest_dir.join(file_name);
+    if !original.exists() {
+        return original;
+    }
+    let p_name = std::path::Path::new(file_name);
+    let stem = p_name.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+    let ext = p_name.extension().and_then(|s| s.to_str());
+    for i in 1..1000 {
+        let candidate_name = match ext {
+            Some(e) => format!("{} ({}).{}", stem, i, e),
+            None => format!("{} ({})", stem, i),
+        };
+        let candidate = dest_dir.join(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    original
+}
+
+fn scan_folder_items(dir_path: &std::path::Path) -> Vec<FolderItem> {
+    if !dir_path.is_dir() {
+        return Vec::new();
+    }
+    let mut items = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with('.')
+                || file_name.eq_ignore_ascii_case("desktop.ini")
+                || file_name.eq_ignore_ascii_case("thumbs.db")
+            {
+                continue;
+            }
+            let is_dir = path.is_dir();
+            let target = path.to_string_lossy().to_string();
+            let icon = String::new();
+            items.push(FolderItem {
+                name: file_name,
+                target,
+                icon,
+                is_dir,
+            });
+        }
+    }
+    items.sort_by(|a, b| {
+        if a.is_dir != b.is_dir {
+            b.is_dir.cmp(&a.is_dir)
+        } else {
+            a.name.to_lowercase().cmp(&b.name.to_lowercase())
+        }
+    });
+    items
 }
 
 /// Close a widget window off the command thread (same reason as creation).
@@ -1051,7 +1566,7 @@ fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
         let state = app.state::<AppState>();
         let mut guard = state.0.lock().ok()?;
         let rec = guard.widgets.get(&id)?;
-        let item = launcher_item(rec)?;
+        let item = widget_as_folder_item(rec)?;
         if item.target.trim().is_empty() {
             return None;
         }
@@ -1067,9 +1582,30 @@ fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
             let state = app.state::<AppState>();
             let mut guard = state.0.lock().ok()?;
             let rec = guard.widgets.get_mut(&target_id)?;
+            let folder_path = rec.data.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+            // If the folder is backed by a directory on disk, move the item into that directory on disk
+            if let Some(ref fpath) = folder_path {
+                let dest_dir = std::path::Path::new(fpath);
+                let src = std::path::PathBuf::from(&dragged.target);
+                if dest_dir.is_dir() && src.exists() {
+                    dragged.is_dir = src.is_dir();
+                    if let Some(file_name) = src.file_name().map(|f| f.to_os_string()) {
+                        let dest_path = unique_dest_path(dest_dir, &file_name);
+                        if dest_path != src {
+                            if let Ok(_) = std::fs::rename(&src, &dest_path) {
+                                log_line(&app, &format!("moved into folder on disk: {} -> {}", src.display(), dest_path.display()));
+                                dragged.target = dest_path.to_string_lossy().to_string();
+                                dragged.name = dest_path.file_name().unwrap_or(&file_name).to_string_lossy().to_string();
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut items = folder_items(rec);
             if !items.iter().any(|it| it.target == dragged.target) {
-                if dragged.icon.is_empty() {
+                if dragged.icon.is_empty() && !dragged.is_dir {
                     dragged.icon = resolve_icon_data_url(&dragged.target).unwrap_or_default();
                 }
                 items.push(dragged);
@@ -1087,11 +1623,11 @@ fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
         let state = app.state::<AppState>();
         let guard = state.0.lock().ok()?;
         let trec = guard.widgets.get(&target_id)?;
-        launcher_item(trec)?
+        widget_as_folder_item(trec)?
     };
     let mut items = vec![titem, dragged];
     for it in items.iter_mut() {
-        if it.icon.is_empty() {
+        if it.icon.is_empty() && !it.is_dir {
             it.icon = resolve_icon_data_url(&it.target).unwrap_or_default();
         }
     }
@@ -1117,17 +1653,18 @@ fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
     }
 }
 
-/// Pull one app out of a folder: remove the item, float it as its own
-/// pinned launcher where the cursor released it.
+/// Pull one file/folder out of a folder: remove the item, move it out on disk
+/// to the parent directory (relative path change), and float it as its own widget.
 #[tauri::command]
 fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandle) -> Result<WidgetRecord, String> {
-    let item = {
+    let (mut item, folder_path) = {
         let state = app.state::<AppState>();
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
         let rec = guard.widgets.get_mut(&folder_id).ok_or("folder not found")?;
         if rec.kind != "folder" {
             return Err("not a folder".into());
         }
+        let folder_path = rec.data.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
         let mut items = folder_items(rec);
         if index >= items.len() {
             return Err("bad index".into());
@@ -1137,15 +1674,304 @@ fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandl
             return Err("empty target".into());
         }
         set_folder_items(rec, &items);
-        item
+        (item, folder_path)
     };
     persist(&app);
     app.emit("floaty-folder-changed", &folder_id).ok();
-    let mut data = serde_json::json!({ "name": item.name, "target": item.target, "icon": item.icon });
-    data["pinned"] = serde_json::Value::Bool(true);
-    let rec = create_record_with(&app, "app", data, Some((x, y)))?;
-    log_line(&app, &format!("ungrouped {} from {folder_id} as {}", item.name, rec.id));
+
+    // Move file/directory out on disk to the parent directory
+    let src_path = std::path::PathBuf::from(&item.target);
+    if src_path.exists() {
+        let dest_dir: Option<std::path::PathBuf> = if let Some(ref fp) = folder_path {
+            let p = std::path::Path::new(fp);
+            p.parent().map(|parent| parent.to_path_buf())
+        } else if let Some(parent) = src_path.parent().and_then(|p| p.parent()) {
+            Some(parent.to_path_buf())
+        } else {
+            let s = load_settings(&app);
+            if !s.files_root.is_empty() {
+                Some(std::path::PathBuf::from(s.files_root))
+            } else {
+                None
+            }
+        };
+
+        if let Some(dest_dir_path) = dest_dir {
+            if dest_dir_path.is_dir() && dest_dir_path != src_path.parent().unwrap_or(&src_path) {
+                if let Some(file_name) = src_path.file_name() {
+                    let dest_path = unique_dest_path(&dest_dir_path, file_name);
+                    if dest_path != src_path {
+                        if let Ok(_) = std::fs::rename(&src_path, &dest_path) {
+                            log_line(&app, &format!("moved out of folder on disk: {} -> {}", src_path.display(), dest_path.display()));
+                            item.target = dest_path.to_string_lossy().to_string();
+                            item.name = dest_path.file_name().unwrap_or(file_name).to_string_lossy().to_string();
+                            item.is_dir = dest_path.is_dir();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Treat as new floatie: directory -> folder floatie, file -> app launcher floatie
+    let rec = if item.is_dir || std::path::Path::new(&item.target).is_dir() {
+        let sub_items = scan_folder_items(std::path::Path::new(&item.target));
+        let mut data = serde_json::json!({
+            "name": item.name,
+            "path": item.target,
+            "items": sub_items,
+        });
+        data["pinned"] = serde_json::Value::Bool(true);
+        create_record_with(&app, "folder", data, Some((x, y)))?
+    } else {
+        let mut data = serde_json::json!({
+            "name": item.name,
+            "target": item.target,
+            "icon": item.icon,
+        });
+        data["pinned"] = serde_json::Value::Bool(true);
+        create_record_with(&app, "app", data, Some((x, y)))?
+    };
+
+    log_line(&app, &format!("ungrouped {} from {folder_id} as {} (kind: {})", item.name, rec.id, rec.kind));
     Ok(rec)
+}
+
+#[tauri::command]
+fn floaty_rename_folder_dir(folder_id: String, new_name: String, app: AppHandle) -> Result<(), String> {
+    let (old_path, new_path) = {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let rec = guard.widgets.get_mut(&folder_id).ok_or("folder not found")?;
+        let path = rec.data.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        if let Some(old_p) = path {
+            let p = std::path::Path::new(&old_p);
+            if let Some(parent) = p.parent() {
+                let dest = parent.join(&new_name);
+                if p.exists() && dest != p {
+                    std::fs::rename(p, &dest).map_err(|e| e.to_string())?;
+                    let new_p_str = dest.to_string_lossy().to_string();
+                    if let Some(obj) = rec.data.as_object_mut() {
+                        obj.insert("path".to_string(), serde_json::Value::String(new_p_str.clone()));
+                        obj.insert("name".to_string(), serde_json::Value::String(new_name));
+                    }
+                    let items = scan_folder_items(&dest);
+                    set_folder_items(rec, &items);
+                    (old_p, new_p_str)
+                } else {
+                    return Ok(());
+                }
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    };
+    persist(&app);
+    app.emit("floaty-folder-changed", &folder_id).ok();
+    log_line(&app, &format!("renamed folder dir on disk: {old_path} -> {new_path}"));
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesSyncResult {
+    pub files: usize,
+    pub dirs: usize,
+    pub total: usize,
+}
+
+#[tauri::command]
+fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncResult, String> {
+    let target_root = match root {
+        Some(r) if !r.trim().is_empty() => {
+            let mut s = load_settings(&app);
+            s.files_root = r.trim().to_string();
+            if let Ok(json) = serde_json::to_string_pretty(&s) {
+                std::fs::write(settings_file(&app), json).ok();
+            }
+            s.files_root
+        }
+        _ => load_settings(&app).files_root,
+    };
+
+    if target_root.trim().is_empty() {
+        return Ok(FilesSyncResult { files: 0, dirs: 0, total: 0 });
+    }
+
+    let base_path = std::path::PathBuf::from(&target_root);
+    if !base_path.is_dir() {
+        return Err(format!("'{}' is not a valid directory", target_root));
+    }
+
+    // Auto-enable plugins if disabled
+    let s = load_settings(&app);
+    if s.disabled.iter().any(|d| d == "app") {
+        set_plugin_enabled(&app, "app", true);
+    }
+    if s.disabled.iter().any(|d| d == "folder") {
+        set_plugin_enabled(&app, "folder", true);
+    }
+
+    let mut files_count = 0;
+    let mut dirs_count = 0;
+
+    let (mut occupied_positions, existing_map, mut next_id) = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let occupied: Vec<(i32, i32)> = guard.widgets.values().map(|w| (w.x, w.y)).collect();
+        let mut map: HashMap<String, (String, String)> = HashMap::new();
+        for (id, w) in &guard.widgets {
+            if w.kind == "folder" {
+                if let Some(p) = w.data.get("path").and_then(|v| v.as_str()) {
+                    map.insert(p.to_string(), (id.clone(), "folder".to_string()));
+                }
+            } else if w.kind == "app" {
+                if let Some(p) = w.data.get("target").and_then(|v| v.as_str()) {
+                    map.insert(p.to_string(), (id.clone(), "app".to_string()));
+                }
+            }
+        }
+        (occupied, map, guard.next)
+    };
+
+    let next_pos = |occupied: &mut Vec<(i32, i32)>| -> (i32, i32) {
+        let mut cur_x = 80;
+        let mut cur_y = 80;
+        loop {
+            let collision = occupied.iter().any(|(x, y)| (*x - cur_x).abs() < 50 && (*y - cur_y).abs() < 50);
+            if !collision {
+                occupied.push((cur_x, cur_y));
+                return (cur_x, cur_y);
+            }
+            cur_y += 115;
+            if cur_y > 800 {
+                cur_y = 80;
+                cur_x += 105;
+            }
+        }
+    };
+
+    let mut updated_folders: Vec<(String, Vec<FolderItem>)> = Vec::new();
+    let mut new_records: Vec<WidgetRecord> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&base_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.starts_with('.')
+                || file_name.eq_ignore_ascii_case("desktop.ini")
+                || file_name.eq_ignore_ascii_case("thumbs.db")
+            {
+                continue;
+            }
+            let path_str = path.to_string_lossy().to_string();
+            if path.is_dir() {
+                let mut items = scan_folder_items(&path);
+                if let Some((fid, kind)) = existing_map.get(&path_str) {
+                    if kind == "folder" {
+                        if let Ok(guard) = app.state::<AppState>().0.lock() {
+                            if let Some(w) = guard.widgets.get(fid) {
+                                let old_items = folder_items(w);
+                                for item in &mut items {
+                                    if let Some(old) = old_items.iter().find(|o| o.target == item.target) {
+                                        if !old.icon.is_empty() && old.icon != "none" && !is_low_res_icon(&old.icon) {
+                                            item.icon = old.icon.clone();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        updated_folders.push((fid.clone(), items));
+                    }
+                } else {
+                    let (px, py) = next_pos(&mut occupied_positions);
+                    next_id += 1;
+                    let id = format!("folder-{}", next_id);
+                    let data = serde_json::json!({
+                        "name": file_name,
+                        "path": path_str,
+                        "items": items,
+                        "pinned": true,
+                    });
+                    new_records.push(WidgetRecord {
+                        id,
+                        kind: "folder".to_string(),
+                        x: px,
+                        y: py,
+                        data,
+                    });
+                }
+                dirs_count += 1;
+            } else {
+                if !existing_map.contains_key(&path_str) {
+                    let (px, py) = next_pos(&mut occupied_positions);
+                    next_id += 1;
+                    let id = format!("app-{}", next_id);
+                    let mut data = serde_json::json!({
+                        "name": file_name,
+                        "target": path_str,
+                        "icon": "",
+                    });
+                    data["pinned"] = serde_json::Value::Bool(true);
+                    new_records.push(WidgetRecord {
+                        id,
+                        kind: "app".to_string(),
+                        x: px,
+                        y: py,
+                        data,
+                    });
+                }
+                files_count += 1;
+            }
+        }
+    }
+
+    {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard.next = next_id;
+        for (fid, items) in &updated_folders {
+            if let Some(w) = guard.widgets.get_mut(fid) {
+                set_folder_items(w, items);
+            }
+        }
+        for rec in &new_records {
+            guard.widgets.insert(rec.id.clone(), rec.clone());
+        }
+    }
+    persist(&app);
+
+    for (fid, _) in updated_folders {
+        app.emit("floaty-folder-changed", &fid).ok();
+    }
+
+    if !new_records.is_empty() {
+        let app_handle = app.clone();
+        let to_spawn = new_records.clone();
+        std::thread::spawn(move || {
+            for rec in to_spawn {
+                let h = app_handle.clone();
+                let r = rec.clone();
+                let _ = app_handle.run_on_main_thread(move || {
+                    let _ = spawn_widget(&h, &r);
+                });
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+        });
+    }
+
+    let bg_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        upgrade_low_res_icons(&bg_app).await;
+    });
+
+    log_line(&app, &format!("synced files root '{}': {} files, {} dirs ({} new floaties)", target_root, files_count, dirs_count, new_records.len()));
+    Ok(FilesSyncResult {
+        files: files_count,
+        dirs: dirs_count,
+        total: files_count + dirs_count,
+    })
 }
 
 // ---------- live2d model library ----------
@@ -1411,7 +2237,7 @@ fn floaty_layout(app: AppHandle) -> Vec<LayoutItem> {
         .values()
         .filter(|r| r.kind == "app")
         .map(|r| {
-            let (w, h) = widget_size(&r.kind, &r.data);
+            let (w, h) = plugins::widget_size(&r.kind, &r.data);
             LayoutItem {
                 id: r.id.clone(),
                 x: r.x,
@@ -1462,12 +2288,11 @@ fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
             if record.kind == "folder" {
                 let existing_items = folder_items(existing);
                 let mut incoming_items = folder_items(&record);
-                for (idx, in_it) in incoming_items.iter_mut().enumerate() {
-                    if idx < existing_items.len()
-                        && !is_low_res_icon(&existing_items[idx].icon)
-                        && is_low_res_icon(&in_it.icon)
-                    {
-                        in_it.icon = existing_items[idx].icon.clone();
+                for in_it in incoming_items.iter_mut() {
+                    if let Some(ex) = existing_items.iter().find(|e| e.target == in_it.target) {
+                        if !is_low_res_icon(&ex.icon) && is_low_res_icon(&in_it.icon) {
+                            in_it.icon = ex.icon.clone();
+                        }
                     }
                 }
                 set_folder_items(&mut record, &incoming_items);
@@ -1534,6 +2359,12 @@ pub fn run() {
             let handle = app.handle().clone();
             log_line(&handle, "=== floaty starting ===");
             log_line(&handle, &format!("backend build {}", env!("FLOATY_BUILD_MARK")));
+
+            #[cfg(windows)]
+            {
+                let stay = load_settings(&handle).stay_on_desktop;
+                desktop_pin::set_stay_on_desktop_global(stay);
+            }
 
             // restore persisted widgets into state
             let saved = load_all(&handle);
@@ -1641,6 +2472,10 @@ pub fn run() {
             let bg_app = handle.clone();
             tauri::async_runtime::spawn(async move {
                 upgrade_low_res_icons(&bg_app).await;
+                let s = load_settings(&bg_app);
+                if !s.files_root.is_empty() {
+                    let _ = floaty_sync_files(None, bg_app.clone());
+                }
             });
 
             log_line(&handle, "=== floaty ready ===");
@@ -1668,8 +2503,123 @@ pub fn run() {
             floaty_set_widget_model,
             floaty_layout,
             floaty_window_cursor_pos,
+            floaty_sync_files,
+            floaty_rename_folder_dir,
+            floaty_resolve_folder_icons,
             floaty_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running floaty");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_desktop_handle() {
+        #[cfg(windows)]
+        {
+            desktop_pin::ensure_input_desktop();
+            let h = desktop_pin::get_desktop_shell_hwnd();
+            println!("Desktop shell HWND found: {h:#x}");
+            assert_ne!(h, 0, "Desktop shell HWND should not be 0!");
+        }
+    }
+
+    #[test]
+    fn test_unique_dest_path() {
+        let temp_dir = std::env::temp_dir().join(format!("floaty_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_name = std::ffi::OsStr::new("test_file.txt");
+        let p1 = unique_dest_path(&temp_dir, file_name);
+        assert_eq!(p1, temp_dir.join("test_file.txt"));
+
+        // Create the file so it exists
+        std::fs::write(&p1, "hello").unwrap();
+
+        let p2 = unique_dest_path(&temp_dir, file_name);
+        assert_eq!(p2, temp_dir.join("test_file (1).txt"));
+
+        std::fs::write(&p2, "hello 2").unwrap();
+        let p3 = unique_dest_path(&temp_dir, file_name);
+        assert_eq!(p3, temp_dir.join("test_file (2).txt"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_scan_folder_items() {
+        let temp_dir = std::env::temp_dir().join(format!("floaty_test_scan_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let sub_dir = temp_dir.join("sub_folder");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let file_a = temp_dir.join("a.txt");
+        std::fs::write(&file_a, "content").unwrap();
+        let file_hidden = temp_dir.join("desktop.ini");
+        std::fs::write(&file_hidden, "hidden").unwrap();
+
+        let items = scan_folder_items(&temp_dir);
+        // desktop.ini should be ignored, so items should be sub_folder (dir first) and a.txt
+        assert_eq!(items.len(), 2);
+        assert!(items[0].is_dir);
+        assert_eq!(items[0].name, "sub_folder");
+        assert!(!items[1].is_dir);
+        assert_eq!(items[1].name, "a.txt");
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_disk_move_relative() {
+        let temp_dir = std::env::temp_dir().join(format!("floaty_test_move_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let folder_dir = temp_dir.join("MyFolder");
+        std::fs::create_dir_all(&folder_dir).unwrap();
+
+        // 1. Test moving file out to parent (root)
+        let file_inside = folder_dir.join("doc.txt");
+        std::fs::write(&file_inside, "data").unwrap();
+        assert!(file_inside.exists());
+
+        let dest_dir = folder_dir.parent().unwrap();
+        let dest_file = unique_dest_path(dest_dir, file_inside.file_name().unwrap());
+        assert_eq!(dest_file, temp_dir.join("doc.txt"));
+
+        std::fs::rename(&file_inside, &dest_file).unwrap();
+        assert!(!file_inside.exists());
+        assert!(dest_file.exists());
+
+        // 2. Test moving directory out to parent (root)
+        let sub_inside = folder_dir.join("SubProject");
+        std::fs::create_dir_all(&sub_inside).unwrap();
+        std::fs::write(sub_inside.join("inner.txt"), "inner").unwrap();
+        assert!(sub_inside.exists());
+
+        let dest_sub = unique_dest_path(dest_dir, sub_inside.file_name().unwrap());
+        assert_eq!(dest_sub, temp_dir.join("SubProject"));
+
+        std::fs::rename(&sub_inside, &dest_sub).unwrap();
+        assert!(!sub_inside.exists());
+        assert!(dest_sub.is_dir());
+        assert!(dest_sub.join("inner.txt").exists());
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_fast_ico_and_url_extraction() {
+        assert_eq!(base64_encode(b"hello world"), "aGVsbG8gd29ybGQ=");
+
+        // Test with real Steam game url if present
+        let test_url = r"C:\Users\erict\OneDrive\Desktop\games\Magical Princess.url";
+        if std::path::Path::new(test_url).exists() {
+            let res = try_extract_fast_url(test_url);
+            assert!(res.is_some(), "try_extract_fast_url should successfully extract Steam icon");
+            let data_url = res.unwrap();
+            assert!(data_url.starts_with("data:image/png;base64,"), "should produce valid png data url");
+            assert!(data_url.len() > 1000, "should produce high-res icon data");
+        }
+    }
 }

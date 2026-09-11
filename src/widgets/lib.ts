@@ -12,6 +12,9 @@ export interface WidgetRecord {
 }
 
 export const appWin = getCurrentWindow();
+if (appWin.label.startsWith("widget-")) {
+  void appWin.setSkipTaskbar(true).catch(() => undefined);
+}
 
 async function scaleFactor(): Promise<number> {
   try {
@@ -150,7 +153,9 @@ export interface FloatSettings {
   single_click: string;
   double_click: string;
   live2d_root: string;
+  files_root: string;
   disabled: string[];
+  stay_on_desktop: boolean;
 }
 
 const DEFAULT_SETTINGS: FloatSettings = {
@@ -158,10 +163,12 @@ const DEFAULT_SETTINGS: FloatSettings = {
   gravity: 2600,
   bounce: 0.45,
   floatiness: 1,
-  single_click: "drop",
+  single_click: "nothing",
   double_click: "launch",
   live2d_root: "",
+  files_root: "",
   disabled: [],
+  stay_on_desktop: true,
 };
 
 let settingsCache: FloatSettings = { ...DEFAULT_SETTINGS };

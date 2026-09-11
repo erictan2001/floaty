@@ -13,6 +13,19 @@ window.addEventListener("unhandledrejection", (e) => {
   report("rejection", String((e as PromiseRejectionEvent).reason));
 });
 
+import { listen } from "@tauri-apps/api/event";
+
+listen("floaty-reload", () => {
+  window.location.reload();
+}).catch(() => undefined);
+
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload();
+  });
+}
+// reload trigger: v16
+
 void import("./main").catch((e) => {
   report("import", String(e));
 });

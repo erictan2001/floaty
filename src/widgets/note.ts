@@ -1,5 +1,6 @@
 import { PhysicalSize } from "@tauri-apps/api/window";
 import { addPinMenu, addResizeHandle, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, watchPluginEnabled } from "./lib";
+import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 export function mountNote(root: HTMLElement, id: string): void {
   watchPluginEnabled("note");
@@ -40,3 +41,14 @@ export function mountNote(root: HTMLElement, id: string): void {
     trackPosition(rec);
   })();
 }
+
+export const notePlugin: FloatyPlugin = {
+  kind: "note",
+  name: "Note",
+  addLabel: "+ note",
+  mount: mountNote,
+  describe: (rec: PluginRecord) => {
+    const t = rec.data["text"];
+    return typeof t === "string" && t ? t.slice(0, 32) : undefined;
+  },
+};

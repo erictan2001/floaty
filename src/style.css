@@ -315,7 +315,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 6px;
+  padding-top: 10px;
   cursor: grab;
   position: relative;
   transition: opacity 0.25s;
@@ -324,7 +324,7 @@ body {
 .launcher.idle-hidden { opacity: 0; }
 .launcher-x {
   position: absolute;
-  top: 0;
+  top: 2px;
   right: 8px;
   width: 18px;
   height: 18px;
@@ -406,10 +406,32 @@ body {
   text-overflow: ellipsis;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 8px rgba(0, 0, 0, 0.5);
 }
-.launcher.rest .tile { animation: restbob 4s ease-in-out infinite; }
+.launcher.rest .tile,
+.folder:not(.open) .ftile {
+  will-change: transform;
+  animation: restbob 12s ease-in-out infinite;
+  transform: translate3d(0, 0, 0);
+}
+.launcher.phase-0 .tile, .folder.phase-0 .ftile { animation-delay: 0s; }
+.launcher.phase-1 .tile, .folder.phase-1 .ftile { animation-delay: -2s; }
+.launcher.phase-2 .tile, .folder.phase-2 .ftile { animation-delay: -4s; }
+.launcher.phase-3 .tile, .folder.phase-3 .ftile { animation-delay: -6s; }
+.launcher.phase-4 .tile, .folder.phase-4 .ftile { animation-delay: -8s; }
+.launcher.phase-5 .tile, .folder.phase-5 .ftile { animation-delay: -10s; }
+
 @keyframes restbob {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(calc(var(--float, 1) * -2.5px)); }
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  8.33% {
+    transform: translate3d(0, calc(var(--float, 1) * -2.8px), 0);
+  }
+  16.67% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
 }
 
 /* ---------- folders ---------- */
@@ -419,10 +441,13 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 6px;
+  padding-top: 14px;
   cursor: grab;
   position: relative;
   overflow: hidden;
+}
+.folder:not(.open) {
+  overflow: visible;
 }
 .folder:active { cursor: grabbing; }
 .folder.open {
@@ -445,7 +470,6 @@ body {
   box-shadow: 0 10px 24px rgba(20, 16, 40, 0.4), inset 0 2px 3px rgba(255, 255, 255, 0.45), inset 0 -4px 8px rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.5);
   position: relative;
-  animation: restbob 4s ease-in-out infinite;
 }
 .ffolder {
   width: 34px;
@@ -467,8 +491,8 @@ body {
 }
 .fbadge {
   position: absolute;
-  top: 0;
-  right: 0;
+  top: -2px;
+  right: -2px;
   min-width: 20px;
   height: 20px;
   border-radius: 999px;
@@ -480,6 +504,8 @@ body {
   place-items: center;
   padding: 0 5px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  pointer-events: none;
 }
 /* collapsed folder floats bare: no bubble behind the preview */
 .folder:not(.open) .ftile {
@@ -487,13 +513,44 @@ body {
   border-color: transparent;
   box-shadow: none;
 }
+.folder .launcher-x {
+  top: 4px;
+  left: 8px;
+  right: auto;
+}
 .folder:hover .launcher-x { opacity: 1; }
 .fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .fhead-dot { width: 24px; height: 18px; border-radius: 4px; background: linear-gradient(145deg, #f59e0b, #b45309); flex: 0 0 auto; box-shadow: 0 2px 5px rgba(0,0,0,.35); }
 .fhead-name { flex: 1; color: #fff; font-weight: 800; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 8px rgba(0, 0, 0, 0.5); }
 .fshut { border: none; background: rgba(255,255,255,.15); color: #fff; border-radius: 8px; width: 26px; height: 22px; cursor: pointer; font-weight: 800; font-size: 14px; line-height: 1; flex: 0 0 auto; }
 .fshut:hover { background: rgba(255,255,255,.3); }
-.fgrid { display: grid; gap: 8px; overflow: hidden; align-content: start; }
+.fgrid {
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-content: start;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.fgrid::-webkit-scrollbar {
+  width: 6px;
+}
+.fgrid::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+.fgrid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+}
+.fgrid::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
 .fempty { color: #8f88c7; font-size: 12px; text-align: center; grid-column: 1 / -1; padding: 12px 0; }
 .fitem { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); border-radius: 14px; padding: 8px 4px 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; min-width: 0; font-family: inherit; }
 .fitem:hover { background: rgba(255,255,255,.15); }
@@ -516,7 +573,7 @@ body {
 /* ---------- live2d ---------- */
 .live2d-wrap { width: 100vw; height: 100vh; position: relative; cursor: grab; }
 .live2d-wrap:active { cursor: grabbing; }
-.live2d-wrap canvas { display: block; width: 100%; height: 100%; }
+.live2d-wrap canvas { display: block; width: 100%; height: 100%; image-rendering: -webkit-optimize-contrast; }
 .live2d-x { position: absolute; top: 6px; right: 6px; opacity: 0; z-index: 5; }
 .live2d-wrap:hover .live2d-x { opacity: 1; }
 .live2d-failed { color: #fff; font-size: 13px; font-weight: 600; text-align: center; padding-top: 40%; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
@@ -601,6 +658,7 @@ body.settings-page {
 .k-live2d { background: #fce7f3; color: #be185d; }
 .card .id {
   flex: 1;
+  min-width: 0;
   font-size: 12px;
   color: #c9c4ec;
   overflow: hidden;
@@ -640,7 +698,17 @@ body.settings-page {
 .slider-val { flex: 0 0 44px; text-align: right; font-size: 12px; font-weight: 700; color: #5eead4; font-variant-numeric: tabular-nums; }
 .select { flex: 1; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.16); border-radius: 10px; padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer; }
 .select option { background: #2d2660; }
-.select.mini { flex: 0 1 160px; padding: 6px 8px; font-size: 12px; }
+.card .select,
+.select.mini {
+  flex: 0 0 160px;
+  width: 160px;
+  max-width: 170px;
+  min-width: 140px;
+  padding: 6px 8px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .folder-path { flex: 1; min-width: 0; font-size: 12px; color: #c9c4ec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* plugin manager cards */
 .plugin-card { flex-direction: column; align-items: stretch; gap: 4px; }

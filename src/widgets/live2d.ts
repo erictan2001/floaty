@@ -4,7 +4,7 @@ import * as PIXI from "pixi.js";
 import "@pixi/unsafe-eval";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
 
-// Expose PIXI and register ticker so pixi-live2d-display can autoUpdate models
+// Expose PIXI and register ticker so pixi-live2d-display can resolve classes
 Live2DModel.registerTicker(PIXI.Ticker);
 (window as unknown as { PIXI?: unknown }).PIXI = PIXI;
 import {
@@ -180,6 +180,19 @@ export function mountLive2D(root: HTMLElement, id: string): void {
   let trackingTimer: number | undefined;
   let modelScale = 1;
   let interactUntil = 0;
+  let activeUntil = performance.now() + 3500;
+
+  const wakeFor = (ms: number) => {
+    activeUntil = Math.max(activeUntil, performance.now() + ms);
+    if (pixiApp && !pixiApp.ticker.started) {
+      pixiApp.start();
+    }
+  };
+
+  const boostActivity = (durationMs = 2500) => {
+    wakeFor(durationMs);
+    if (pixiApp) pixiApp.ticker.maxFPS = 60;
+  };
 
   const saveScale = debounce((mult: number) => {
     void (async () => {
@@ -239,6 +252,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
     overrideTarget?: "head" | "body" | "special",
     priority: MotionPriority = MotionPriority.NORMAL,
   ): void => {
+    boostActivity(5000);
     // Focus head/eyes directly on tap location
     focusModel(model, clientX, clientY);
 
@@ -298,6 +312,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
 
   const showModel = async (url: string): Promise<void> => {
     if (!pixiApp) return;
+    boostActivity(2500);
     invoke("floaty_log", { msg: `[live2d/${id}] showModel: ${url}` }).catch(() => undefined);
     if (currentModel) {
       try {
@@ -309,7 +324,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       currentModel = undefined;
     }
     try {
-      const model = await Live2DModel.from(url, { autoInteract: true });
+      const model = await Live2DModel.from(url, { autoInteract: false, autoUpdate: false });
       currentModel = model;
       pixiApp.stage.addChild(model);
       fitModel(model, modelScale);
@@ -352,13 +367,33 @@ export function mountLive2D(root: HTMLElement, id: string): void {
 
     try {
       await ensureLive2DCore();
+      PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.LINEAR;
+      PIXI.settings.MIPMAP_TEXTURES = PIXI.MIPMAP_MODES.POW2;
+      const dpr = Math.max(window.devicePixelRatio || 1, 2.0);
       pixiApp = new PIXI.Application({
         view: canvas,
         backgroundAlpha: 0,
-        antialias: true,
-        resolution: window.devicePixelRatio || 1,
+        antialias: false,
+        resolution: dpr,
         autoDensity: true,
         resizeTo: window,
+        powerPreference: "high-performance",
+        sharedTicker: false,
+        clearBeforeRender: true,
+      });
+      pixiApp.ticker.maxFPS = 30;
+
+      let tickCount = 0;
+      pixiApp.ticker.add(() => {
+        if (tickCount++ === 0) {
+          invoke("floaty_log", { msg: `[live2d] TICKER FIRST TICK, started=${pixiApp?.ticker.started}` }).catch(() => undefined);
+        }
+        if (currentModel) {
+          currentModel.update(pixiApp!.ticker.deltaMS);
+        }
+        if (performance.now() >= activeUntil && pixiApp!.ticker.maxFPS !== 30) {
+          pixiApp!.ticker.maxFPS = 30;
+        }
       });
       let m = typeof rec.data["model"] === "string" ? (rec.data["model"] as string) : "";
       if (!m) {
@@ -380,15 +415,18 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         failedBox();
       }
       window.addEventListener("resize", () => {
+        boostActivity(1500);
         if (currentModel) fitModel(currentModel, modelScale);
       });
 
-      // Follow user mouse movement across the entire desktop (including outside the window)
+      // Follow user mouse movement smoothly across the desktop
       let lastRelX = -99999;
       let lastRelY = -99999;
+      let lastFarGlance = 0;
 
       window.addEventListener("pointermove", (e) => {
         if (!currentModel || dragging) return;
+        wakeFor(2000);
         const hit = currentModel.getBounds().contains(e.clientX, e.clientY);
         wrap.style.cursor = hit ? "pointer" : "grab";
         if (performance.now() < interactUntil) return;
@@ -405,29 +443,59 @@ export function mountLive2D(root: HTMLElement, id: string): void {
             { label: appWin.label },
           );
           if (!pos || !currentModel || dragging || performance.now() < interactUntil) return;
-          if (Math.abs(pos.rel_x - lastRelX) < 1.5 && Math.abs(pos.rel_y - lastRelY) < 1.5) {
-            return;
+          const dx = pos.rel_x - lastRelX;
+          const dy = pos.rel_y - lastRelY;
+          const dist = Math.hypot(dx, dy);
+
+          // Check proximity to Live2D window (300x400)
+          const nearX = pos.rel_x >= -160 && pos.rel_x <= window.innerWidth + 160;
+          const nearY = pos.rel_y >= -160 && pos.rel_y <= window.innerHeight + 160;
+          const isNear = nearX && nearY;
+
+          if (isNear) {
+            // Near cursor: high-sensitivity fluid 60fps tracking
+            if (dist < 2) return;
+            lastRelX = pos.rel_x;
+            lastRelY = pos.rel_y;
+            focusModel(currentModel, pos.rel_x, pos.rel_y);
+            wakeFor(2000);
+          } else {
+            // Far cursor across desktop: glance toward cursor when it moves significantly
+            const now = performance.now();
+            if (dist < 60 || now - lastFarGlance < 2000) return;
+            lastFarGlance = now;
+            lastRelX = pos.rel_x;
+            lastRelY = pos.rel_y;
+            focusModel(currentModel, pos.rel_x, pos.rel_y);
+            wakeFor(800);
           }
-          lastRelX = pos.rel_x;
-          lastRelY = pos.rel_y;
-          focusModel(currentModel, pos.rel_x, pos.rel_y);
         } catch {
           /* ignore */
         }
       };
       trackingTimer = window.setInterval(() => {
         void pollDesktopCursor();
-      }, 35);
+      }, 120);
 
-      // idle loop filler; IDLE priority never interrupts tap motions
+      document.addEventListener("visibilitychange", () => {
+        if (!pixiApp) return;
+        if (document.hidden) {
+          pixiApp.stop();
+        } else {
+          wakeFor(2000);
+        }
+      });
+
+      // Periodic natural motion change
       window.setInterval(() => {
         if (!currentModel || performance.now() < interactUntil) return;
+        wakeFor(1500);
         try {
           void currentModel.motion("idle", undefined, MotionPriority.IDLE);
         } catch {
           /* model idles on its own */
         }
-      }, 20000);
+      }, 15000);
     } catch (err) {
       invoke("floaty_log", { msg: `[live2d/${id}] init failed: ${String(err)}` }).catch(() => undefined);
       failedBox();
@@ -450,6 +518,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
     (e) => {
       if (!currentModel) return;
       e.preventDefault();
+      boostActivity(1500);
       const zoomIn = e.deltaY < 0;
       const factor = zoomIn ? 1.08 : 0.92;
       modelScale = Math.max(0.3, Math.min(3.0, modelScale * factor));
@@ -491,6 +560,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         }
       }
       if (hasDragged) {
+        boostActivity(1000);
         const p = await posPromise;
         void setLogicalPos(
           Math.round(p.x + (ev.screenX - startScreenX)),
@@ -544,3 +614,10 @@ export function mountLive2D(root: HTMLElement, id: string): void {
 
   wrap.addEventListener("contextmenu", (e) => e.preventDefault());
 }
+
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload();
+  });
+}
+

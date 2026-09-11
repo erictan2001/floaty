@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { pluginFor, plugins } from "./widgets/plugin";
+import { pluginFor, plugins, type PluginSettingsContext } from "./widgets/plugin";
+import type { FloatSettings } from "./widgets/lib";
 import "./style.css";
 
 interface WidgetRecord {
@@ -28,31 +29,18 @@ const selectRows = new Map<string, HTMLElement>();
 // plugin kinds currently disabled (drives add-row + desktop list filtering)
 const disabledSet = new Set<string>();
 
-interface Live2dModelEntry {
-  name: string;
-  path: string;
-}
-// model library picked in the Live2D plugin card
-let live2dRoot = "";
-let live2dModels: Live2dModelEntry[] = [];
-
-function updateLive2dRootLabel(): void {
-  const path = document.getElementById("live2d-root");
-  if (path) {
-    path.textContent = live2dRoot || "no folder set";
-    path.title = live2dRoot;
-  }
-}
-
-function updateLive2dCount(): void {
-  const count = document.getElementById("live2d-count");
-  if (count) {
-    count.textContent =
-      live2dModels.length === 0
-        ? "no models scanned yet"
-        : `${live2dModels.length} model${live2dModels.length === 1 ? "" : "s"} found`;
-  }
-}
+let latestSettings: FloatSettings = {
+  pet_speed: 1,
+  gravity: 2600,
+  bounce: 0.45,
+  floatiness: 1,
+  single_click: "nothing",
+  double_click: "launch",
+  live2d_root: "",
+  files_root: "",
+  disabled: [],
+  stay_on_desktop: true,
+};
 
 if (!root) {
   document.body.textContent = "settings root missing";
@@ -125,7 +113,8 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
     const card = el("div", "card");
     const kind = el("span", `kind k-${w.kind}`, w.kind);
     const ident = el("span", "id", w.id);
-    const detail = pluginFor(w.kind)?.describe(w);
+    const plugin = pluginFor(w.kind);
+    const detail = plugin?.describe(w);
     ident.textContent = detail ? `${w.id} — ${detail}` : w.id;
     const del = el("button", "danger", "remove");
     del.addEventListener("click", async () => {
@@ -139,35 +128,17 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
       }
     });
     card.append(kind, ident, del);
-    if (w.kind === "live2d") {
-      const sel = el("select", "select mini");
-      const cur = typeof w.data["model"] === "string" ? (w.data["model"] as string) : "";
-      const seenValues = new Set<string>();
-      const seenLabels = new Set<string>();
-      const addOpt = (label: string, value: string): void => {
-        if (seenValues.has(value)) return;
-        seenValues.add(value);
-        let finalLabel = label;
-        if (seenLabels.has(finalLabel)) {
-          const parent = value.split(/[/\\]/).slice(-2, -1)[0];
-          if (parent) finalLabel = `${label} (${parent})`;
-        }
-        seenLabels.add(finalLabel);
-        const opt = document.createElement("option");
-        opt.value = value;
-        opt.textContent = finalLabel;
-        sel.append(opt);
-      };
-      addOpt("Hijiki (bundled)", "");
-      for (const m of live2dModels) addOpt(m.name, m.path);
-      if (cur && !seenValues.has(cur)) {
-        addOpt(`${cur.split(/[/\\]/).pop() ?? cur} (current)`, cur);
-      }
-      sel.value = cur;
-      sel.addEventListener("change", () => {
-        void safe("set model", () => invoke("floaty_set_widget_model", { id: w.id, model: sel.value }));
-      });
-      card.insertBefore(sel, del);
+    if (plugin?.renderWidgetControls) {
+      plugin.renderWidgetControls(
+        card,
+        w,
+        {
+          safe,
+          refreshWidgets: () => refreshWidgets(box),
+          showError,
+        },
+        del,
+      );
     }
     host.append(card);
   }
@@ -310,6 +281,76 @@ function build(): void {
   results.id = "app-results";
   box.append(results);
 
+  // files & folders root directory
+  sectionTitle(box, "files & folders");
+  const filesHint = el(
+    "p",
+    "hint",
+    "Point to a root folder to float its files and directories on your desktop. Dragging an item out of a folder moves it on disk to the desktop directory.",
+  );
+  box.append(filesHint);
+  const filesRow = el("div", "slider-row");
+  filesRow.append(el("span", "slider-label", "root dir"));
+  const filesPath = el("span", "folder-path", latestSettings.files_root || "no folder set");
+  filesPath.id = "files-root";
+  filesPath.title = latestSettings.files_root || "";
+
+  const filesBrowse = el("button", "pill small", "browse");
+  const filesSync = el("button", "pill small ghost", "sync");
+  const filesCount = el("div", "count", "");
+  filesCount.id = "files-count";
+
+  const runFilesSync = async (rootPath?: string): Promise<void> => {
+    const target = rootPath ?? latestSettings.files_root;
+    if (!target) {
+      filesCount.textContent = "no root folder set";
+      return;
+    }
+    filesSync.disabled = true;
+    filesSync.textContent = "syncing…";
+    try {
+      const res = await safe("sync files", () =>
+        invoke<{ files: number; dirs: number; total: number }>("floaty_sync_files", { root: target }),
+      );
+      if (res) {
+        filesCount.textContent = `${res.files} file${res.files === 1 ? "" : "s"}, ${res.dirs} folder${res.dirs === 1 ? "" : "s"} synced to desktop`;
+        try {
+          await refreshWidgets(box);
+        } catch (e) {
+          console.error("refreshWidgets error:", e);
+        }
+      }
+    } finally {
+      filesSync.disabled = false;
+      filesSync.textContent = "sync";
+    }
+  };
+
+  filesBrowse.addEventListener("click", async () => {
+    if (filesBrowse.disabled) return;
+    filesBrowse.disabled = true;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ directory: true, multiple: false });
+      if (typeof picked === "string" && picked) {
+        latestSettings.files_root = picked;
+        filesPath.textContent = picked;
+        filesPath.title = picked;
+        await updateSettings({ files_root: picked });
+        await runFilesSync(picked);
+      }
+    } catch {
+      showError("folder picker failed");
+    } finally {
+      filesBrowse.disabled = false;
+    }
+  });
+
+  filesSync.addEventListener("click", () => void runFilesSync());
+
+  filesRow.append(filesPath, filesBrowse, filesSync);
+  box.append(filesRow, filesCount);
+
   // floating parameters + icon click behaviour live in the plugin cards
   // below; the shared rows are built here and moved into those cards
   const sliderDefs: Array<{ key: string; label: string; min: number; max: number; step: number }> = [
@@ -321,6 +362,8 @@ function build(): void {
   const sliderInputs = new Map<string, HTMLInputElement>();
   const sliderVals = new Map<string, HTMLElement>();
   const clickSelects = new Map<string, HTMLSelectElement>();
+  let stayOnDesktop = true;
+  let stayOnDesktopInput: HTMLInputElement | undefined;
   let saveTimer: number | undefined;
   async function saveFloating(): Promise<void> {
     window.clearTimeout(saveTimer);
@@ -331,20 +374,28 @@ function build(): void {
       const v = Number(sliderInputs.get(k)?.value);
       return Number.isFinite(v) ? v : fb;
     };
+    latestSettings = {
+      ...latestSettings,
+      pet_speed: num("pet_speed", 1),
+      gravity: num("gravity", 2600),
+      bounce: num("bounce", 0.45),
+      floatiness: num("floatiness", 1),
+      single_click: (clickSelects.get("single_click")?.value as FloatSettings["single_click"]) ?? "drop",
+      double_click: (clickSelects.get("double_click")?.value as FloatSettings["double_click"]) ?? "launch",
+      stay_on_desktop: stayOnDesktopInput ? stayOnDesktopInput.checked : stayOnDesktop,
+    };
     await safe("save settings", () =>
-      invoke("floaty_set_settings", {
-        settings: {
-          pet_speed: num("pet_speed", 1),
-          gravity: num("gravity", 2600),
-          bounce: num("bounce", 0.45),
-          floatiness: num("floatiness", 1),
-          single_click: clickSelects.get("single_click")?.value ?? "drop",
-          double_click: clickSelects.get("double_click")?.value ?? "launch",
-          live2d_root: live2dRoot,
-        },
-      }),
+      invoke("floaty_set_settings", { settings: latestSettings }),
     );
   }
+
+  async function updateSettings(patch: Partial<FloatSettings>): Promise<void> {
+    latestSettings = { ...latestSettings, ...patch };
+    await safe("save settings", () =>
+      invoke("floaty_set_settings", { settings: latestSettings }),
+    );
+  }
+
   for (const d of sliderDefs) {
     const row = el("div", "slider-row");
     row.append(el("span", "slider-label", d.label));
@@ -385,26 +436,32 @@ function build(): void {
   }
   void (async () => {
     const s = await safe("load settings", () =>
-      invoke<Record<string, unknown>>("floaty_get_settings"),
+      invoke<FloatSettings>("floaty_get_settings"),
     );
     if (!s) return;
+    latestSettings = { ...latestSettings, ...s };
     for (const d of sliderDefs) {
-      const v = s[d.key];
+      const v = s[d.key as keyof FloatSettings];
       if (typeof v === "number") {
         sliderInputs.get(d.key)!.value = String(v);
         sliderVals.get(d.key)!.textContent = String(v);
       }
     }
     for (const d of clickDefs) {
-      const v = s[d.key];
+      const v = s[d.key as keyof FloatSettings];
       if (typeof v === "string") clickSelects.get(d.key)!.value = v;
     }
-    if (typeof s["live2d_root"] === "string" && (s["live2d_root"] as string)) {
-      live2dRoot = s["live2d_root"] as string;
-      updateLive2dRootLabel();
-      void loadManager();
-      void runModelScan();
+    if (typeof s.stay_on_desktop === "boolean") {
+      stayOnDesktop = s.stay_on_desktop;
+      if (stayOnDesktopInput) {
+        stayOnDesktopInput.checked = stayOnDesktop;
+      }
     }
+    if (s.files_root) {
+      filesPath.textContent = s.files_root;
+      filesPath.title = s.files_root;
+    }
+    void loadManager();
   })();
 
   // current widgets
@@ -424,20 +481,6 @@ function build(): void {
     name: string;
     description: string;
     enabled: boolean;
-  }
-
-  async function runModelScan(): Promise<void> {
-    if (!live2dRoot) {
-      live2dModels = [];
-      updateLive2dCount();
-      return;
-    }
-    const found = await safe("scan models", () =>
-      invoke<Live2dModelEntry[]>("floaty_scan_models", { root: live2dRoot }),
-    );
-    if (found) live2dModels = found;
-    updateLive2dCount();
-    await refreshWidgets(box);
   }
 
   async function loadManager(): Promise<void> {
@@ -466,53 +509,18 @@ function build(): void {
       head.append(tog);
       card.append(head);
       card.append(el("p", "hint", p.description));
-      // this plugin's parameters (shared rows moved in here)
-      if (p.id === "pet") {
-        const r = sliderRows.get("pet_speed");
-        if (r) card.append(r);
-      } else if (p.id === "live2d") {
-        const row = el("div", "slider-row");
-        row.append(el("span", "slider-label", "models"));
-        const path = el("span", "folder-path", live2dRoot || "no folder set");
-        path.id = "live2d-root";
-        path.title = live2dRoot;
-        const browse = el("button", "pill small", "browse");
-        browse.addEventListener("click", async () => {
-          if (browse.disabled) return;
-          browse.disabled = true;
-          try {
-            const { open } = await import("@tauri-apps/plugin-dialog");
-            const picked = await open({ directory: true, multiple: false });
-            if (typeof picked === "string" && picked) {
-              live2dRoot = picked;
-              updateLive2dRootLabel();
-              await saveFloating();
-              await runModelScan();
-            }
-          } catch {
-            showError("folder picker failed");
-          } finally {
-            browse.disabled = false;
-          }
-        });
-        const scanBtn = el("button", "pill small ghost", "scan");
-        scanBtn.addEventListener("click", () => void runModelScan());
-        row.append(path, browse, scanBtn);
-        card.append(row);
-        const count = el("div", "count", "");
-        count.id = "live2d-count";
-        card.append(count);
-        updateLive2dRootLabel();
-        updateLive2dCount();
-      } else if (p.id === "app") {
-        for (const k of ["gravity", "bounce", "floatiness"]) {
-          const r = sliderRows.get(k);
-          if (r) card.append(r);
-        }
-        for (const k of ["single_click", "double_click"]) {
-          const r = selectRows.get(k);
-          if (r) card.append(r);
-        }
+
+      const plugin = pluginFor(p.id);
+      if (plugin?.renderSettings) {
+        const settingsCtx: PluginSettingsContext = {
+          getSettings: () => latestSettings,
+          getSharedRow: (name: string) => sliderRows.get(name) ?? selectRows.get(name),
+          safe,
+          showError,
+          refreshWidgets: () => refreshWidgets(box),
+          updateSettings,
+        };
+        await plugin.renderSettings(card, settingsCtx);
       }
       pluginHost.append(card);
     }
@@ -522,6 +530,31 @@ function build(): void {
   import("@tauri-apps/api/event")
     .then((m) => m.listen("floaty-plugins-changed", () => void loadManager()))
     .catch(() => undefined);
+
+  // desktop behavior
+  sectionTitle(box, "desktop behavior");
+  const desktopCard = el("div", "card plugin-card");
+  const dHead = el("div", "plugin-head");
+  dHead.append(el("span", "kind k-app", "desktop"), el("span", "id", "Stay on desktop (Win+D)"));
+  const dTog = el("label", "plugin-toggle");
+  stayOnDesktopInput = el("input", "");
+  stayOnDesktopInput.type = "checkbox";
+  stayOnDesktopInput.checked = stayOnDesktop;
+  stayOnDesktopInput.addEventListener("change", () => {
+    stayOnDesktop = stayOnDesktopInput!.checked;
+    void saveFloating();
+  });
+  dTog.append(stayOnDesktopInput, el("span", "", "enabled"));
+  dHead.append(dTog);
+  desktopCard.append(dHead);
+  desktopCard.append(
+    el(
+      "p",
+      "hint",
+      "Keep floaties visible on screen when Show Desktop (Win+D) is invoked. Turn off to minimize them with other apps.",
+    ),
+  );
+  box.append(desktopCard);
 
   // footer
   const foot = el("div", "foot-row");

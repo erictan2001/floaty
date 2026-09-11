@@ -16,6 +16,7 @@ import {
   type MonitorArea,
   type WidgetRecord,
 } from "./lib";
+import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin";
 
 const WIN_W = 92;
 const WIN_H = 112;
@@ -67,12 +68,28 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   let settled = false;
   let dragging = false;
   let ready = false;
+  let animating = false;
+  let rafId: number | undefined;
+  let layoutInterval: number | undefined;
   let mon: MonitorArea = { x: 0, y: 0, w: 1280, h: 800 };
   let scale = 1;
   let others: LayoutItem[] = [];
   let last = performance.now();
   let clickTimer: number | undefined;
   let suppressClickUntil = 0;
+  let lastSavedX = -1;
+  let lastSavedY = -1;
+  let lastSavedPinned: boolean | undefined = undefined;
+
+  const num = parseInt(id.replace(/\D/g, ""), 10) || 0;
+  wrap.classList.add(`phase-${num % 6}`);
+
+  const syncFloat = () => {
+    const f = currentSettings().floatiness;
+    wrap.style.setProperty("--float", String(f));
+  };
+  syncFloat();
+  listen("floaty-settings-changed", syncFloat).catch(() => undefined);
 
   const squash = () => {
     tile.classList.remove("squash");
@@ -82,10 +99,60 @@ export function mountLauncher(root: HTMLElement, id: string): void {
 
   const saveSoon = () => {
     if (!rec) return;
-    rec.x = Math.round(x);
-    rec.y = Math.round(y);
-    rec.data["pinned"] = settled;
+    const curX = Math.round(x);
+    const curY = Math.round(y);
+    const curPinned = settled;
+    if (curX === lastSavedX && curY === lastSavedY && curPinned === lastSavedPinned) {
+      return;
+    }
+    lastSavedX = curX;
+    lastSavedY = curY;
+    lastSavedPinned = curPinned;
+    rec.x = curX;
+    rec.y = curY;
+    rec.data["pinned"] = curPinned;
     void saveRecord(rec).catch(() => undefined);
+  };
+
+  const startLayoutPolling = () => {
+    if (layoutInterval !== undefined) return;
+    const fetchLayout = async () => {
+      try {
+        const all = await invoke<LayoutItem[]>("floaty_layout");
+        others = all.filter((o) => o.id !== id);
+      } catch {
+        /* keep */
+      }
+    };
+    void fetchLayout();
+    layoutInterval = window.setInterval(fetchLayout, 500);
+  };
+
+  const stopLayoutPolling = () => {
+    if (layoutInterval !== undefined) {
+      window.clearInterval(layoutInterval);
+      layoutInterval = undefined;
+    }
+    others = [];
+  };
+
+  const startAnimation = () => {
+    if (animating) return;
+    animating = true;
+    last = performance.now();
+    startLayoutPolling();
+    void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
+    void monitorArea().then((m) => { mon = m; }).catch(() => undefined);
+    rafId = requestAnimationFrame(frame);
+  };
+
+  const stopAnimation = () => {
+    animating = false;
+    stopLayoutPolling();
+    if (rafId !== undefined) {
+      cancelAnimationFrame(rafId);
+      rafId = undefined;
+    }
   };
 
   void (async () => {
@@ -125,24 +192,25 @@ export function mountLauncher(root: HTMLElement, id: string): void {
       img.src = url;
     };
     const isLowRes = (url: string): boolean => {
-      if (!url) return true;
+      if (!url || url === "none") return false;
       return (
         url.includes("AAAAACAAAAAg") ||
         url.includes("AAAACAAAAAg") ||
-        url.startsWith("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg") ||
-        url.length < 5000
+        url.startsWith("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg")
       );
     };
 
     const cachedIcon = typeof rec.data["icon"] === "string" ? (rec.data["icon"] as string) : "";
     if (cachedIcon) {
-      applyIcon(cachedIcon);
+      if (cachedIcon !== "none") {
+        applyIcon(cachedIcon);
+      }
       if (isLowRes(cachedIcon)) {
         invoke<string>("floaty_icon", { id: rec.id })
           .then((hiRes) => {
             if (hiRes && hiRes !== cachedIcon) {
               if (rec) rec.data["icon"] = hiRes;
-              applyIcon(hiRes);
+              if (hiRes !== "none") applyIcon(hiRes);
             }
           })
           .catch(() => undefined);
@@ -152,7 +220,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
         .then((hiRes) => {
           if (hiRes) {
             if (rec) rec.data["icon"] = hiRes;
-            applyIcon(hiRes);
+            if (hiRes !== "none") applyIcon(hiRes);
           }
         })
         .catch(() => undefined);
@@ -161,7 +229,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     listen<string>("floaty-icon-refreshed", (e) => {
       if (e.payload === id) {
         void loadRecord(id).then((r) => {
-          if (r && typeof r.data["icon"] === "string" && r.data["icon"]) {
+          if (r && typeof r.data["icon"] === "string" && r.data["icon"] && r.data["icon"] !== "none") {
             if (rec) rec.data["icon"] = r.data["icon"];
             applyIcon(r.data["icon"] as string);
           }
@@ -187,38 +255,32 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     } catch {
       /* defaults */
     }
+    try {
+      const s = await appWin.scaleFactor();
+      if (s > 0) scale = s;
+    } catch {
+      /* keep */
+    }
     // restore pinned state: pinned icons stay where they were, the rest
     // fall in from the top on arrival as before
     vy = 0;
     settled = rec.data["pinned"] === true;
-    if (settled) wrap.classList.add("rest");
+    syncFloat();
+    if (settled) {
+      wrap.classList.add("rest");
+    } else {
+      startAnimation();
+    }
 
-    window.setInterval(() => void saveSoon(), 4000);
     window.addEventListener("beforeunload", () => void saveSoon());
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) void saveSoon();
+      if (document.hidden) {
+        void saveSoon();
+        if (animating) stopAnimation();
+      } else if (!settled) {
+        startAnimation();
+      }
     });
-    window.setInterval(async () => {
-      try {
-        mon = await monitorArea();
-      } catch {
-        /* keep */
-      }
-      try {
-        const s = await appWin.scaleFactor();
-        if (s > 0) scale = s;
-      } catch {
-        /* keep */
-      }
-    }, 2000);
-    window.setInterval(async () => {
-      try {
-        const all = await invoke<LayoutItem[]>("floaty_layout");
-        others = all.filter((o) => o.id !== id);
-      } catch {
-        /* keep */
-      }
-    }, 500);
   })();
 
   wrap.querySelector(".launcher-x")?.addEventListener("pointerdown", (e) => e.stopPropagation());
@@ -282,8 +344,10 @@ export function mountLauncher(root: HTMLElement, id: string): void {
         vx = 0;
         vy = 0;
         settled = true;
+        syncFloat();
         wrap.classList.add("rest");
         void saveSoon();
+        stopAnimation();
         // group mode: backend merges us into whatever icon/folder we landed on
         invoke("floaty_dropped", { id }).catch(() => undefined);
       }
@@ -297,24 +361,30 @@ export function mountLauncher(root: HTMLElement, id: string): void {
 
   const doDrop = () => {
     settled = false;
+    syncFloat();
     wrap.classList.remove("rest");
     vy = 0;
     vx += (Math.random() - 0.5) * 60;
     squash();
+    startAnimation();
   };
   const doHop = () => {
     settled = false;
+    syncFloat();
     wrap.classList.remove("rest");
     vy = -420;
     vx += (Math.random() - 0.5) * 120;
     squash();
+    startAnimation();
   };
   const doPin = () => {
     vx = 0;
     vy = 0;
     settled = true;
+    syncFloat();
     wrap.classList.add("rest");
     void saveSoon();
+    stopAnimation();
   };
   wrap.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -354,9 +424,9 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   wrap.addEventListener("contextmenu", (e) => e.preventDefault());
 
   const frame = (now: number) => {
+    if (!animating) return;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    wrap.style.setProperty("--float", String(currentSettings().floatiness));
     // pinned icons skip physics entirely — they stay where dropped.
     // Never drive the window before the stored position loads (ready),
     // or every icon first jumps to default coordinates and bunches up.
@@ -395,8 +465,11 @@ export function mountLauncher(root: HTMLElement, id: string): void {
                 vx = 0;
                 if (!settled) {
                   settled = true;
+                  syncFloat();
                   wrap.classList.add("rest");
                   void saveSoon();
+                  stopAnimation();
+                  return;
                 }
               }
             }
@@ -419,8 +492,11 @@ export function mountLauncher(root: HTMLElement, id: string): void {
             vx = 0;
             if (!settled) {
               settled = true;
+              syncFloat();
               wrap.classList.add("rest");
               void saveSoon();
+              stopAnimation();
+              return;
             }
           }
         }
@@ -443,7 +519,24 @@ export function mountLauncher(root: HTMLElement, id: string): void {
         void setLogicalPos(x, y).catch(() => undefined);
       }
     }
-    requestAnimationFrame(frame);
+    if (animating) {
+      rafId = requestAnimationFrame(frame);
+    }
   };
-  requestAnimationFrame(frame);
 }
+
+export const appPlugin: FloatyPlugin = {
+  kind: "app",
+  name: "App launcher",
+  mount: mountLauncher,
+  describe: (rec: PluginRecord) => {
+    const n = rec.data["name"];
+    return typeof n === "string" && n ? n : undefined;
+  },
+  renderSettings: (card: HTMLElement, ctx: PluginSettingsContext) => {
+    for (const k of ["gravity", "bounce", "floatiness", "single_click", "double_click"]) {
+      const r = ctx.getSharedRow(k);
+      if (r) card.append(r);
+    }
+  },
+};

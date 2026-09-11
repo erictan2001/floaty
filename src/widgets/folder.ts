@@ -1,16 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, appWin, currentSettings, loadRecord, removeSelf, saveRecord, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, currentSettings, loadRecord, monitorArea, removeSelf, saveRecord, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
   name: string;
   target: string;
   icon: string;
+  is_dir?: boolean;
 }
 
 const WIN_W = 92;
-const WIN_H = 112;
+const WIN_H = 116;
 const CELL = 84;
 
 export function mountFolder(root: HTMLElement, id: string): void {
@@ -18,14 +20,6 @@ export function mountFolder(root: HTMLElement, id: string): void {
   const wrap = document.createElement("div");
   wrap.className = "folder";
   root.append(wrap);
-
-  // idle bob follows the shared float setting, like launcher icons
-  watchSettings();
-  const syncFloat = () => {
-    wrap.style.setProperty("--float", String(currentSettings().floatiness));
-  };
-  syncFloat();
-  window.setInterval(syncFloat, 1000);
 
   let rec: WidgetRecord | undefined;
   let pinArmed = false;
@@ -37,11 +31,30 @@ export function mountFolder(root: HTMLElement, id: string): void {
   let scale = 1;
   let px = 200;
   let py = 200;
+  let lastSavedX = -1;
+  let lastSavedY = -1;
+
+  watchSettings();
+
+  const num = parseInt(id.replace(/\D/g, ""), 10) || 0;
+  wrap.classList.add(`phase-${num % 6}`);
+
+  const syncFloat = () => {
+    const f = currentSettings().floatiness;
+    wrap.style.setProperty("--float", String(f));
+  };
+  syncFloat();
+  listen("floaty-settings-changed", syncFloat).catch(() => undefined);
 
   const savePos = () => {
     if (!rec) return;
-    rec.x = Math.round(px);
-    rec.y = Math.round(py);
+    const curX = Math.round(px);
+    const curY = Math.round(py);
+    if (curX === lastSavedX && curY === lastSavedY) return;
+    lastSavedX = curX;
+    lastSavedY = curY;
+    rec.x = curX;
+    rec.y = curY;
     void saveRecord(rec).catch(() => undefined);
   };
 
@@ -59,6 +72,84 @@ export function mountFolder(root: HTMLElement, id: string): void {
     } catch {
       /* ignore */
     }
+  };
+
+  let collapsedPos: { x: number; y: number } | null = null;
+
+  const expandFolder = async (): Promise<void> => {
+    if (expanded) return;
+    collapsedPos = { x: px, y: py };
+
+    const cols = Math.min(4, Math.max(1, items.length));
+    const rows = Math.max(1, Math.ceil(items.length / cols));
+    let targetW = Math.max(cols * CELL + (rows > 4 ? 28 : 20), 220);
+    let targetH = Math.min(56 + rows * 82, 420);
+
+    try {
+      const mon = await monitorArea();
+      const MARGIN = 16;
+      targetW = Math.min(targetW, Math.floor(mon.w - MARGIN * 2));
+      targetH = Math.min(targetH, Math.floor(mon.h - MARGIN * 2));
+
+      let newX = px;
+      let newY = py;
+
+      if (newX + targetW > mon.x + mon.w - MARGIN) {
+        newX = mon.x + mon.w - MARGIN - targetW;
+      }
+      if (newX < mon.x + MARGIN) {
+        newX = mon.x + MARGIN;
+      }
+      if (newY + targetH > mon.y + mon.h - MARGIN) {
+        newY = mon.y + mon.h - MARGIN - targetH;
+      }
+      if (newY < mon.y + MARGIN) {
+        newY = mon.y + MARGIN;
+      }
+
+      px = newX;
+      py = newY;
+      await appWin.setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)));
+      await setWindowSize(targetW, targetH);
+    } catch {
+      /* ignore */
+    }
+
+    expanded = true;
+    render();
+
+    const missingIcons = items.some((it) => !it.is_dir && (!it.icon || it.icon === "none" || it.icon.length < 5000));
+    if (missingIcons) {
+      invoke("floaty_resolve_folder_icons", { folderId: id }).catch(() => undefined);
+    }
+  };
+
+  const collapseFolder = async (): Promise<void> => {
+    if (!expanded) return;
+    expanded = false;
+
+    if (collapsedPos) {
+      px = collapsedPos.x;
+      py = collapsedPos.y;
+      collapsedPos = null;
+    }
+
+    try {
+      const mon = await monitorArea();
+      const MARGIN = 16;
+      if (px + WIN_W > mon.x + mon.w - MARGIN) px = mon.x + mon.w - MARGIN - WIN_W;
+      if (px < mon.x + MARGIN) px = mon.x + MARGIN;
+      if (py + WIN_H > mon.y + mon.h - MARGIN) py = mon.y + mon.h - MARGIN - WIN_H;
+      if (py < mon.y + MARGIN) py = mon.y + MARGIN;
+
+      await appWin.setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)));
+      await setWindowSize(WIN_W, WIN_H);
+      savePos();
+    } catch {
+      /* ignore */
+    }
+
+    render();
   };
 
   const render = () => {
@@ -131,8 +222,12 @@ export function mountFolder(root: HTMLElement, id: string): void {
         input.maxLength = 24;
         const commit = (save: boolean) => {
           if (save && rec) {
-            rec.data["name"] = input.value.trim() || "Folder";
+            const newName = input.value.trim() || "Folder";
+            rec.data["name"] = newName;
             void saveRecord(rec).catch(() => undefined);
+            if (typeof rec.data["path"] === "string" && rec.data["path"]) {
+              invoke("floaty_rename_folder_dir", { folderId: id, newName }).catch(() => undefined);
+            }
           }
           render();
         };
@@ -154,8 +249,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       shut.addEventListener("pointerdown", (e) => e.stopPropagation());
       shut.addEventListener("click", (e) => {
         e.stopPropagation();
-        expanded = false;
-        render();
+        void collapseFolder();
       });
       head.append(dot, nm, shut);
       const grid = document.createElement("div");
@@ -165,7 +259,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       if (items.length === 0) {
         const empty = document.createElement("div");
         empty.className = "fempty";
-        empty.textContent = "drag app icons onto this folder";
+        empty.textContent = "drag app icons or files onto this folder";
         grid.append(empty);
       }
       for (const it of items) {
@@ -178,6 +272,11 @@ export function mountFolder(root: HTMLElement, id: string): void {
           img.alt = "";
           img.draggable = false;
           b.append(img);
+        } else if (it.is_dir) {
+          const glyph = document.createElement("div");
+          glyph.className = "ffolder";
+          glyph.style.transform = "scale(0.85)";
+          b.append(glyph);
         } else {
           const ch = document.createElement("span");
           ch.className = "fletter";
@@ -252,7 +351,9 @@ export function mountFolder(root: HTMLElement, id: string): void {
       }
       wrap.append(head, grid);
       const rows = Math.max(1, Math.ceil(items.length / cols));
-      void setWindowSize(Math.max(cols * CELL + 20, 220), 64 + rows * 100 + 16);
+      const targetW = Math.max(cols * CELL + (rows > 4 ? 28 : 20), 220);
+      const targetH = Math.min(56 + rows * 82, 420);
+      void setWindowSize(targetW, targetH);
     }
   };
 
@@ -281,6 +382,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
     } catch {
       /* keep */
     }
+    syncFloat();
     render();
   };
 
@@ -288,7 +390,6 @@ export function mountFolder(root: HTMLElement, id: string): void {
     await reload();
     // belt and braces with the builder flag: folders live under real apps
     void appWin.setAlwaysOnTop(false).catch(() => undefined);
-    window.setInterval(() => void savePos(), 4000);
     window.addEventListener("beforeunload", () => void savePos());
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) void savePos();
@@ -303,10 +404,13 @@ export function mountFolder(root: HTMLElement, id: string): void {
   wrap.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || dragging) return;
     const t = e.target as HTMLElement;
+    // In open mode, scrolling or interacting with the item grid shouldn't drag the window
+    if (expanded && t.closest(".fgrid")) return;
     // buttons and text fields handle themselves (rename input stays usable)
     if (t.closest("button, input, textarea")) return;
     e.stopPropagation();
     dragging = true;
+    void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
     // capture lazily on first real movement (see pet.ts: eager capture eats taps)
     let captured = false;
     const startX = px;
@@ -342,7 +446,13 @@ export function mountFolder(root: HTMLElement, id: string): void {
       } catch {
         /* ignore */
       }
-      if (moved) void savePos();
+      if (moved) {
+        void savePos();
+        if (expanded) {
+          collapsedPos = { x: px, y: py };
+        }
+        invoke("floaty_dropped", { id }).catch(() => undefined);
+      }
       dragging = false;
     };
     window.addEventListener("pointermove", onMove);
@@ -355,8 +465,21 @@ export function mountFolder(root: HTMLElement, id: string): void {
     // collapse only via the – button, so clicks inside the open panel
     // (rename field included) never fold it away by accident
     if (expanded) return;
-    expanded = true;
-    render();
+    void expandFolder();
   });
   wrap.addEventListener("contextmenu", (e) => e.preventDefault());
 }
+
+export const folderPlugin: FloatyPlugin = {
+  kind: "folder",
+  name: "Folder",
+  addLabel: "+ folder",
+  mount: mountFolder,
+  describe: (rec: PluginRecord) => {
+    const raw = rec.data["items"];
+    const n = Array.isArray(raw) ? raw.length : 0;
+    const nm = typeof rec.data["name"] === "string" && rec.data["name"] ? rec.data["name"] : "folder";
+    const path = typeof rec.data["path"] === "string" ? rec.data["path"] : "";
+    return path ? `${nm} (${n} item${n === 1 ? "" : "s"}) — ${path}` : `${nm} (${n} item${n === 1 ? "" : "s"})`;
+  },
+};

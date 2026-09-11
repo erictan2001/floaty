@@ -1,5 +1,6 @@
 import { PhysicalSize } from "@tauri-apps/api/window";
 import { addPinMenu, addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, watchPluginEnabled, type WidgetRecord } from "./lib";
+import type { FloatyPlugin } from "./plugin";
 
 const DEFAULT_FOCUS_S = 25 * 60;
 const DEFAULT_BREAK_S = 5 * 60;
@@ -221,3 +222,11 @@ export function mountClock(root: HTMLElement, id: string): void {
     trackPosition(rec);
   })();
 }
+
+export const clockPlugin: FloatyPlugin = {
+  kind: "clock",
+  name: "Clock",
+  addLabel: "+ clock",
+  mount: mountClock,
+  describe: () => undefined,
+};
