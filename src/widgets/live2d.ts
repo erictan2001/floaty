@@ -22,7 +22,6 @@ import {
 } from "./lib";
 
 type L2DModel = Awaited<ReturnType<typeof Live2DModel.from>>;
-const BUNDLED_MODEL = "/live2d/hijiki/hijiki.model.json";
 
 interface AvailableMotion {
   group: string;
@@ -31,12 +30,12 @@ interface AvailableMotion {
   isIdle: boolean;
 }
 
-/** Bundled web path stays as-is; user-library files go through the asset protocol.
+/** Resolves model file path through the asset protocol.
  * Preserving forward slashes ensures pixi-live2d-display correctly resolves relative paths
  * (textures, motions, expressions, moc) to the model's folder rather than the host root.
  */
 function resolveModelUrl(model: string): string {
-  if (!model) return BUNDLED_MODEL;
+  if (!model) return "";
   if (model.startsWith("/")) return model;
   const normalized = model.replace(/\\/g, "/");
   const parts = normalized.split("/").map((part, idx) => {
@@ -361,8 +360,25 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         autoDensity: true,
         resizeTo: window,
       });
-      const m = typeof rec.data["model"] === "string" ? (rec.data["model"] as string) : "";
-      await showModel(resolveModelUrl(m));
+      let m = typeof rec.data["model"] === "string" ? (rec.data["model"] as string) : "";
+      if (!m) {
+        try {
+          const list = await invoke<Array<{ name: string; path: string }>>("floaty_live2d_scan_models");
+          if (list && list.length > 0) {
+            m = list[0].path;
+            rec.data["model"] = m;
+            void saveRecord(rec);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      const modelUrl = resolveModelUrl(m);
+      if (modelUrl) {
+        await showModel(modelUrl);
+      } else {
+        failedBox();
+      }
       window.addEventListener("resize", () => {
         if (currentModel) fitModel(currentModel, modelScale);
       });
