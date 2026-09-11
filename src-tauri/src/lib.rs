@@ -434,58 +434,185 @@ async fn floaty_scan_apps(app: AppHandle) -> Vec<DiscoveredApp> {
     out
 }
 
-/// Resolve a launcher's real app icon: .lnk target via WScript.Shell, pixels
-/// via ExtractAssociatedIcon, returned as a PNG data URL. No new crates —
-/// plain powershell.exe, which ships with Windows.
+/// Check if an icon data url is low resolution (legacy 32x32 extraction)
+fn is_low_res_icon(s: &str) -> bool {
+    if s.is_empty() {
+        return true;
+    }
+    s.starts_with("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg")
+        || s.contains("AAAAACAAAAAg")
+        || s.contains("AAAACAAAAAg")
+        || s.len() < 5000
+}
+
+/// Resolve a launcher's high-resolution app icon: .lnk shortcut targets, MSI advertised
+/// shortcuts, explicit IconLocations, or direct binaries. Extracts up to 256x256 (or
+/// highest available native resolution) via PrivateExtractIcons and Shell ImageList,
+/// returned as a PNG data URL.
 fn resolve_icon_data_url(lnk_path: &str) -> Option<String> {
-    let escaped = lnk_path.replace('\'', "''");
-    let script = format!(
-        "Add-Type -AssemblyName System.Drawing; $p='{escaped}'; $sh=New-Object -ComObject WScript.Shell; $s=$sh.CreateShortcut($p); \
-         $t=$s.TargetPath; if([string]::IsNullOrEmpty($t)){{$t=$p}}; \
-         try{{$ico=[System.Drawing.Icon]::ExtractAssociatedIcon($t)}}catch{{exit 2}}; \
-         if($null -eq $ico){{exit 3}}; \
-         $tmp=[IO.Path]::Combine([IO.Path]::GetTempPath(),[IO.Path]::GetRandomFileName()+'.png'); \
-         $ico.ToBitmap().Save($tmp,[System.Drawing.Imaging.ImageFormat]::Png); \
-         [Convert]::ToBase64String([IO.File]::ReadAllBytes($tmp))"
-    );
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const NO_WINDOW: u32 = 0x08000000;
+        let script = r#"
+Add-Type -AssemblyName System.Drawing;
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class ShellIcons {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PrivateExtractIcons(
+        string szFileName, int nIconIndex, int cxIcon, int cyIcon,
+        out IntPtr phicon, out uint piconid, uint nIcons, uint flags);
+    [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
+    [DllImport("shell32.dll")] public static extern int SHGetImageList(int iImageList, ref Guid riid, out IntPtr ppv);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct SHFILEINFO {
+        public IntPtr hIcon;
+        public int iIcon;
+        public uint dwAttributes;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
+    }
+    [ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IImageList { [PreserveSig] int GetIcon(int i, int flags, out IntPtr picon); }
+    public static IntPtr ExtractFromShell(string path) {
+        try {
+            SHFILEINFO sfi = new SHFILEINFO();
+            IntPtr res = SHGetFileInfo(path, 0, ref sfi, (uint)Marshal.SizeOf(sfi), 0x000004000);
+            if (res == IntPtr.Zero) return IntPtr.Zero;
+            Guid iid = new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
+            IntPtr pImageList;
+            int hr = SHGetImageList(4, ref iid, out pImageList);
+            if (hr != 0 || pImageList == IntPtr.Zero) {
+                hr = SHGetImageList(2, ref iid, out pImageList);
+                if (hr != 0 || pImageList == IntPtr.Zero) return IntPtr.Zero;
+            }
+            IImageList imgList = (IImageList)Marshal.GetObjectForIUnknown(pImageList);
+            IntPtr hIcon = IntPtr.Zero;
+            imgList.GetIcon(sfi.iIcon, 1, out hIcon);
+            Marshal.Release(pImageList);
+            return hIcon;
+        } catch { return IntPtr.Zero; }
+    }
+}
+"@;
+
+$path = $env:FLOATY_ICON_PATH;
+if (-not (Test-Path $path)) { exit 1 };
+
+$iconFile = $path;
+$iconIdx = 0;
+$targetPath = $path;
+
+if ($path.EndsWith('.lnk', [StringComparison]::OrdinalIgnoreCase)) {
+    try {
+        $sh = New-Object -ComObject WScript.Shell;
+        $sc = $sh.CreateShortcut($path);
+        $targetPath = $sc.TargetPath;
+        $iconLoc = $sc.IconLocation;
+        if (-not [string]::IsNullOrEmpty($iconLoc)) {
+            $parts = $iconLoc.Split(',');
+            if (-not [string]::IsNullOrEmpty($parts[0])) {
+                $iconFile = $parts[0];
+                if ($parts.Length -gt 1) { [void][int]::TryParse($parts[1], [ref]$iconIdx) }
+            }
+        }
+    } catch {}
+
+    if ([string]::IsNullOrEmpty($targetPath)) {
+        try {
+            $shApp = New-Object -ComObject Shell.Application;
+            $dir = [IO.Path]::GetDirectoryName($path);
+            $fn = [IO.Path]::GetFileName($path);
+            $folder = $shApp.Namespace($dir);
+            $item = $folder.ParseName($fn);
+            $link = $item.GetLink;
+            if ($link -and $link.Target -and $link.Target.Path) {
+                $targetPath = $link.Target.Path;
+            }
+        } catch {}
+    }
+    if ($iconFile -eq $path -and -not [string]::IsNullOrEmpty($targetPath)) {
+        $iconFile = $targetPath;
+    }
+}
+
+$hIcon = [IntPtr]::Zero;
+$iconId = 0;
+if (-not [string]::IsNullOrEmpty($iconFile) -and (Test-Path $iconFile)) {
+    [void][ShellIcons]::PrivateExtractIcons($iconFile, $iconIdx, 256, 256, [ref]$hIcon, [ref]$iconId, 1, 0);
+}
+if ($hIcon -eq [IntPtr]::Zero -and -not [string]::IsNullOrEmpty($targetPath) -and $targetPath -ne $iconFile -and (Test-Path $targetPath)) {
+    [void][ShellIcons]::PrivateExtractIcons($targetPath, 0, 256, 256, [ref]$hIcon, [ref]$iconId, 1, 0);
+}
+if ($hIcon -eq [IntPtr]::Zero -and -not [string]::IsNullOrEmpty($targetPath) -and (Test-Path $targetPath)) {
+    $hIcon = [ShellIcons]::ExtractFromShell($targetPath);
+}
+if ($hIcon -eq [IntPtr]::Zero) {
+    $hIcon = [ShellIcons]::ExtractFromShell($path);
+}
+
+$ico = $null;
+if ($hIcon -ne [IntPtr]::Zero) {
+    $ico = [System.Drawing.Icon]::FromHandle($hIcon);
+} else {
+    $check = if (-not [string]::IsNullOrEmpty($targetPath) -and (Test-Path $targetPath)) { $targetPath } else { $path };
+    try { $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($check) } catch {}
+}
+
+if ($null -eq $ico) { exit 2 };
+
+$bmp = $ico.ToBitmap();
+$ms = New-Object IO.MemoryStream;
+$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);
+$b64 = [Convert]::ToBase64String($ms.ToArray());
+$ms.Dispose();
+$bmp.Dispose();
+if ($hIcon -ne [IntPtr]::Zero) { [void][ShellIcons]::DestroyIcon($hIcon) };
+[Console]::Out.Write($b64);
+"#;
+
         let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("FLOATY_ICON_PATH", lnk_path)
             .creation_flags(NO_WINDOW)
             .output()
             .ok()?;
         if !out.status.success() {
             return None;
         }
-        let b64 = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if b64.len() < 100
-            || !b64
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
-        {
-            return None;
-        }
+        let raw = String::from_utf8_lossy(&out.stdout);
+        let b64 = raw
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| {
+                l.len() >= 100
+                    && l.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
+            })
+            .last()?
+            .to_string();
         Some(format!("data:image/png;base64,{b64}"))
     }
     #[cfg(not(windows))]
     {
-        let _ = script;
+        let _ = lnk_path;
         None
     }
 }
 
 #[tauri::command]
 async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
-    // serve the cached icon if we already resolved one
+    // serve cached icon only if it's already high resolution
     {
         let state = app.state::<AppState>();
         let guard = state.0.lock().map_err(|e| e.to_string())?;
         if let Some(r) = guard.widgets.get(&id) {
             if let Some(s) = r.data.get("icon").and_then(|v| v.as_str()) {
-                if !s.is_empty() {
+                if !s.is_empty() && !is_low_res_icon(s) {
                     return Ok(s.to_string());
                 }
             }
@@ -509,7 +636,8 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
     if target.trim().is_empty() {
         return Err("launcher has no target".into());
     }
-    let data_url = tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target))
+    let target_clone = target.clone();
+    let data_url = tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target_clone))
         .await
         .map_err(|e| e.to_string())?
         .ok_or("no icon found")?;
@@ -527,6 +655,122 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
     }
     persist(&app);
     Ok(data_url)
+}
+
+/// Background task that automatically detects any legacy 32x32 icons in saved app launchers
+/// or folders and upgrades them to crisp native high-res icons (up to 256x256).
+async fn upgrade_low_res_icons(app: &AppHandle) {
+    let to_upgrade: Vec<(String, String)> = {
+        let state = app.state::<AppState>();
+        let Ok(guard) = state.0.lock() else { return };
+        guard
+            .widgets
+            .iter()
+            .filter(|(_, r)| r.kind == "app")
+            .filter_map(|(id, r)| {
+                let target = r.data.get("target")?.as_str()?.to_string();
+                let icon = r.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
+                if is_low_res_icon(icon) && !target.trim().is_empty() {
+                    Some((id.clone(), target))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    if !to_upgrade.is_empty() {
+        log_line(app, &format!("upgrade_low_res_icons: upgrading {} app icons", to_upgrade.len()));
+    }
+
+    for (id, target) in to_upgrade {
+        let target_clone = target.clone();
+        if let Ok(Some(hi_res)) =
+            tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target_clone)).await
+        {
+            {
+                let state = app.state::<AppState>();
+                let mut guard = state.0.lock();
+                if let Ok(ref mut g) = guard {
+                    if let Some(r) = g.widgets.get_mut(&id) {
+                        if let Some(obj) = r.data.as_object_mut() {
+                            obj.insert(
+                                "icon".to_string(),
+                                serde_json::Value::String(hi_res.clone()),
+                            );
+                        }
+                    }
+                }
+            }
+            persist(app);
+            app.emit("floaty-icon-refreshed", &id).ok();
+            log_line(app, &format!("upgraded icon for {id} to high-res"));
+        }
+    }
+
+    let folders_to_check: Vec<(String, Vec<(usize, String)>)> = {
+        let state = app.state::<AppState>();
+        let Ok(guard) = state.0.lock() else { return };
+        guard
+            .widgets
+            .iter()
+            .filter(|(_, r)| r.kind == "folder")
+            .filter_map(|(id, r)| {
+                let items = folder_items(r);
+                let needed: Vec<(usize, String)> = items
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, it)| {
+                        if is_low_res_icon(&it.icon) && !it.target.trim().is_empty() {
+                            Some((idx, it.target.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if needed.is_empty() {
+                    None
+                } else {
+                    Some((id.clone(), needed))
+                }
+            })
+            .collect()
+    };
+
+    if !folders_to_check.is_empty() {
+        log_line(app, &format!("upgrade_low_res_icons: upgrading icons in {} folders", folders_to_check.len()));
+    }
+
+    for (folder_id, needed) in folders_to_check {
+        let mut changed = false;
+        for (idx, target) in needed {
+            let target_clone = target.clone();
+            if let Ok(Some(hi_res)) =
+                tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target_clone)).await
+            {
+                let state = app.state::<AppState>();
+                let mut guard = state.0.lock();
+                if let Ok(ref mut g) = guard {
+                    if let Some(r) = g.widgets.get_mut(&folder_id) {
+                        let mut items = folder_items(r);
+                        if idx < items.len() {
+                            items[idx].icon = hi_res;
+                            set_folder_items(r, &items);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if changed {
+            persist(app);
+            app.emit("floaty-folder-changed", &folder_id).ok();
+            log_line(
+                app,
+                &format!("upgraded folder icons for {folder_id} to high-res"),
+            );
+        }
+    }
 }
 
 // ---------- plugins ----------
@@ -1197,11 +1441,37 @@ fn floaty_create(kind: String, app: AppHandle) -> Result<WidgetRecord, String> {
 }
 
 #[tauri::command]
-fn floaty_save(record: WidgetRecord, app: AppHandle) {
+fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
     let state = app.state::<AppState>();
     if let Ok(mut guard) = state.0.lock() {
         if guard.dead.contains(&record.id) {
             return; // removed meanwhile (remove / folder-merge)
+        }
+        // Protect high-resolution icons from being overwritten by stale/low-res incoming data
+        if let Some(existing) = guard.widgets.get(&record.id) {
+            if let Some(existing_icon) = existing.data.get("icon").and_then(|v| v.as_str()) {
+                if !is_low_res_icon(existing_icon) {
+                    let incoming_icon = record.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
+                    if is_low_res_icon(incoming_icon) {
+                        if let Some(obj) = record.data.as_object_mut() {
+                            obj.insert("icon".to_string(), serde_json::Value::String(existing_icon.to_string()));
+                        }
+                    }
+                }
+            }
+            if record.kind == "folder" {
+                let existing_items = folder_items(existing);
+                let mut incoming_items = folder_items(&record);
+                for (idx, in_it) in incoming_items.iter_mut().enumerate() {
+                    if idx < existing_items.len()
+                        && !is_low_res_icon(&existing_items[idx].icon)
+                        && is_low_res_icon(&in_it.icon)
+                    {
+                        in_it.icon = existing_items[idx].icon.clone();
+                    }
+                }
+                set_folder_items(&mut record, &incoming_items);
+            }
         }
         guard.widgets.insert(record.id.clone(), record);
     }
@@ -1368,6 +1638,11 @@ pub fn run() {
                     }
                 }
             }
+            let bg_app = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                upgrade_low_res_icons(&bg_app).await;
+            });
+
             log_line(&handle, "=== floaty ready ===");
             Ok(())
         })

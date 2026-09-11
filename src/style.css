@@ -356,17 +356,22 @@ body {
   text-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
 }
 .tile-icon {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   object-fit: contain;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.38));
   pointer-events: none;
+  image-rendering: -webkit-optimize-contrast;
 }
-/* real app icon: no colored bubble behind it */
+/* real app icon: no colored bubble behind it, natural desktop icon size */
 .tile.real {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
+}
+.tile.real .tile-icon {
+  width: 52px;
+  height: 52px;
 }
 .tile.squash { animation: tilesquash 0.35s ease; }
 @keyframes tilesquash {
@@ -492,7 +497,7 @@ body {
 .fempty { color: #8f88c7; font-size: 12px; text-align: center; grid-column: 1 / -1; padding: 12px 0; }
 .fitem { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); border-radius: 14px; padding: 8px 4px 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; min-width: 0; font-family: inherit; }
 .fitem:hover { background: rgba(255,255,255,.15); }
-.fitem img { width: 36px; height: 36px; object-fit: contain; pointer-events: none; }
+.fitem img { width: 38px; height: 38px; object-fit: contain; pointer-events: none; image-rendering: -webkit-optimize-contrast; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35)); }
 .fitem.go { animation: launchpop 0.6s ease; }
 .fitem.shake { animation: tileshake 0.45s ease; }
 .fitem.dragging-out { opacity: 0.45; }
@@ -504,7 +509,7 @@ body {
 .pin-row:hover { background: rgba(255,255,255,.1); }
 .pin-row input[type="checkbox"] { accent-color: #6c5ce7; width: 15px; height: 15px; cursor: pointer; }
 .fminis { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; width: 44px; height: 44px; }
-.fminis img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: transparent; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); pointer-events: none; }
+.fminis img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: transparent; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); pointer-events: none; image-rendering: -webkit-optimize-contrast; }
 .fmini-letter { border-radius: 6px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 10px; display: grid; place-items: center; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
 .fname-edit { flex: 1; min-width: 0; background: rgba(255,255,255,.1); color: #fff; border: 1px solid var(--accent); border-radius: 8px; padding: 3px 8px; font-size: 13px; font-weight: 700; font-family: inherit; outline: none; }
 

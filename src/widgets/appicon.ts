@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition } from "@tauri-apps/api/window";
 import {
   addPinMenu,
@@ -123,12 +124,50 @@ export function mountLauncher(root: HTMLElement, id: string): void {
       }
       img.src = url;
     };
+    const isLowRes = (url: string): boolean => {
+      if (!url) return true;
+      return (
+        url.includes("AAAAACAAAAAg") ||
+        url.includes("AAAACAAAAAg") ||
+        url.startsWith("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg") ||
+        url.length < 5000
+      );
+    };
+
     const cachedIcon = typeof rec.data["icon"] === "string" ? (rec.data["icon"] as string) : "";
     if (cachedIcon) {
       applyIcon(cachedIcon);
+      if (isLowRes(cachedIcon)) {
+        invoke<string>("floaty_icon", { id: rec.id })
+          .then((hiRes) => {
+            if (hiRes && hiRes !== cachedIcon) {
+              if (rec) rec.data["icon"] = hiRes;
+              applyIcon(hiRes);
+            }
+          })
+          .catch(() => undefined);
+      }
     } else {
-      invoke<string>("floaty_icon", { id: rec.id }).then(applyIcon).catch(() => undefined);
+      invoke<string>("floaty_icon", { id: rec.id })
+        .then((hiRes) => {
+          if (hiRes) {
+            if (rec) rec.data["icon"] = hiRes;
+            applyIcon(hiRes);
+          }
+        })
+        .catch(() => undefined);
     }
+
+    listen<string>("floaty-icon-refreshed", (e) => {
+      if (e.payload === id) {
+        void loadRecord(id).then((r) => {
+          if (r && typeof r.data["icon"] === "string" && r.data["icon"]) {
+            if (rec) rec.data["icon"] = r.data["icon"];
+            applyIcon(r.data["icon"] as string);
+          }
+        });
+      }
+    }).catch(() => undefined);
     // desktop layer (with the builder flag): icons live under real apps
     void appWin.setAlwaysOnTop(false).catch(() => undefined);
     addPinMenu(wrap, () => rec);
