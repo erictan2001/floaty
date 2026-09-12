@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, appWin, currentSettings, loadRecord, monitorArea, removeSelf, saveRecord, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, loadRecord, monitorArea, removeSelf, saveRecord, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -36,15 +36,12 @@ export function mountFolder(root: HTMLElement, id: string): void {
 
   watchSettings();
 
-  const num = parseInt(id.replace(/\D/g, ""), 10) || 0;
-  wrap.classList.add(`phase-${num % 6}`);
-
-  const syncFloat = () => {
-    const f = currentSettings().floatiness;
-    wrap.style.setProperty("--float", String(f));
+  const syncAnim = () => {
+    applyFloatieAnimation(wrap, id);
   };
-  syncFloat();
-  listen("floaty-settings-changed", syncFloat).catch(() => undefined);
+  const syncFloat = syncAnim;
+  syncAnim();
+  listen("floaty-settings-changed", syncAnim).catch(() => undefined);
 
   const savePos = () => {
     if (!rec) return;

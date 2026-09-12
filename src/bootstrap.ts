@@ -24,7 +24,7 @@ if (import.meta.hot) {
     window.location.reload();
   });
 }
-// reload trigger: v16
+// reload trigger: v17
 
 void import("./main").catch((e) => {
   report("import", String(e));

@@ -117,10 +117,24 @@ struct FloatSettings {
     /// keep widgets visible on desktop when Show Desktop (Win+D) is triggered
     #[serde(default = "default_stay_on_desktop")]
     stay_on_desktop: bool,
+    /// percentage of floaties that participate in animation (0 to 100)
+    #[serde(default = "default_animated_ratio")]
+    animated_ratio: f64,
+    /// animation mode: "wave", "sync", "gentle", "static"
+    #[serde(default = "default_animation_mode")]
+    animation_mode: String,
 }
 
 fn default_stay_on_desktop() -> bool {
     true
+}
+
+fn default_animated_ratio() -> f64 {
+    100.0
+}
+
+fn default_animation_mode() -> String {
+    "wave".to_string()
 }
 
 fn default_pet_speed() -> f64 {
@@ -166,6 +180,11 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             } else {
                 s.double_click
             },
+            animation_mode: if s.animation_mode.is_empty() {
+                default_animation_mode()
+            } else {
+                s.animation_mode
+            },
             ..s
         },
         None => FloatSettings {
@@ -179,6 +198,8 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             files_root: String::new(),
             disabled: Vec::new(),
             stay_on_desktop: default_stay_on_desktop(),
+            animated_ratio: default_animated_ratio(),
+            animation_mode: default_animation_mode(),
         },
     }
 }
@@ -207,6 +228,11 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
         files_root: settings.files_root,
         disabled: settings.disabled,
         stay_on_desktop: settings.stay_on_desktop,
+        animated_ratio: settings.animated_ratio.clamp(0.0, 100.0),
+        animation_mode: match settings.animation_mode.as_str() {
+            "sync" | "gentle" | "static" => settings.animation_mode,
+            _ => "wave".to_string(),
+        },
     };
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         fs::write(settings_file(&app), json).ok();

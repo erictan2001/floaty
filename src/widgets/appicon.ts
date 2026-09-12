@@ -4,6 +4,7 @@ import { PhysicalPosition } from "@tauri-apps/api/window";
 import {
   addPinMenu,
   appWin,
+  applyFloatieAnimation,
   currentSettings,
   loadRecord,
   logicalPos,
@@ -81,15 +82,12 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   let lastSavedY = -1;
   let lastSavedPinned: boolean | undefined = undefined;
 
-  const num = parseInt(id.replace(/\D/g, ""), 10) || 0;
-  wrap.classList.add(`phase-${num % 6}`);
-
-  const syncFloat = () => {
-    const f = currentSettings().floatiness;
-    wrap.style.setProperty("--float", String(f));
+  const syncAnim = () => {
+    applyFloatieAnimation(wrap, id);
   };
-  syncFloat();
-  listen("floaty-settings-changed", syncFloat).catch(() => undefined);
+  const syncFloat = syncAnim;
+  syncAnim();
+  listen("floaty-settings-changed", syncAnim).catch(() => undefined);
 
   const squash = () => {
     tile.classList.remove("squash");
@@ -534,7 +532,15 @@ export const appPlugin: FloatyPlugin = {
     return typeof n === "string" && n ? n : undefined;
   },
   renderSettings: (card: HTMLElement, ctx: PluginSettingsContext) => {
-    for (const k of ["gravity", "bounce", "floatiness", "single_click", "double_click"]) {
+    for (const k of [
+      "gravity",
+      "bounce",
+      "floatiness",
+      "animated_ratio",
+      "animation_mode",
+      "single_click",
+      "double_click",
+    ]) {
       const r = ctx.getSharedRow(k);
       if (r) card.append(r);
     }

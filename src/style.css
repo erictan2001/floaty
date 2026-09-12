@@ -406,32 +406,63 @@ body {
   text-overflow: ellipsis;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 8px rgba(0, 0, 0, 0.5);
 }
-.launcher.rest .tile,
-.folder:not(.open) .ftile {
+/* ---------- floatie animation modes ---------- */
+.anim-static.launcher .tile,
+.anim-static.folder .ftile {
+  animation: none !important;
+  transform: translate3d(0, 0, 0) !important;
+}
+
+/* 1. Wave mode (default 12s phased ripple) */
+.launcher.anim-wave.rest .tile,
+.folder.anim-wave:not(.open) .ftile,
+.launcher:not(.anim-sync):not(.anim-gentle):not(.anim-static).rest .tile,
+.folder:not(.anim-sync):not(.anim-gentle):not(.anim-static):not(.open) .ftile {
   will-change: transform;
-  animation: restbob 12s ease-in-out infinite;
+  animation: restbob-wave 12s ease-in-out infinite;
   transform: translate3d(0, 0, 0);
 }
-.launcher.phase-0 .tile, .folder.phase-0 .ftile { animation-delay: 0s; }
-.launcher.phase-1 .tile, .folder.phase-1 .ftile { animation-delay: -2s; }
-.launcher.phase-2 .tile, .folder.phase-2 .ftile { animation-delay: -4s; }
-.launcher.phase-3 .tile, .folder.phase-3 .ftile { animation-delay: -6s; }
-.launcher.phase-4 .tile, .folder.phase-4 .ftile { animation-delay: -8s; }
-.launcher.phase-5 .tile, .folder.phase-5 .ftile { animation-delay: -10s; }
+.phase-0 .tile, .phase-0 .ftile { animation-delay: 0s; }
+.phase-1 .tile, .phase-1 .ftile { animation-delay: -2s; }
+.phase-2 .tile, .phase-2 .ftile { animation-delay: -4s; }
+.phase-3 .tile, .phase-3 .ftile { animation-delay: -6s; }
+.phase-4 .tile, .phase-4 .ftile { animation-delay: -8s; }
+.phase-5 .tile, .phase-5 .ftile { animation-delay: -10s; }
 
-@keyframes restbob {
-  0% {
-    transform: translate3d(0, 0, 0);
-  }
-  8.33% {
-    transform: translate3d(0, calc(var(--float, 1) * -2.8px), 0);
-  }
-  16.67% {
-    transform: translate3d(0, 0, 0);
-  }
-  100% {
-    transform: translate3d(0, 0, 0);
-  }
+@keyframes restbob-wave {
+  0% { transform: translate3d(0, 0, 0); }
+  8.33% { transform: translate3d(0, calc(var(--float, 1) * -2.8px), 0); }
+  16.67% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+/* 2. Sync mode (all active icons bob in unison) */
+.launcher.anim-sync.rest .tile,
+.folder.anim-sync:not(.open) .ftile {
+  will-change: transform;
+  animation: restbob-sync 6s ease-in-out infinite;
+  animation-delay: 0s;
+  transform: translate3d(0, 0, 0);
+}
+
+@keyframes restbob-sync {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  25% { transform: translate3d(0, calc(var(--float, 1) * -2.8px), 0); }
+  50% { transform: translate3d(0, 0, 0); }
+}
+
+/* 3. Gentle mode (smooth continuous sine float) */
+.launcher.anim-gentle.rest .tile,
+.folder.anim-gentle:not(.open) .ftile {
+  will-change: transform;
+  animation: restbob-gentle 4s ease-in-out infinite;
+  animation-delay: 0s;
+  transform: translate3d(0, 0, 0);
+}
+
+@keyframes restbob-gentle {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, calc(var(--float, 1) * -2.2px), 0); }
 }
 
 /* ---------- folders ---------- */

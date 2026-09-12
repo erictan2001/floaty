@@ -156,6 +156,8 @@ export interface FloatSettings {
   files_root: string;
   disabled: string[];
   stay_on_desktop: boolean;
+  animated_ratio: number;
+  animation_mode: string;
 }
 
 const DEFAULT_SETTINGS: FloatSettings = {
@@ -169,7 +171,58 @@ const DEFAULT_SETTINGS: FloatSettings = {
   files_root: "",
   disabled: [],
   stay_on_desktop: true,
+  animated_ratio: 100,
+  animation_mode: "wave",
 };
+
+/**
+ * Configures the floating animation classes and styles for app icons and folders
+ * based on currentSettings().floatiness, .animated_ratio, and .animation_mode.
+ */
+export function applyFloatieAnimation(wrap: HTMLElement, id: string): void {
+  const s = currentSettings();
+  const f = typeof s.floatiness === "number" ? s.floatiness : 1;
+  wrap.style.setProperty("--float", String(f));
+
+  const ratio = typeof s.animated_ratio === "number" ? s.animated_ratio : 100;
+  const mode = s.animation_mode || "wave";
+
+  wrap.classList.remove(
+    "anim-wave",
+    "anim-sync",
+    "anim-gentle",
+    "anim-static",
+    "phase-0",
+    "phase-1",
+    "phase-2",
+    "phase-3",
+    "phase-4",
+    "phase-5",
+  );
+
+  if (mode === "static" || ratio <= 0 || f <= 0) {
+    wrap.classList.add("anim-static");
+    return;
+  }
+
+  // Deterministic numeric index from widget ID (e.g. app-17 -> 17)
+  const numDigits = parseInt(id.replace(/\D/g, ""), 10);
+  const num = Number.isFinite(numDigits)
+    ? numDigits
+    : Math.abs(Array.from(id).reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) | 0, 0));
+
+  // Determine if this specific floatie is included in the motion ratio
+  const isAnimated = ((num * 37) % 100) < ratio;
+  if (!isAnimated) {
+    wrap.classList.add("anim-static");
+    return;
+  }
+
+  wrap.classList.add(`anim-${mode}`);
+  if (mode === "wave") {
+    wrap.classList.add(`phase-${num % 6}`);
+  }
+}
 
 let settingsCache: FloatSettings = { ...DEFAULT_SETTINGS };
 let settingsWatched = false;

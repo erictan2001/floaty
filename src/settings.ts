@@ -40,6 +40,8 @@ let latestSettings: FloatSettings = {
   files_root: "",
   disabled: [],
   stay_on_desktop: true,
+  animated_ratio: 100,
+  animation_mode: "wave",
 };
 
 if (!root) {
@@ -353,11 +355,19 @@ function build(): void {
 
   // floating parameters + icon click behaviour live in the plugin cards
   // below; the shared rows are built here and moved into those cards
-  const sliderDefs: Array<{ key: string; label: string; min: number; max: number; step: number }> = [
+  const sliderDefs: Array<{
+    key: string;
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+    unit?: string;
+  }> = [
     { key: "pet_speed", label: "pet speed", min: 0, max: 2, step: 0.1 },
     { key: "gravity", label: "gravity", min: 0, max: 5000, step: 50 },
     { key: "bounce", label: "bounce", min: 0, max: 0.9, step: 0.05 },
     { key: "floatiness", label: "float", min: 0, max: 2, step: 0.1 },
+    { key: "animated_ratio", label: "animated icons", min: 0, max: 100, step: 10, unit: "%" },
   ];
   const sliderInputs = new Map<string, HTMLInputElement>();
   const sliderVals = new Map<string, HTMLElement>();
@@ -380,8 +390,10 @@ function build(): void {
       gravity: num("gravity", 2600),
       bounce: num("bounce", 0.45),
       floatiness: num("floatiness", 1),
+      animated_ratio: num("animated_ratio", 100),
       single_click: (clickSelects.get("single_click")?.value as FloatSettings["single_click"]) ?? "drop",
       double_click: (clickSelects.get("double_click")?.value as FloatSettings["double_click"]) ?? "launch",
+      animation_mode: clickSelects.get("animation_mode")?.value ?? "wave",
       stay_on_desktop: stayOnDesktopInput ? stayOnDesktopInput.checked : stayOnDesktop,
     };
     await safe("save settings", () =>
@@ -406,7 +418,7 @@ function build(): void {
     input.step = String(d.step);
     const val = el("span", "slider-val", "");
     input.addEventListener("input", () => {
-      val.textContent = input.value;
+      val.textContent = d.unit ? `${input.value}${d.unit}` : input.value;
       void saveFloating();
     });
     sliderInputs.set(d.key, input);
@@ -418,6 +430,7 @@ function build(): void {
   const clickDefs: Array<{ key: string; label: string; opts: string[] }> = [
     { key: "single_click", label: "single click", opts: ["drop", "hop", "nothing"] },
     { key: "double_click", label: "double click", opts: ["launch", "drop", "nothing"] },
+    { key: "animation_mode", label: "animation mode", opts: ["wave", "sync", "gentle", "static"] },
   ];
   for (const d of clickDefs) {
     const row = el("div", "slider-row");
@@ -444,7 +457,7 @@ function build(): void {
       const v = s[d.key as keyof FloatSettings];
       if (typeof v === "number") {
         sliderInputs.get(d.key)!.value = String(v);
-        sliderVals.get(d.key)!.textContent = String(v);
+        sliderVals.get(d.key)!.textContent = d.unit ? `${v}${d.unit}` : String(v);
       }
     }
     for (const d of clickDefs) {
