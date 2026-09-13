@@ -1,5 +1,4 @@
-import { PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, trackPosition, watchPluginEnabled, type WidgetRecord } from "./lib";
+import { addPinMenu, addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, setWidgetSize, trackPosition, watchPluginEnabled, type WidgetRecord } from "./lib";
 import type { FloatyPlugin } from "./plugin";
 
 const DEFAULT_FOCUS_S = 25 * 60;
@@ -187,7 +186,7 @@ export function mountClock(root: HTMLElement, id: string): void {
   void (async () => {
     const rec = await loadRecord(id);
     if (!rec) return;
-    wrap.prepend(makeBar("floaty clock", () => void removeSelf(rec)));
+    wrap.prepend(makeBar("floaty clock", () => void removeSelf(rec), id));
     addPinMenu(wrap, () => rec);
     recRef = rec;
     // restore saved timer lengths (seconds, clamped to 1m..3h)
@@ -211,9 +210,7 @@ export function mountClock(root: HTMLElement, id: string): void {
       try {
         const s = await appWin.scaleFactor();
         const k = s > 0 ? s : 1;
-        await appWin.setSize(
-          new PhysicalSize(Math.round(Math.min(w, 1400) * k), Math.round(Math.min(h, 1400) * k)),
-        );
+        setWidgetSize(id, Math.min(w, 1400), Math.min(h, 1400), k);
       } catch {
         /* keep default size */
       }

@@ -2,9 +2,11 @@ import type { FloatSettings } from "./lib";
 import { notePlugin } from "./note";
 import { clockPlugin } from "./clock";
 import { petPlugin } from "./pet";
-import { appPlugin } from "./appicon";
+import { appPlugin, filePlugin } from "./appicon";
 import { folderPlugin } from "./folder";
 import { live2dPlugin } from "./live2dPlugin";
+import { visualizerPlugin } from "./visualizer";
+import { sysmonPlugin } from "./sysmon";
 
 export interface PluginRecord {
   id: string;
@@ -79,8 +81,11 @@ registerPlugin(notePlugin);
 registerPlugin(clockPlugin);
 registerPlugin(petPlugin);
 registerPlugin(appPlugin);
+registerPlugin(filePlugin);
 registerPlugin(folderPlugin);
 registerPlugin(live2dPlugin);
+registerPlugin(visualizerPlugin);
+registerPlugin(sysmonPlugin);
 
 /** Exported array for backward compatibility and simple iteration */
 export const plugins: FloatyPlugin[] = [
@@ -88,6 +93,9 @@ export const plugins: FloatyPlugin[] = [
   clockPlugin,
   petPlugin,
   appPlugin,
+  filePlugin,
   folderPlugin,
   live2dPlugin,
+  visualizerPlugin,
+  sysmonPlugin,
 ];

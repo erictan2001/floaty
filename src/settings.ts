@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { pluginFor, plugins, type PluginSettingsContext } from "./widgets/plugin";
-import type { FloatSettings } from "./widgets/lib";
+import { confirmRemoveDialog, describeForConfirm, type FloatSettings } from "./widgets/lib";
 import "./style.css";
 
 interface WidgetRecord {
@@ -42,6 +42,13 @@ let latestSettings: FloatSettings = {
   stay_on_desktop: true,
   animated_ratio: 100,
   animation_mode: "wave",
+  float_amplitude: 4.5,
+  float_period: 10,
+  float_spread: 100,
+  confirm_remove: true,
+  viz_gain: 1,
+  viz_fps: 30,
+  sysmon_interval: 1000,
 };
 
 if (!root) {
@@ -121,6 +128,10 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
     const del = el("button", "danger", "remove");
     del.addEventListener("click", async () => {
       if ((del as HTMLButtonElement).disabled) return;
+      if (latestSettings.confirm_remove) {
+        const ok = await confirmRemoveDialog(describeForConfirm(w), w.kind);
+        if (!ok) return;
+      }
       (del as HTMLButtonElement).disabled = true;
       try {
         await safe("remove widget", () => invoke("floaty_remove", { id: w.id }));
@@ -288,7 +299,7 @@ function build(): void {
   const filesHint = el(
     "p",
     "hint",
-    "Point to a root folder to float its files and directories on your desktop. Dragging an item out of a folder moves it on disk to the desktop directory.",
+    "Point to a root folder to float its files and directories on your desktop. Shortcuts and programs become app floaties, everything else becomes a file floatie (double-click opens it with its default app). Dragging an item out of a folder moves it on disk to the desktop directory.",
   );
   box.append(filesHint);
   const filesRow = el("div", "slider-row");
@@ -367,13 +378,21 @@ function build(): void {
     { key: "gravity", label: "gravity", min: 0, max: 5000, step: 50 },
     { key: "bounce", label: "bounce", min: 0, max: 0.9, step: 0.05 },
     { key: "floatiness", label: "float", min: 0, max: 2, step: 0.1 },
+    { key: "float_amplitude", label: "float height", min: 0, max: 12, step: 0.5, unit: "px" },
+    { key: "float_period", label: "float cycle", min: 2, max: 30, step: 1, unit: "s" },
+    { key: "float_spread", label: "wave spread", min: 0, max: 200, step: 10, unit: "%" },
     { key: "animated_ratio", label: "animated icons", min: 0, max: 100, step: 10, unit: "%" },
+    { key: "viz_gain", label: "viz gain", min: 0.2, max: 3, step: 0.1, unit: "x" },
+    { key: "viz_fps", label: "viz fps", min: 5, max: 60, step: 5, unit: "fps" },
+    { key: "sysmon_interval", label: "sysmon refresh", min: 250, max: 5000, step: 250, unit: "ms" },
   ];
   const sliderInputs = new Map<string, HTMLInputElement>();
   const sliderVals = new Map<string, HTMLElement>();
   const clickSelects = new Map<string, HTMLSelectElement>();
   let stayOnDesktop = true;
   let stayOnDesktopInput: HTMLInputElement | undefined;
+  let confirmRemove = true;
+  let confirmRemoveInput: HTMLInputElement | undefined;
   let saveTimer: number | undefined;
   async function saveFloating(): Promise<void> {
     window.clearTimeout(saveTimer);
@@ -390,11 +409,18 @@ function build(): void {
       gravity: num("gravity", 2600),
       bounce: num("bounce", 0.45),
       floatiness: num("floatiness", 1),
+      float_amplitude: num("float_amplitude", 4.5),
+      float_period: num("float_period", 10),
+      float_spread: num("float_spread", 100),
       animated_ratio: num("animated_ratio", 100),
+      viz_gain: num("viz_gain", 1),
+      viz_fps: num("viz_fps", 30),
+      sysmon_interval: num("sysmon_interval", 1000),
       single_click: (clickSelects.get("single_click")?.value as FloatSettings["single_click"]) ?? "drop",
       double_click: (clickSelects.get("double_click")?.value as FloatSettings["double_click"]) ?? "launch",
       animation_mode: clickSelects.get("animation_mode")?.value ?? "wave",
       stay_on_desktop: stayOnDesktopInput ? stayOnDesktopInput.checked : stayOnDesktop,
+      confirm_remove: confirmRemoveInput ? confirmRemoveInput.checked : confirmRemove,
     };
     await safe("save settings", () =>
       invoke("floaty_set_settings", { settings: latestSettings }),
@@ -468,6 +494,12 @@ function build(): void {
       stayOnDesktop = s.stay_on_desktop;
       if (stayOnDesktopInput) {
         stayOnDesktopInput.checked = stayOnDesktop;
+      }
+    }
+    if (typeof s.confirm_remove === "boolean") {
+      confirmRemove = s.confirm_remove;
+      if (confirmRemoveInput) {
+        confirmRemoveInput.checked = confirmRemove;
       }
     }
     if (s.files_root) {
@@ -568,6 +600,31 @@ function build(): void {
     ),
   );
   box.append(desktopCard);
+
+  // removal confirmations
+  sectionTitle(box, "removing floaties");
+  const confirmCard = el("div", "card plugin-card");
+  const cHead = el("div", "plugin-head");
+  cHead.append(el("span", "kind k-file", "confirm"), el("span", "id", "Ask before removing"));
+  const cTog = el("label", "plugin-toggle");
+  confirmRemoveInput = el("input", "");
+  confirmRemoveInput.type = "checkbox";
+  confirmRemoveInput.checked = confirmRemove;
+  confirmRemoveInput.addEventListener("change", () => {
+    confirmRemove = confirmRemoveInput!.checked;
+    void saveFloating();
+  });
+  cTog.append(confirmRemoveInput, el("span", "", "enabled"));
+  cHead.append(cTog);
+  confirmCard.append(cHead);
+  confirmCard.append(
+    el(
+      "p",
+      "hint",
+      "Ask before removing a file, folder or widget from the desktop. Nothing is ever deleted on disk — a file or folder floatie only comes off the desktop.",
+    ),
+  );
+  box.append(confirmCard);
 
   // footer
   const foot = el("div", "foot-row");

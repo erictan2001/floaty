@@ -1,5 +1,4 @@
-import { PhysicalPosition } from "@tauri-apps/api/window";
-import { addPinMenu, appWin, currentSettings, loadRecord, logicalPos, monitorArea, removeSelf, saveRecord, watchPluginEnabled, watchSettings } from "./lib";
+import { addPinMenu, appWin, currentSettings, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragging, removeSelf, saveRecord, setWidgetPos, watchPluginEnabled, watchSettings } from "./lib";
 import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin";
 
 const WIN = 170; // must match Rust pet window size
@@ -84,7 +83,7 @@ export function mountPet(root: HTMLElement, id: string): void {
     }
     await refreshGeom();
     try {
-      const p = await logicalPos();
+      const p = await logicalPos(id);
       px = p.x;
       py = p.y;
     } catch {
@@ -146,6 +145,7 @@ export function mountPet(root: HTMLElement, id: string): void {
     // NOTE: no preventDefault() here — canceling pointerdown suppresses the
     // compatibility mouse events, which would kill click/dblclick entirely.
     dragging = true;
+    notifyDragging(true);
     lastTouch = performance.now();
     asleep = false;
     pet.classList.remove("sleeping");
@@ -153,22 +153,32 @@ export function mountPet(root: HTMLElement, id: string): void {
     // capture lazily on first real movement: capturing at press time retargets
     // the tap's click to wrap, breaking clicks on inner elements (rename etc.)
     let captured = false;
+    const isOverlay = isOverlayMode();
     const startPX = px;
     const startPY = py;
-    const startSX = e.screenX;
-    const startSY = e.screenY;
+    const startSX = isOverlay ? e.clientX : e.screenX;
+    const startSY = isOverlay ? e.clientY : e.screenY;
     const clampDrag = () => {
-      if (px < mon.x) px = mon.x;
-      if (py < mon.y) py = mon.y;
-      if (px > mon.x + mon.w - WIN) px = mon.x + mon.w - WIN;
-      if (py > mon.y + mon.h - WIN) py = mon.y + mon.h - WIN;
+      if (isOverlay) {
+        const monW = window.innerWidth || 1920;
+        const monH = window.innerHeight || 1080;
+        px = Math.max(0, Math.min(monW - WIN, px));
+        py = Math.max(0, Math.min(monH - WIN, py));
+      } else {
+        if (px < mon.x) px = mon.x;
+        if (py < mon.y) py = mon.y;
+        if (px > mon.x + mon.w - WIN) px = mon.x + mon.w - WIN;
+        if (py > mon.y + mon.h - WIN) py = mon.y + mon.h - WIN;
+      }
     };
     const onMove = (ev: PointerEvent) => {
-      px = startPX + (ev.screenX - startSX);
-      py = startPY + (ev.screenY - startSY);
+      const curSX = isOverlay ? ev.clientX : ev.screenX;
+      const curSY = isOverlay ? ev.clientY : ev.screenY;
+      px = startPX + (curSX - startSX);
+      py = startPY + (curSY - startSY);
       clampDrag();
       lastTouch = performance.now();
-      if (Math.hypot(ev.screenX - startSX, ev.screenY - startSY) > 4) {
+      if (Math.hypot(curSX - startSX, curSY - startSY) > 4) {
         suppressClickUntil = performance.now() + 300;
         if (!captured) {
           captured = true;
@@ -179,9 +189,7 @@ export function mountPet(root: HTMLElement, id: string): void {
           }
         }
       }
-      void appWin
-        .setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)))
-        .catch(() => undefined);
+      setWidgetPos(id, px, py, scale);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -195,6 +203,7 @@ export function mountPet(root: HTMLElement, id: string): void {
       // px/py are already the drop point — nothing to re-read, just persist.
       saveNow?.();
       dragging = false;
+      notifyDragging(false);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -223,9 +232,7 @@ export function mountPet(root: HTMLElement, id: string): void {
     // fire-and-forget on purpose: the IPC send is issued synchronously on
     // this turn, so a pointerdown (same thread) can never slip between the
     // dragging check above and this call.
-    void appWin
-      .setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)))
-      .catch(() => undefined);
+    setWidgetPos(id, px, py, scale);
   }, TICK_MS);
 }
 

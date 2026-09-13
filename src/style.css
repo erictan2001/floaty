@@ -5,7 +5,11 @@
   --accent-deep: #4a3fb5;
   --mint: #34d399;
   --danger: #e11d63;
-  --card-shadow: 0 18px 44px rgba(46, 42, 63, 0.28), 0 2px 6px rgba(46, 42, 63, 0.18);
+  /* Widget chrome sits on the wallpaper, not on a card: a wide dark halo around
+     every tile read as heavy, so keep the depth and drop the spread. */
+  --card-shadow: 0 5px 16px rgba(20, 16, 40, 0.2), 0 1px 3px rgba(20, 16, 40, 0.14);
+  --tile-shadow: 0 2px 6px rgba(20, 16, 40, 0.2);
+  --tile-shadow-hover: 0 3px 9px rgba(20, 16, 40, 0.24);
 }
 
 * { box-sizing: border-box; }
@@ -179,8 +183,9 @@ body {
 
 /* ---------- pet ---------- */
 .pet-wrap {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -196,7 +201,7 @@ body {
   height: 106px;
   background: radial-gradient(circle at 32% 26%, #ffffff 0%, #a8d8ff 30%, #6aa9f2 66%, #4a7fd4 100%);
   border-radius: 50% 50% 48% 52% / 58% 60% 40% 42%;
-  box-shadow: 0 16px 30px rgba(60, 110, 200, 0.45), inset -10px -12px 0 rgba(255, 255, 255, 0.3), inset 6px 8px 12px rgba(255, 255, 255, 0.45);
+  box-shadow: 0 8px 18px rgba(60, 110, 200, 0.32), inset -10px -12px 0 rgba(255, 255, 255, 0.3), inset 6px 8px 12px rgba(255, 255, 255, 0.45);
   animation: breathe 3.2s ease-in-out infinite;
   cursor: grab;
 }
@@ -304,7 +309,7 @@ body {
   font-weight: 700;
   color: #fff;
   text-shadow: 0 1px 2px rgba(0,0,0,.4);
-  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.22);
 }
 .pet-tag .icon-btn { background: rgba(255,255,255,.2); width: 18px; height: 18px; font-size: 12px; }
 
@@ -346,7 +351,7 @@ body {
   border-radius: 18px;
   display: grid;
   place-items: center;
-  box-shadow: 0 10px 24px rgba(20, 16, 40, 0.4), inset 0 2px 3px rgba(255, 255, 255, 0.45), inset 0 -4px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--tile-shadow), inset 0 1px 2px rgba(255, 255, 255, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.5);
 }
 .tile span {
@@ -359,7 +364,6 @@ body {
   width: 44px;
   height: 44px;
   object-fit: contain;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.38));
   pointer-events: none;
   image-rendering: -webkit-optimize-contrast;
 }
@@ -404,7 +408,7 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 8px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65), 0 0 5px rgba(0, 0, 0, 0.35);
 }
 /* ---------- floatie animation modes ---------- */
 .anim-static.launcher .tile,
@@ -414,65 +418,97 @@ body {
 }
 
 /* 1. Wave mode (default 12s phased ripple) */
+/* 1. Wave mode (ambient ripple wave with full rest interval) */
+/* The bob is a staircase, not a smooth curve: the compositor only presents a
+   frame when an animated value actually changes, so a smooth curve costs ~60
+   full-desktop composites per second and a staircase costs one per step — that
+   rate is what the GPU pays for. Measured on this 2880x1920 desktop: ~6% of the
+   3D engine with the bob off, ~33% with it running smooth-equivalent; the
+   compact `steps(n)` counts below land near 24 steps/s on the default cycle,
+   which is double the original choppy 12/s at roughly half the smooth cost.
+
+   The counts are literal integers on purpose: Chromium silently drops
+   `steps(var(--n))` (falling back to 60fps interpolation), and generating one
+   keyframe stop per step measured 5x the GPU while looking identical.
+   Amplitude / cycle / phase spread still come from settings as CSS variables
+   set by applyFloatieAnimation (--bob-amp, --bob-cycle, --bob-spread). The
+   per-mode durations keep their historical ratio to the cycle (10s / 8s / 6s);
+   the fallbacks in the variables cover widgets that never call it. */
 .launcher.anim-wave.rest .tile,
 .folder.anim-wave:not(.open) .ftile,
 .launcher:not(.anim-sync):not(.anim-gentle):not(.anim-static).rest .tile,
 .folder:not(.anim-sync):not(.anim-gentle):not(.anim-static):not(.open) .ftile {
   will-change: transform;
-  animation: restbob-wave 12s ease-in-out infinite;
+  backface-visibility: hidden;
+  animation: restbob-wave var(--bob-cycle, 10s) cubic-bezier(0.37, 0, 0.63, 1) infinite;
   transform: translate3d(0, 0, 0);
 }
 .phase-0 .tile, .phase-0 .ftile { animation-delay: 0s; }
-.phase-1 .tile, .phase-1 .ftile { animation-delay: -2s; }
-.phase-2 .tile, .phase-2 .ftile { animation-delay: -4s; }
-.phase-3 .tile, .phase-3 .ftile { animation-delay: -6s; }
-.phase-4 .tile, .phase-4 .ftile { animation-delay: -8s; }
-.phase-5 .tile, .phase-5 .ftile { animation-delay: -10s; }
+.phase-1 .tile, .phase-1 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.03 * var(--bob-spread, 1)); }
+.phase-2 .tile, .phase-2 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.06 * var(--bob-spread, 1)); }
+.phase-3 .tile, .phase-3 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.09 * var(--bob-spread, 1)); }
+.phase-4 .tile, .phase-4 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.12 * var(--bob-spread, 1)); }
+.phase-5 .tile, .phase-5 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.15 * var(--bob-spread, 1)); }
 
-@keyframes restbob-wave {
-  0% { transform: translate3d(0, 0, 0); }
-  8.33% { transform: translate3d(0, calc(var(--float, 1) * -2.8px), 0); }
-  16.67% { transform: translate3d(0, 0, 0); }
-  100% { transform: translate3d(0, 0, 0); }
-}
 
-/* 2. Sync mode (all active icons bob in unison) */
+/* 2. Sync mode (gentle simultaneous bob with rest interval) */
 .launcher.anim-sync.rest .tile,
 .folder.anim-sync:not(.open) .ftile {
   will-change: transform;
-  animation: restbob-sync 6s ease-in-out infinite;
+  backface-visibility: hidden;
+  animation: restbob-sync calc(var(--bob-cycle, 10s) * 0.8) cubic-bezier(0.37, 0, 0.63, 1) infinite;
   animation-delay: 0s;
   transform: translate3d(0, 0, 0);
 }
 
-@keyframes restbob-sync {
-  0%, 100% { transform: translate3d(0, 0, 0); }
-  25% { transform: translate3d(0, calc(var(--float, 1) * -2.8px), 0); }
-  50% { transform: translate3d(0, 0, 0); }
-}
 
 /* 3. Gentle mode (smooth continuous sine float) */
 .launcher.anim-gentle.rest .tile,
 .folder.anim-gentle:not(.open) .ftile {
   will-change: transform;
-  animation: restbob-gentle 4s ease-in-out infinite;
+  backface-visibility: hidden;
+  animation: restbob-gentle calc(var(--bob-cycle, 10s) * 0.6) ease-in-out infinite;
   animation-delay: 0s;
   transform: translate3d(0, 0, 0);
 }
 
+
+/* Step counts are literal so Chromium applies them (it silently drops
+   steps(var(--n))): roughly 24 steps/s on the default 10s cycle — ~14/19/10 for
+   the wave, which is double the original 12/s that read as choppy, without the
+   60/s of a smooth curve. Measured on this desktop, each step is one
+   full-desktop composite: bob off ~6% of the 3D engine, smooth/60fps ~33%. */
+@keyframes restbob-wave {
+  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(14); }
+  6% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * -1), 0); animation-timing-function: steps(19); }
+  14% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * 0.22), 0); animation-timing-function: steps(10); }
+  18% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+@keyframes restbob-sync {
+  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(23); }
+  12% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * -0.89), 0); animation-timing-function: steps(19); }
+  22% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * 0.22), 0); animation-timing-function: steps(12); }
+  28% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
 @keyframes restbob-gentle {
-  0%, 100% { transform: translate3d(0, 0, 0); }
-  50% { transform: translate3d(0, calc(var(--float, 1) * -2.2px), 0); }
+  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(72); }
+  50% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * -0.67), 0); animation-timing-function: steps(79); }
+  100% { transform: translate3d(0, 0, 0); }
 }
 
 /* ---------- folders ---------- */
 .folder {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 14px;
+  padding-top: 10px;
   cursor: grab;
   position: relative;
   overflow: hidden;
@@ -482,33 +518,45 @@ body {
 }
 .folder:active { cursor: grabbing; }
 .folder.open {
-  background: rgba(24, 20, 44, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(24, 20, 44, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 20px;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--card-shadow);
   padding: 10px;
   align-items: stretch;
   cursor: default;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 .folder.open:active { cursor: default; }
+.overlay-slot:has(.folder.open) {
+  z-index: 100;
+}
 .ftile {
   width: 58px;
   height: 58px;
   border-radius: 18px;
-  background: linear-gradient(145deg, #f59e0b, #b45309);
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.35);
   display: grid;
   place-items: center;
-  box-shadow: 0 10px 24px rgba(20, 16, 40, 0.4), inset 0 2px 3px rgba(255, 255, 255, 0.45), inset 0 -4px 8px rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: var(--tile-shadow), inset 0 1px 2px rgba(255, 255, 255, 0.35);
   position: relative;
+  box-sizing: border-box;
+  transition: box-shadow 0.2s ease;
+}
+.folder:hover .ftile {
+  box-shadow: var(--tile-shadow-hover), inset 0 1px 2px rgba(255, 255, 255, 0.45);
 }
 .ffolder {
-  width: 34px;
+  width: 36px;
   height: 26px;
-  background: rgba(255, 255, 255, 0.93);
-  border-radius: 4px 6px 6px 6px;
+  background: linear-gradient(180deg, #fcd34d 0%, #f59e0b 100%);
+  border-radius: 3px 5px 5px 5px;
   position: relative;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(217, 119, 6, 0.7);
+  box-sizing: border-box;
 }
 .ffolder::before {
   content: "";
@@ -516,9 +564,23 @@ body {
   left: 0;
   top: -6px;
   width: 16px;
-  height: 8px;
-  background: rgba(255, 255, 255, 0.93);
-  border-radius: 4px 4px 0 0;
+  height: 7px;
+  background: #f59e0b;
+  border-radius: 3px 3px 0 0;
+  border-top: 1px solid rgba(217, 119, 6, 0.7);
+  border-left: 1px solid rgba(217, 119, 6, 0.7);
+  border-right: 1px solid rgba(217, 119, 6, 0.7);
+  box-sizing: border-box;
+}
+.ffolder.fmini-dir {
+  width: 18px;
+  height: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+}
+.ffolder.fmini-dir::before {
+  top: -4px;
+  width: 8px;
+  height: 4px;
 }
 .fbadge {
   position: absolute;
@@ -534,15 +596,9 @@ body {
   display: grid;
   place-items: center;
   padding: 0 5px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
   z-index: 10;
   pointer-events: none;
-}
-/* collapsed folder floats bare: no bubble behind the preview */
-.folder:not(.open) .ftile {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
 }
 .folder .launcher-x {
   top: 4px;
@@ -551,8 +607,8 @@ body {
 }
 .folder:hover .launcher-x { opacity: 1; }
 .fhead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.fhead-dot { width: 24px; height: 18px; border-radius: 4px; background: linear-gradient(145deg, #f59e0b, #b45309); flex: 0 0 auto; box-shadow: 0 2px 5px rgba(0,0,0,.35); }
-.fhead-name { flex: 1; color: #fff; font-weight: 800; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 8px rgba(0, 0, 0, 0.5); }
+.fhead-dot { width: 24px; height: 18px; border-radius: 4px; background: linear-gradient(145deg, #f59e0b, #b45309); flex: 0 0 auto; box-shadow: 0 1px 3px rgba(0,0,0,.24); }
+.fhead-name { flex: 1; color: #fff; font-weight: 800; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65), 0 0 5px rgba(0, 0, 0, 0.35); }
 .fshut { border: none; background: rgba(255,255,255,.15); color: #fff; border-radius: 8px; width: 26px; height: 22px; cursor: pointer; font-weight: 800; font-size: 14px; line-height: 1; flex: 0 0 auto; }
 .fshut:hover { background: rgba(255,255,255,.3); }
 .fgrid {
@@ -585,29 +641,241 @@ body {
 .fempty { color: #8f88c7; font-size: 12px; text-align: center; grid-column: 1 / -1; padding: 12px 0; }
 .fitem { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.07); border-radius: 14px; padding: 8px 4px 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; min-width: 0; font-family: inherit; }
 .fitem:hover { background: rgba(255,255,255,.15); }
-.fitem img { width: 38px; height: 38px; object-fit: contain; pointer-events: none; image-rendering: -webkit-optimize-contrast; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.35)); }
+.fitem img { width: 38px; height: 38px; object-fit: contain; pointer-events: none; image-rendering: -webkit-optimize-contrast; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25)); }
 .fitem.go { animation: launchpop 0.6s ease; }
 .fitem.shake { animation: tileshake 0.45s ease; }
 .fitem.dragging-out { opacity: 0.45; }
+.floaty-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 72px;
+  pointer-events: none;
+  z-index: 999999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.24));
+  opacity: 0.95;
+  will-change: transform;
+}
+.floaty-drag-ghost img {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 12px;
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.28));
+}
+.floaty-drag-ghost .ghost-folder {
+  transform: scale(0.9);
+}
+.floaty-drag-ghost .ghost-letter {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #8b7bff, #5b4bd6);
+  color: #fff;
+  font-weight: 800;
+  font-size: 20px;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.24);
+}
+.floaty-drag-ghost .ghost-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 5px rgba(0, 0, 0, 0.4);
+  text-align: center;
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .fletter { width: 36px; height: 36px; border-radius: 12px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 18px; display: grid; place-items: center; text-shadow: 0 1px 3px rgba(0,0,0,.3); }
-.flabel { max-width: 100%; font-size: 10.5px; font-weight: 700; color: #e8e4ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75), 0 0 8px rgba(0, 0, 0, 0.5); }
+.flabel { max-width: 100%; font-size: 10.5px; font-weight: 700; color: #e8e4ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65), 0 0 5px rgba(0, 0, 0, 0.35); }
 /* right-click pin menu */
-.pin-menu { position: fixed; z-index: 50; background: rgba(24,20,44,.96); border: 1px solid rgba(255,255,255,.2); border-radius: 12px; box-shadow: 0 10px 26px rgba(0,0,0,.5); padding: 6px; }
+.pin-menu { position: fixed; z-index: 50; background: rgba(24,20,44,.96); border: 1px solid rgba(255,255,255,.2); border-radius: 12px; box-shadow: 0 6px 16px rgba(0,0,0,.42); padding: 6px; }
 .pin-row { display: flex; gap: 8px; align-items: center; font-size: 12.5px; font-weight: 600; color: #e8e4ff; cursor: pointer; padding: 6px 10px; border-radius: 8px; white-space: nowrap; }
 .pin-row:hover { background: rgba(255,255,255,.1); }
 .pin-row input[type="checkbox"] { accent-color: #6c5ce7; width: 15px; height: 15px; cursor: pointer; }
-.fminis { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; width: 44px; height: 44px; }
-.fminis img { width: 100%; height: 100%; object-fit: contain; border-radius: 6px; background: transparent; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); pointer-events: none; image-rendering: -webkit-optimize-contrast; }
-.fmini-letter { border-radius: 6px; background: linear-gradient(145deg, #8b7bff, #5b4bd6); color: #fff; font-weight: 800; font-size: 10px; display: grid; place-items: center; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.pin-btn { font-weight: 500; }
+.pin-btn.danger { color: #fda4af; }
+.pin-btn.danger:hover { background: rgba(244, 63, 94, 0.18); }
+.pin-sep { height: 1px; margin: 5px 6px; background: rgba(255, 255, 255, 0.14); }
+.pin-note { font-size: 11px; font-weight: 600; color: #a7f3d0; padding: 4px 10px 2px; }
+.pin-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; font-weight: 600; color: #f2f0ff; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 8px; padding: 6px 8px; outline: none; }
+.fminis {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  place-items: center;
+}
+.fminis img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  border-radius: 5px;
+  background: transparent;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+  image-rendering: -webkit-optimize-contrast;
+}
+.fmini-letter {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: linear-gradient(145deg, #8b7bff, #5b4bd6);
+  color: #fff;
+  font-weight: 800;
+  font-size: 10px;
+  display: grid;
+  place-items: center;
+  text-shadow: 0 1px 2px rgba(0,0,0,.3);
+  box-sizing: border-box;
+}
 .fname-edit { flex: 1; min-width: 0; background: rgba(255,255,255,.1); color: #fff; border: 1px solid var(--accent); border-radius: 8px; padding: 3px 8px; font-size: 13px; font-weight: 700; font-family: inherit; outline: none; }
 
 /* ---------- live2d ---------- */
-.live2d-wrap { width: 100vw; height: 100vh; position: relative; cursor: grab; }
+.live2d-wrap { width: 100%; height: 100%; box-sizing: border-box; position: relative; cursor: grab; }
 .live2d-wrap:active { cursor: grabbing; }
 .live2d-wrap canvas { display: block; width: 100%; height: 100%; image-rendering: -webkit-optimize-contrast; }
 .live2d-x { position: absolute; top: 6px; right: 6px; opacity: 0; z-index: 5; }
 .live2d-wrap:hover .live2d-x { opacity: 1; }
 .live2d-failed { color: #fff; font-size: 13px; font-weight: 600; text-align: center; padding-top: 40%; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+
+/* ---------- audio visualizer ---------- */
+.viz-wrap {
+  --viz-level: 0;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(22, 18, 42, 0.82), rgba(30, 24, 60, 0.72));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: var(--card-shadow),
+    0 0 calc(6px + var(--viz-level) * 26px) rgba(108, 92, 231, calc(0.15 + var(--viz-level) * 0.45));
+  cursor: pointer;
+  transition: box-shadow 0.12s linear;
+}
+.viz-wrap:active { cursor: grabbing; }
+.viz-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.viz-x { position: absolute; top: 5px; right: 5px; opacity: 0; z-index: 3; }
+.viz-wrap:hover .viz-x { opacity: 1; }
+.viz-hint {
+  position: absolute;
+  left: 10px;
+  bottom: 4px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.42);
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.viz-wrap:hover .viz-hint { opacity: 1; }
+.viz-wrap .resize-handle {
+  background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%);
+  opacity: 0;
+}
+.viz-wrap:hover .resize-handle { opacity: 0.9; }
+
+/* ---------- system monitor ---------- */
+.sysmon-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px 7px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(20, 18, 38, 0.84), rgba(28, 24, 52, 0.74));
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow: var(--card-shadow);
+  color: #ece9ff;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.sysmon-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sysmon-title {
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(236, 233, 255, 0.5);
+}
+.sysmon-x { position: relative; margin: -4px -5px 0 0; opacity: 0; z-index: 3; }
+.sysmon-wrap:hover .sysmon-x { opacity: 1; }
+.sysmon-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sysmon-metric {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 2px;
+}
+.sysmon-key {
+  grid-row: 1 / span 2;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(236, 233, 255, 0.55);
+}
+.sysmon-val {
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.05;
+}
+.sysmon-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.11);
+  overflow: hidden;
+}
+.sysmon-track i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+}
+.sysmon-canvas {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 16px;
+  width: 100%;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+.sysmon-foot {
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: rgba(236, 233, 255, 0.42);
+}
+.sysmon-wrap .resize-handle {
+  background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%);
+  opacity: 0;
+}
+.sysmon-wrap:hover .resize-handle { opacity: 0.9; }
 
 /* ---------- settings page ---------- */
 body.settings-page {
@@ -685,6 +953,9 @@ body.settings-page {
 .k-clock { background: #dbeafe; color: #1d4ed8; }
 .k-pet { background: #dcfce7; color: #15803d; }
 .k-app { background: #ede9fe; color: #6d28d9; }
+.k-file { background: #e0f2fe; color: #0369a1; }
+.k-visualizer { background: #ccfbf1; color: #0f766e; }
+.k-sysmon { background: #e0e7ff; color: #4338ca; }
 .k-folder { background: #fef3c7; color: #92400e; }
 .k-live2d { background: #fce7f3; color: #be185d; }
 .card .id {
@@ -773,3 +1044,50 @@ body.settings-page::-webkit-scrollbar-thumb { background: linear-gradient(180deg
   font-weight: 600;
   padding: 10px 16px;
 }
+
+/* ---------- desktop overlay canvas ---------- */
+.overlay-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  overflow: hidden;
+  background: transparent;
+}
+
+.overlay-slot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: auto;
+}
+
+.overlay-slot:not(:has(.folder.open)):not(:has(.pin-menu)):not([data-kind="live2d"]) {
+  contain: layout style;
+}
+
+.overlay-slot.held {
+  will-change: transform;
+}
+
+.overlay-slot .bubble {
+  height: 100%;
+}
+
+.overlay-slot[data-kind="live2d"] .live2d-wrap {
+  /* follow the slot: the zoom resizes it (see live2d.ts applyZoom) */
+  width: 100%;
+  height: 100%;
+}
+
+.overlay-slot:has(.folder.open),
+.overlay-slot:has(.pin-menu) {
+  z-index: 100;
+}
+
+.overlay-slot:has(.held),
+.overlay-slot:active {
+  z-index: 200;
+}
+

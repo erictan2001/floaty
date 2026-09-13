@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
-import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, loadRecord, monitorArea, removeSelf, saveRecord, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragging, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -12,7 +11,7 @@ interface FolderItem {
 }
 
 const WIN_W = 92;
-const WIN_H = 116;
+const WIN_H = 112;
 const CELL = 84;
 
 export function mountFolder(root: HTMLElement, id: string): void {
@@ -65,7 +64,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       const s = await appWin.scaleFactor();
       const k = s > 0 ? s : 1;
       scale = k;
-      await appWin.setSize(new PhysicalSize(Math.round(w * k), Math.round(h * k)));
+      setWidgetSize(id, w, h, k);
     } catch {
       /* ignore */
     }
@@ -106,16 +105,19 @@ export function mountFolder(root: HTMLElement, id: string): void {
 
       px = newX;
       py = newY;
-      await appWin.setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)));
+      setWidgetPos(id, px, py, scale);
       await setWindowSize(targetW, targetH);
     } catch {
       /* ignore */
     }
 
     expanded = true;
+    wrap.parentElement?.style.setProperty("z-index", "100");
     render();
 
-    const missingIcons = items.some((it) => !it.is_dir && (!it.icon || it.icon === "none" || it.icon.length < 5000));
+    // Directories included: excluding them left subfolders blank until the app
+    // was restarted, because the startup pass was the only thing resolving them.
+    const missingIcons = items.some((it) => iconIsMissing(it.icon));
     if (missingIcons) {
       invoke("floaty_resolve_folder_icons", { folderId: id }).catch(() => undefined);
     }
@@ -124,6 +126,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
   const collapseFolder = async (): Promise<void> => {
     if (!expanded) return;
     expanded = false;
+    wrap.parentElement?.style.removeProperty("z-index");
 
     if (collapsedPos) {
       px = collapsedPos.x;
@@ -139,7 +142,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       if (py + WIN_H > mon.y + mon.h - MARGIN) py = mon.y + mon.h - MARGIN - WIN_H;
       if (py < mon.y + MARGIN) py = mon.y + MARGIN;
 
-      await appWin.setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)));
+      setWidgetPos(id, px, py, scale);
       await setWindowSize(WIN_W, WIN_H);
       savePos();
     } catch {
@@ -171,6 +174,10 @@ export function mountFolder(root: HTMLElement, id: string): void {
             img.alt = "";
             img.draggable = false;
             minis.append(img);
+          } else if (it.is_dir) {
+            const glyph = document.createElement("div");
+            glyph.className = "ffolder fmini-dir";
+            minis.append(glyph);
           } else {
             const ch = document.createElement("span");
             ch.className = "fmini-letter";
@@ -284,50 +291,116 @@ export function mountFolder(root: HTMLElement, id: string): void {
         lab.className = "flabel";
         lab.textContent = it.name;
         b.append(lab);
-        // drag an item out past the window edge to unfloat it as its own icon
+        // drag an item out past the folder boundaries to unfloat it as its own icon
         b.addEventListener("pointerdown", (e) => {
           if (e.button !== 0) return;
           e.stopPropagation(); // not a folder-window drag
           itemDragMoved = false;
-          try {
-            b.setPointerCapture(e.pointerId);
-          } catch {
-            /* ignore */
-          }
-          const sx = e.screenX;
-          const sy = e.screenY;
+          const isOverlay = isOverlayMode();
+          const sx = isOverlay ? e.clientX : e.screenX;
+          const sy = isOverlay ? e.clientY : e.screenY;
           let out = false;
+          let captured = false;
+          let ghost: HTMLElement | null = null;
+
           const onMove = (ev: PointerEvent) => {
-            if (!out && Math.hypot(ev.screenX - sx, ev.screenY - sy) > 8) {
+            const curSX = isOverlay ? ev.clientX : ev.screenX;
+            const curSY = isOverlay ? ev.clientY : ev.screenY;
+            if (!out && Math.hypot(curSX - sx, curSY - sy) > 8) {
               out = true;
               itemDragMoved = true;
               b.classList.add("dragging-out");
               suppressClickUntil = performance.now() + 300;
+              notifyDragging(true);
+              if (!captured) {
+                captured = true;
+                try {
+                  b.setPointerCapture(e.pointerId);
+                } catch {
+                  /* ignore */
+                }
+              }
+              // Floating ghost element following cursor across the desktop
+              ghost = document.createElement("div");
+              ghost.className = "floaty-drag-ghost";
+              ghost.style.transform = `translate3d(${ev.clientX - 36}px, ${ev.clientY - 36}px, 0)`;
+              if (it.icon && it.icon !== "none") {
+                const gImg = document.createElement("img");
+                gImg.src = it.icon;
+                ghost.append(gImg);
+              } else if (it.is_dir) {
+                const gGlyph = document.createElement("div");
+                gGlyph.className = "ffolder ghost-folder";
+                ghost.append(gGlyph);
+              } else {
+                const gTile = document.createElement("div");
+                gTile.className = "ghost-letter";
+                gTile.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
+                ghost.append(gTile);
+              }
+              const gLab = document.createElement("span");
+              gLab.className = "ghost-label";
+              gLab.textContent = it.name;
+              ghost.append(gLab);
+              document.body.append(ghost);
+            }
+            if (ghost) {
+              ghost.style.transform = `translate3d(${ev.clientX - 36}px, ${ev.clientY - 36}px, 0)`;
             }
           };
+
           const onUp = (ev: PointerEvent) => {
             window.removeEventListener("pointermove", onMove);
             window.removeEventListener("pointerup", onUp);
             window.removeEventListener("pointercancel", onUp);
-            try {
-              if (b.hasPointerCapture(e.pointerId)) b.releasePointerCapture(e.pointerId);
-            } catch {
-              /* ignore */
+            if (captured) {
+              try {
+                if (b.hasPointerCapture(e.pointerId)) b.releasePointerCapture(e.pointerId);
+              } catch {
+                /* ignore */
+              }
+            }
+            if (ghost) {
+              ghost.remove();
+              ghost = null;
             }
             b.classList.remove("dragging-out");
+            if (out) {
+              notifyDragging(false);
+            }
             if (!out) return; // plain tap: the click handler below launches
-            const inside =
-              ev.clientX >= 0 &&
-              ev.clientY >= 0 &&
-              ev.clientX < window.innerWidth &&
-              ev.clientY < window.innerHeight;
-            if (inside) return; // dragged but stayed inside: cancel, don't launch
-            const nx = Math.round(px + ev.clientX - 46);
-            const ny = Math.round(py + ev.clientY - 56);
+
+            let inside = false;
+            if (isOverlay) {
+              const folderRect = wrap.getBoundingClientRect();
+              inside =
+                ev.clientX >= folderRect.left + 4 &&
+                ev.clientX <= folderRect.right - 4 &&
+                ev.clientY >= folderRect.top + 4 &&
+                ev.clientY <= folderRect.bottom - 4;
+            } else {
+              inside =
+                ev.clientX >= 0 &&
+                ev.clientY >= 0 &&
+                ev.clientX < window.innerWidth &&
+                ev.clientY < window.innerHeight;
+            }
+            if (inside) return; // dragged but stayed inside folder: cancel, don't launch or ungroup
+
+            let nx = isOverlay ? Math.round(ev.clientX - 46) : Math.round(px + ev.clientX - 46);
+            let ny = isOverlay ? Math.round(ev.clientY - 56) : Math.round(py + ev.clientY - 56);
+            if (isOverlay) {
+              const monW = window.innerWidth || 1920;
+              const monH = window.innerHeight || 1080;
+              nx = Math.max(16, Math.min(monW - 92 - 16, nx));
+              ny = Math.max(16, Math.min(monH - 112 - 16, ny));
+            }
             const index = items.indexOf(it);
-            invoke("floaty_ungroup", { folderId: id, index, x: nx, y: ny }).catch(
-              () => undefined,
-            );
+            if (index >= 0) {
+              invoke("floaty_ungroup", { folderId: id, index, x: nx, y: ny })
+                .then(() => reload())
+                .catch(() => undefined);
+            }
           };
           window.addEventListener("pointermove", onMove);
           window.addEventListener("pointerup", onUp);
@@ -370,14 +443,12 @@ export function mountFolder(root: HTMLElement, id: string): void {
       ? (raw as FolderItem[]).filter((it) => it && typeof it.target === "string")
       : [];
     try {
-      const p = await appWin.outerPosition();
-      const s = await appWin.scaleFactor();
-      const k = s > 0 ? s : 1;
-      scale = k;
-      px = p.x / k;
-      py = p.y / k;
+      const p = await logicalPos(id);
+      px = p.x;
+      py = p.y;
     } catch {
-      /* keep */
+      px = r.x;
+      py = r.y;
     }
     syncFloat();
     render();
@@ -407,18 +478,28 @@ export function mountFolder(root: HTMLElement, id: string): void {
     if (t.closest("button, input, textarea")) return;
     e.stopPropagation();
     dragging = true;
+    notifyDragging(true);
     void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
     // capture lazily on first real movement (see pet.ts: eager capture eats taps)
     let captured = false;
+    const isOverlay = isOverlayMode();
     const startX = px;
     const startY = py;
-    const startSX = e.screenX;
-    const startSY = e.screenY;
+    const startSX = isOverlay ? e.clientX : e.screenX;
+    const startSY = isOverlay ? e.clientY : e.screenY;
     let moved = false;
     const onMove = (ev: PointerEvent) => {
-      px = startX + (ev.screenX - startSX);
-      py = startY + (ev.screenY - startSY);
-      if (Math.hypot(ev.screenX - startSX, ev.screenY - startSY) > 4) {
+      const curSX = isOverlay ? ev.clientX : ev.screenX;
+      const curSY = isOverlay ? ev.clientY : ev.screenY;
+      px = startX + (curSX - startSX);
+      py = startY + (curSY - startSY);
+      if (isOverlay) {
+        const monW = window.innerWidth || 1920;
+        const monH = window.innerHeight || 1080;
+        px = Math.max(0, Math.min(monW - WIN_W, px));
+        py = Math.max(0, Math.min(monH - WIN_H, py));
+      }
+      if (Math.hypot(curSX - startSX, curSY - startSY) > 4) {
         moved = true;
         suppressClickUntil = performance.now() + 300;
         if (!captured) {
@@ -430,9 +511,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
           }
         }
       }
-      void appWin
-        .setPosition(new PhysicalPosition(Math.round(px * scale), Math.round(py * scale)))
-        .catch(() => undefined);
+      setWidgetPos(id, px, py, scale);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -444,13 +523,26 @@ export function mountFolder(root: HTMLElement, id: string): void {
         /* ignore */
       }
       if (moved) {
-        void savePos();
-        if (expanded) {
-          collapsedPos = { x: px, y: py };
-        }
-        invoke("floaty_dropped", { id }).catch(() => undefined);
+        void (async () => {
+          try {
+            const res = await invoke<string | null>("floaty_dropped", {
+              id,
+              x: Math.round(px),
+              y: Math.round(py),
+            });
+            if (res) return;
+          } catch {
+            /* ignore */
+          }
+
+          savePos();
+          if (expanded) {
+            collapsedPos = { x: px, y: py };
+          }
+        })();
       }
       dragging = false;
+      notifyDragging(false);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);

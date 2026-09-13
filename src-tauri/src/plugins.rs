@@ -64,6 +64,15 @@ pub const PLUGINS: &[PluginDef] = &[
         custom_size: None,
     },
     PluginDef {
+        id: "file",
+        name: "File",
+        description: "Loose desktop files (documents, images, archives). Double-click opens them with their default app.",
+        default_size: (92.0, 112.0),
+        resizable: false,
+        default_data: || serde_json::json!({ "name": "file", "target": "" }),
+        custom_size: None,
+    },
+    PluginDef {
         id: "folder",
         name: "Folder",
         description: "Groups of launchers. Click to expand into a launch grid.",
@@ -79,7 +88,39 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (300.0, 400.0),
         resizable: false,
         default_data: || serde_json::json!({ "name": "Live2D" }),
-        custom_size: None,
+        // The zoom grows the widget box with the model (the frontend also clamps
+        // it to the desktop), so the record's w/h is the source of truth.
+        custom_size: Some(|base, data| {
+            let w = data.get("w").and_then(|v| v.as_f64()).unwrap_or(base.0);
+            let h = data.get("h").and_then(|v| v.as_f64()).unwrap_or(base.1);
+            (w.clamp(150.0, 900.0), h.clamp(200.0, 1200.0))
+        }),
+    },
+    PluginDef {
+        id: "visualizer",
+        name: "Audio visualizer",
+        description: "Spectrum bars for whatever the machine is playing (system audio, not the mic). Click it to switch bars/wave/dots.",
+        default_size: (280.0, 130.0),
+        resizable: true,
+        default_data: || serde_json::json!({ "name": "Visualizer", "mode": "bars" }),
+        custom_size: Some(|base, data| {
+            let w = data.get("w").and_then(|v| v.as_f64()).unwrap_or(base.0);
+            let h = data.get("h").and_then(|v| v.as_f64()).unwrap_or(base.1);
+            (w.clamp(140.0, 1400.0), h.clamp(70.0, 900.0))
+        }),
+    },
+    PluginDef {
+        id: "sysmon",
+        name: "System monitor",
+        description: "Live CPU, 3D-GPU and RAM load with a scrolling graph. Click it to graph a different metric.",
+        default_size: (250.0, 170.0),
+        resizable: true,
+        default_data: || serde_json::json!({ "name": "System monitor", "graph": "gpu" }),
+        custom_size: Some(|base, data| {
+            let w = data.get("w").and_then(|v| v.as_f64()).unwrap_or(base.0);
+            let h = data.get("h").and_then(|v| v.as_f64()).unwrap_or(base.1);
+            (w.clamp(180.0, 900.0), h.clamp(110.0, 700.0))
+        }),
     },
 ];
 
@@ -131,7 +172,17 @@ mod tests {
 
     #[test]
     fn test_find_all_known_plugins() {
-        let expected = ["note", "clock", "pet", "app", "folder", "live2d"];
+        let expected = [
+            "note",
+            "clock",
+            "pet",
+            "app",
+            "file",
+            "folder",
+            "live2d",
+            "visualizer",
+            "sysmon",
+        ];
         for id in &expected {
             assert!(is_valid_kind(id), "plugin {} should exist", id);
             let p = find_plugin(id).unwrap();
@@ -146,6 +197,7 @@ mod tests {
         let empty = serde_json::json!({});
         assert_eq!(widget_size("pet", &empty), (170.0, 170.0));
         assert_eq!(widget_size("app", &empty), (92.0, 112.0));
+        assert_eq!(widget_size("file", &empty), (92.0, 112.0));
         assert_eq!(widget_size("folder", &empty), (92.0, 112.0));
         assert_eq!(widget_size("live2d", &empty), (300.0, 400.0));
 
@@ -154,6 +206,15 @@ mod tests {
         assert_eq!(widget_size("note", &note_custom), (500.0, 600.0));
         let note_clamped = serde_json::json!({ "w": 10.0, "h": 5000.0 });
         assert_eq!(widget_size("note", &note_clamped), (180.0, 1400.0));
+
+        // Live2D: the zoom resizes the box, so w/h come from the record and the
+        // backend hit box has to match what the frontend put on screen
+        let live2d_zoomed = serde_json::json!({ "w": 499.0, "h": 665.0 });
+        assert_eq!(widget_size("live2d", &live2d_zoomed), (499.0, 665.0));
+        let live2d_huge = serde_json::json!({ "w": 5000.0, "h": 5000.0 });
+        assert_eq!(widget_size("live2d", &live2d_huge), (900.0, 1200.0));
+        let live2d_tiny = serde_json::json!({ "w": 10.0, "h": 10.0 });
+        assert_eq!(widget_size("live2d", &live2d_tiny), (150.0, 200.0));
     }
 
     #[test]

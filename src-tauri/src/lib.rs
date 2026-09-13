@@ -6,6 +6,9 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
+mod audio;
+mod shell_ops;
+mod sysmon;
 mod plugins;
 use plugins::PluginInfo;
 
@@ -68,6 +71,46 @@ fn store_file(app: &AppHandle) -> std::path::PathBuf {
     dir.join("floaty-store.json")
 }
 
+/// Write a text file atomically, keeping the previous contents as `<name>.bak`.
+///
+/// The store used to be written in place: being killed mid-write left a
+/// truncated JSON file, which then loaded as "no widgets at all" — that is how
+/// the desktop sometimes came back empty.
+fn write_text_atomic(path: &std::path::Path, text: &str) {
+    let tmp = path.with_extension("tmp");
+    if fs::write(&tmp, text).is_err() {
+        return;
+    }
+    if fs::rename(&tmp, path).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
+/// Seconds between backup rotations while the app is running.
+const BACKUP_EVERY_SECS: u64 = 60;
+static LAST_BACKUP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Refresh `<name>.bak` from the current file. Rotated on a timer (and once at
+/// startup) rather than on every save: a session that came up on an empty store
+/// used to write its freshly re-synced contents straight over the only good
+/// copy, which turned a recoverable crash into a permanent loss.
+fn refresh_backup(path: &std::path::Path, force: bool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if !force {
+        let last = LAST_BACKUP.load(std::sync::atomic::Ordering::Relaxed);
+        if last != 0 && now.saturating_sub(last) < BACKUP_EVERY_SECS {
+            return;
+        }
+    }
+    LAST_BACKUP.store(now, std::sync::atomic::Ordering::Relaxed);
+    if path.exists() {
+        let _ = fs::copy(path, path.with_extension("bak"));
+    }
+}
+
 fn persist(app: &AppHandle) {
     // Serialize under the lock, write after releasing it: holding the store
     // mutex across file IO serialized every save/list/create and stalled the
@@ -78,15 +121,68 @@ fn persist(app: &AppHandle) {
         let list: Vec<&WidgetRecord> = guard.widgets.values().collect();
         serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".to_string())
     };
-    fs::write(store_file(app), json).ok();
+    let store = store_file(app);
+    write_text_atomic(&store, &json);
+    // never let an empty desktop become the backup
+    if json.len() > 4 {
+        refresh_backup(&store, false);
+    }
+}
+
+/// Parse a JSON file, falling back to its `.bak` copy when the file is missing
+/// **or its JSON is damaged**. Returns the value and whether the backup was
+/// needed — a truncated write must not be mistaken for "nothing to load".
+fn read_json_with_backup<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+) -> Option<(T, bool)> {
+    if let Ok(text) = fs::read_to_string(path) {
+        if !text.trim().is_empty() {
+            if let Ok(value) = serde_json::from_str::<T>(&text) {
+                return Some((value, false));
+            }
+        }
+    }
+    let bak = path.with_extension("bak");
+    if let Ok(text) = fs::read_to_string(&bak) {
+        if let Ok(value) = serde_json::from_str::<T>(&text) {
+            return Some((value, true));
+        }
+    }
+    None
+}
+
+/// Keep the damaged file instead of throwing it away, so a bad write is still
+/// diagnosable after the fact.
+fn quarantine(path: &std::path::Path) {
+    if path.exists() {
+        let _ = fs::rename(path, path.with_extension("corrupt"));
+    }
 }
 
 fn load_all(app: &AppHandle) -> Vec<WidgetRecord> {
     let path = store_file(app);
-    let Ok(bytes) = fs::read(path) else {
-        return vec![];
-    };
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    match read_json_with_backup::<Vec<WidgetRecord>>(&path) {
+        Some((list, from_backup)) => {
+            if from_backup {
+                log_line(
+                    app,
+                    &format!("store unreadable; recovered {} widgets from backup", list.len()),
+                );
+                quarantine(&path);
+                if let Ok(json) = serde_json::to_string_pretty(&list) {
+                    write_text_atomic(&path, &json);
+                }
+            }
+            list
+        }
+        None => {
+            if path.exists() {
+                log_line(app, "store and backup both unreadable; desktop starts empty");
+                quarantine(&path);
+            }
+            vec![]
+        }
+    }
 }
 
 // ---------- global floating settings ----------
@@ -123,11 +219,76 @@ struct FloatSettings {
     /// animation mode: "wave", "sync", "gentle", "static"
     #[serde(default = "default_animation_mode")]
     animation_mode: String,
+    /// base float travel in px (icons bob this far)
+    #[serde(default = "default_float_amplitude")]
+    float_amplitude: f64,
+    /// seconds per float cycle (lower = floating more often)
+    #[serde(default = "default_float_period")]
+    float_period: f64,
+    /// how far apart neighbouring floaties bob, as a percentage of the stagger
+    #[serde(default = "default_float_spread")]
+    float_spread: f64,
+    /// ask before removing a floatie (file, folder or widget)
+    #[serde(default = "default_confirm_remove")]
+    confirm_remove: bool,
+    /// visualizer sensitivity multiplier
+    #[serde(default = "default_viz_gain")]
+    viz_gain: f64,
+    /// visualizer redraw rate (frames per second, while audio plays)
+    #[serde(default = "default_viz_fps")]
+    viz_fps: f64,
+    /// system monitor sample period (milliseconds)
+    #[serde(default = "default_sysmon_interval")]
+    sysmon_interval: f64,
+    /// version of the icon resolution pipeline the stored icons came from.
+    /// Bumping `ICON_PIPELINE` re-resolves every stored icon once, which is how
+    /// icons produced by an older (worse) pipeline get replaced.
+    #[serde(default = "default_icon_pipeline")]
+    icon_pipeline: u32,
+}
+
+/// Bump when the icon resolver changes what it produces, so already-stored
+/// icons are refreshed once. v2: shell item image + alpha-preserving PNG.
+/// v3: pick the route whose artwork actually fills the frame.
+const ICON_PIPELINE: u32 = 3;
+
+fn default_icon_pipeline() -> u32 {
+    // Old settings files predate the field; 0 means "resolve everything once".
+    0
 }
 
 fn default_stay_on_desktop() -> bool {
     true
 }
+
+fn default_float_amplitude() -> f64 {
+    4.5
+}
+
+fn default_float_period() -> f64 {
+    10.0
+}
+
+fn default_float_spread() -> f64 {
+    100.0
+}
+
+fn default_confirm_remove() -> bool {
+    true
+}
+
+fn default_viz_gain() -> f64 {
+    1.0
+}
+
+fn default_viz_fps() -> f64 {
+    30.0
+}
+
+fn default_sysmon_interval() -> f64 {
+    1000.0
+}
+
 
 fn default_animated_ratio() -> f64 {
     100.0
@@ -167,7 +328,7 @@ fn settings_file(app: &AppHandle) -> std::path::PathBuf {
 
 fn load_settings(app: &AppHandle) -> FloatSettings {
     let parsed: Option<FloatSettings> =
-        fs::read(settings_file(app)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        read_json_with_backup::<FloatSettings>(&settings_file(app)).map(|(s, _)| s);
     match parsed {
         Some(s) => FloatSettings {
             single_click: if s.single_click.is_empty() {
@@ -200,6 +361,14 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             stay_on_desktop: default_stay_on_desktop(),
             animated_ratio: default_animated_ratio(),
             animation_mode: default_animation_mode(),
+            float_amplitude: default_float_amplitude(),
+            float_period: default_float_period(),
+            float_spread: default_float_spread(),
+            confirm_remove: default_confirm_remove(),
+            viz_gain: default_viz_gain(),
+            viz_fps: default_viz_fps(),
+            sysmon_interval: default_sysmon_interval(),
+            icon_pipeline: default_icon_pipeline(),
         },
     }
 }
@@ -211,6 +380,10 @@ fn floaty_get_settings(app: AppHandle) -> FloatSettings {
 
 #[tauri::command]
 fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings {
+    // icon_pipeline is the backend's own bookkeeping (it decides whether stored
+    // icons need re-resolving); the settings UI does not know about it, so keep
+    // whatever is already on disk instead of letting a save reset it to 0.
+    let stored_pipeline = load_settings(&app).icon_pipeline;
     let s = FloatSettings {
         pet_speed: settings.pet_speed.clamp(0.0, 3.0),
         gravity: settings.gravity.clamp(0.0, 8000.0),
@@ -233,13 +406,25 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             "sync" | "gentle" | "static" => settings.animation_mode,
             _ => "wave".to_string(),
         },
+        float_amplitude: settings.float_amplitude.clamp(0.0, 24.0),
+        float_period: settings.float_period.clamp(2.0, 60.0),
+        float_spread: settings.float_spread.clamp(0.0, 200.0),
+        confirm_remove: settings.confirm_remove,
+        viz_gain: settings.viz_gain.clamp(0.1, 4.0),
+        viz_fps: settings.viz_fps.clamp(5.0, 60.0),
+        sysmon_interval: settings.sysmon_interval.clamp(250.0, 10_000.0),
+        icon_pipeline: stored_pipeline.max(settings.icon_pipeline),
     };
     if let Ok(json) = serde_json::to_string_pretty(&s) {
-        fs::write(settings_file(&app), json).ok();
+        write_text_atomic(&settings_file(&app), &json);
     }
     #[cfg(windows)]
     {
-        desktop_pin::set_stay_on_desktop_global(s.stay_on_desktop);
+        if let Some(win) = app.get_webview_window("desktop-overlay") {
+            if let Ok(hwnd) = win.hwnd() {
+                desktop_pin::apply_overlay_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+            }
+        }
         for (label, win) in app.webview_windows() {
             if label.starts_with("widget-") {
                 if let Ok(hwnd) = win.hwnd() {
@@ -266,9 +451,22 @@ mod desktop_pin {
     }
 
     const GWLP_HWNDPARENT: i32 = -8;
+    const GWL_STYLE: i32 = -16;
     const GWL_EXSTYLE: i32 = -20;
+    const WS_CAPTION: isize = 0x00C00000;
+    const WS_THICKFRAME: isize = 0x00040000;
+    const WS_BORDER: isize = 0x00800000;
+    const WS_DLGFRAME: isize = 0x00400000;
     const WS_EX_TOOLWINDOW: isize = 0x00000080;
     const WS_EX_APPWINDOW: isize = 0x00040000;
+
+    const WM_ERASEBKGND: u32 = 0x0014;
+    const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_NCPAINT: u32 = 0x0085;
+    const WM_NCACTIVATE: u32 = 0x0086;
+
+    const DWMWA_NCRENDERING_POLICY: u32 = 2;
+    const DWMNCRP_DISABLED: u32 = 1;
 
     const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOSIZE: u32 = 0x0001;
@@ -320,7 +518,16 @@ mod desktop_pin {
     #[link(name = "user32")]
     #[link(name = "comctl32")]
     #[link(name = "ole32")]
+    #[link(name = "kernel32")]
+    #[link(name = "gdi32")]
+    #[link(name = "dwmapi")]
     extern "system" {
+        pub fn DwmSetWindowAttribute(
+            hwnd: isize,
+            dwAttribute: u32,
+            pvAttribute: *const std::ffi::c_void,
+            cbAttribute: u32,
+        ) -> i32;
         pub fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> isize;
         pub fn FindWindowExW(
             hWndParent: isize,
@@ -364,6 +571,12 @@ mod desktop_pin {
             riid: *const u8,
             ppv: *mut *mut std::ffi::c_void,
         ) -> i32;
+        pub fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> isize;
+        pub fn CombineRgn(hrgnDst: isize, hrgnSrc1: isize, hrgnSrc2: isize, iMode: i32) -> i32;
+        pub fn DeleteObject(ho: isize) -> i32;
+        pub fn SetWindowRgn(hWnd: isize, hRgn: isize, bRedraw: i32) -> i32;
+
+        pub fn InvalidateRect(hWnd: isize, lpRect: *const std::ffi::c_void, bErase: i32) -> i32;
     }
 
     pub fn delete_taskbar_tab(hwnd: isize) {
@@ -481,6 +694,23 @@ mod desktop_pin {
                 return 0;
             }
         }
+
+        // Suppress non-client frame rendering & background erase.
+        // This prevents Windows from drawing a default white title bar / caption strip
+        // along the top edge of shaped window regions.
+        if msg == WM_NCCALCSIZE {
+            return 0;
+        }
+        if msg == WM_NCPAINT {
+            return 0;
+        }
+        if msg == WM_NCACTIVATE {
+            return 1;
+        }
+        if msg == WM_ERASEBKGND {
+            return 1;
+        }
+
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
@@ -510,12 +740,223 @@ mod desktop_pin {
             );
         }
     }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct HitRect {
+        pub id: String,
+        pub x: i32,
+        pub y: i32,
+        pub w: i32,
+        pub h: i32,
+    }
+
+    const RGN_OR: i32 = 2;
+    const WS_EX_TRANSPARENT: isize = 0x00000020;
+
+    static OVERLAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+    static OVERLAY_IS_DRAGGING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static OVERLAY_HIT_RECTS: std::sync::RwLock<Vec<HitRect>> = std::sync::RwLock::new(Vec::new());
+
+    pub fn apply_hit_regions(hwnd: isize, rects: &[HitRect]) {
+        if hwnd == 0 {
+            return;
+        }
+        unsafe {
+            let valid: Vec<&HitRect> = rects.iter().filter(|r| r.w > 0 && r.h > 0).collect();
+            if valid.is_empty() {
+                // An empty region excludes the entire window from receiving clicks
+                let empty = CreateRectRgn(0, 0, 0, 0);
+                SetWindowRgn(hwnd, empty, 0);
+                return;
+            }
+
+            let first = valid[0];
+            let combined = CreateRectRgn(first.x, first.y, first.x + first.w, first.y + first.h);
+            for r in &valid[1..] {
+                let item = CreateRectRgn(r.x, r.y, r.x + r.w, r.y + r.h);
+                CombineRgn(combined, combined, item, RGN_OR);
+                DeleteObject(item);
+            }
+
+            // SetWindowRgn transfers ownership of `combined` to the operating system.
+            // bRedraw must be 1: the strip newly added to the region still holds
+            // stale (transparent) pixels, and Chromium only repaints damage it
+            // knows about — a widget whose pixels were clipped away before the
+            // region included them would stay invisible until something else
+            // damaged it. Client redraws are safe here: the subclass suppresses
+            // WM_NCCALCSIZE / WM_NCPAINT and swallows WM_ERASEBKGND.
+            SetWindowRgn(hwnd, combined, 1);
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        }
+    }
+
+    pub fn set_hit_rects(rects: Vec<HitRect>) {
+        let hwnd = OVERLAY_HWND.load(Ordering::Relaxed);
+        let is_dragging = OVERLAY_IS_DRAGGING.load(Ordering::Relaxed);
+        let changed = if let Ok(mut guard) = OVERLAY_HIT_RECTS.write() {
+            if *guard == rects {
+                false
+            } else {
+                *guard = rects.clone();
+                true
+            }
+        } else {
+            false
+        };
+        if changed && !is_dragging && hwnd != 0 {
+            apply_hit_regions(hwnd, &rects);
+        }
+    }
+
+    pub fn set_dragging(dragging: bool) {
+        OVERLAY_IS_DRAGGING.store(dragging, Ordering::Relaxed);
+        let hwnd = OVERLAY_HWND.load(Ordering::Relaxed);
+        if hwnd != 0 {
+            if dragging {
+                // Clear the window region during dragging so the entire desktop can receive drag events
+                unsafe {
+                    SetWindowRgn(hwnd, 0, 0);
+                }
+            } else {
+                if let Ok(guard) = OVERLAY_HIT_RECTS.read() {
+                    apply_hit_regions(hwnd, &guard);
+                }
+            }
+        }
+    }
+
+    pub fn cleanup_hook() {}
+
+    pub fn apply_overlay_desktop_pin(hwnd: isize, stay_on_desktop: bool) {
+        apply_desktop_pin(hwnd, stay_on_desktop);
+        OVERLAY_HWND.store(hwnd, Ordering::SeqCst);
+        unsafe {
+            // Remove WS_EX_TRANSPARENT so the shaped regions receive clicks normally
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex & !WS_EX_TRANSPARENT);
+
+            // Strip caption / thickframe / border styles to eliminate non-client frame
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_CAPTION | WS_THICKFRAME | WS_BORDER | WS_DLGFRAME));
+
+            // Disable DWM non-client rendering policy (no caption, frame, or drop shadows)
+            let policy: u32 = DWMNCRP_DISABLED;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_NCRENDERING_POLICY,
+                &policy as *const u32 as *const std::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+
+            SetWindowPos(
+                hwnd,
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+        if let Ok(guard) = OVERLAY_HIT_RECTS.read() {
+            apply_hit_regions(hwnd, &guard);
+        }
+    }
 }
 
 // ---------- windows ----------
 
 fn widget_label(id: &str) -> String {
     format!("widget-{id}")
+}
+
+/// Extensions the Windows shell launches directly. Anything else that is not a
+/// directory is a *file*: it floats with a document icon and opens with its
+/// default app instead of being spawned like an executable.
+const LAUNCHABLE_EXTS: &[&str] = &[
+    "exe", "lnk", "url", "bat", "cmd", "com", "scr", "msi", "appref-ms", "ps1", "psm1", "vbs",
+    "vbe", "js", "jse", "wsf", "wsh", "hta", "cpl", "msc", "reg", "jar", "ahk",
+];
+
+fn is_launchable_target(path: &std::path::Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => LAUNCHABLE_EXTS.iter().any(|k| ext.eq_ignore_ascii_case(k)),
+        None => false,
+    }
+}
+
+/// Widget kind for a filesystem entry: folder, launchable app, or loose file.
+fn kind_for_path(path: &std::path::Path, is_dir: bool) -> &'static str {
+    if is_dir {
+        "folder"
+    } else if is_launchable_target(path) {
+        "app"
+    } else {
+        "file"
+    }
+}
+
+/// Widget kinds that describe a single launchable path (icon resolution, launch,
+/// layout and folder grouping treat them the same).
+fn is_path_kind(kind: &str) -> bool {
+    kind == "app" || kind == "file"
+}
+
+fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window("desktop-overlay").is_some() {
+        return Ok(());
+    }
+
+    let (x, y, w, h) = if let Ok(Some(mon)) = app.primary_monitor() {
+        let s = mon.scale_factor();
+        let size = mon.size();
+        let pos = mon.position();
+        (
+            (pos.x as f64) / s,
+            (pos.y as f64) / s,
+            (size.width as f64) / s,
+            (size.height as f64) / s,
+        )
+    } else {
+        (0.0, 0.0, 1920.0, 1080.0)
+    };
+
+    log_line(app, &format!("spawn desktop-overlay at {x},{y} size {w}x{h}"));
+    let win = WebviewWindowBuilder::new(
+        app,
+        "desktop-overlay",
+        WebviewUrl::App("index.html#/overlay".into()),
+    )
+    .title("Floaty Desktop")
+    .inner_size(w, h)
+    .position(x, y)
+    .transparent(true)
+    .decorations(false)
+    .shadow(false)
+    .resizable(false)
+    .skip_taskbar(true)
+    .always_on_top(false)
+    .build()?;
+
+    #[cfg(windows)]
+    {
+        let stay = load_settings(app).stay_on_desktop;
+        if let Ok(hwnd) = win.hwnd() {
+            desktop_pin::apply_overlay_desktop_pin(hwnd.0 as isize, stay);
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn floaty_update_hit_rects(rects: Vec<desktop_pin::HitRect>) {
+    desktop_pin::set_hit_rects(rects);
+}
+
+#[tauri::command]
+fn floaty_set_overlay_dragging(dragging: bool) {
+    desktop_pin::set_dragging(dragging);
 }
 
 /// Create a widget window without blocking the calling (command) thread.
@@ -570,6 +1011,27 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Show a widget in whichever mode is running: the overlay mounts it from the
+/// record, per-window mode spawns its own window. Every "make this widget
+/// visible" path must go through here — spawning a window while the overlay is
+/// up puts a second copy of the widget on the desktop.
+fn show_widget(app: &AppHandle, rec: &WidgetRecord) {
+    if app.get_webview_window("desktop-overlay").is_some() {
+        app.emit("floaty-widget-added", rec).ok();
+    } else {
+        spawn_widget_async(app, rec);
+    }
+}
+
+/// Counterpart of `show_widget`: hide it again without leaving anything behind.
+fn hide_widget(app: &AppHandle, id: &str) {
+    if app.get_webview_window("desktop-overlay").is_some() {
+        app.emit("floaty-widget-removed", id).ok();
+    } else {
+        close_widget_async(app, id);
+    }
+}
+
 fn create_record_with(
     app: &AppHandle,
     kind: &str,
@@ -604,10 +1066,7 @@ fn create_record_with(
         rec
     };
     persist(app);
-    // Async window creation: never block the command thread on the main
-    // thread (see spawn_widget_async). The record is already stored, so the
-    // caller gets its response immediately.
-    spawn_widget_async(app, &rec);
+    show_widget(app, &rec);
     Ok(rec)
 }
 
@@ -719,14 +1178,79 @@ async fn floaty_scan_apps(app: AppHandle) -> Vec<DiscoveredApp> {
     out
 }
 
-/// Check if an icon data url is low resolution (legacy 32x32 extraction or missing)
+/// Minimal base64 decoder for the first bytes of a data url (no deps needed).
+fn base64_decode_prefix(text: &str, max_bytes: usize) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let take = (max_bytes.div_ceil(3) * 4).max(4);
+    let chars: Vec<u8> = text.bytes().take(take).collect();
+    let mut out = Vec::with_capacity(max_bytes);
+    for chunk in chars.chunks(4) {
+        if chunk.len() < 4 {
+            break;
+        }
+        let mut v = [0u8; 4];
+        for (i, &c) in chunk.iter().enumerate() {
+            v[i] = if c == b'=' { 0 } else { val(c)? };
+        }
+        out.push((v[0] << 2) | (v[1] >> 4));
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        if pad < 2 {
+            out.push((v[1] << 4) | (v[2] >> 2));
+        }
+        if pad < 1 {
+            out.push((v[2] << 6) | v[3]);
+        }
+        if out.len() >= max_bytes {
+            break;
+        }
+    }
+    out.truncate(max_bytes);
+    Some(out)
+}
+
+/// Pixel size of a stored icon data url. Reads the PNG header instead of
+/// pattern-matching base64 (the old substring test both missed icons and
+/// flagged crisp ones, which made the upgrade pass churn).
+fn icon_pixel_size(s: &str) -> Option<(u32, u32)> {
+    let body = s.strip_prefix("data:image/png;base64,").unwrap_or(s);
+    let head = base64_decode_prefix(body, 24)?;
+    if head.len() < 24 || &head[..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    let w = u32::from_be_bytes([head[16], head[17], head[18], head[19]]);
+    let h = u32::from_be_bytes([head[20], head[21], head[22], head[23]]);
+    Some((w, h))
+}
+
+/// Nothing usable stored: empty, the literal "none", or an icon we cannot read.
+/// This — not "small" — is what forces a re-resolution, so a widget never
+/// re-runs the (expensive) resolver just because its icon is 32px.
+fn icon_is_missing(s: &str) -> bool {
+    if s.is_empty() || s == "none" {
+        return true;
+    }
+    icon_pixel_size(s).is_none()
+}
+
+/// Smaller than the shell's jumbo size, so the background upgrade pass may try
+/// for a crisper one. Never a reason to throw a stored icon away.
 fn is_low_res_icon(s: &str) -> bool {
     if s.is_empty() || s == "none" {
         return true;
     }
-    s.starts_with("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg")
-        || s.contains("AAAAACAAAAAg")
-        || s.contains("AAAACAAAAAg")
+    match icon_pixel_size(s) {
+        Some((w, h)) => w < 64 || h < 64,
+        None => true,
+    }
 }
 
 /// Standalone base64 encoder with zero external dependencies
@@ -834,19 +1358,56 @@ fn try_extract_fast_url(url_path: &str) -> Option<String> {
     None
 }
 
-static ICON_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+/// A resolved icon plus a fingerprint of the file it came from, so a replaced
+/// or re-downloaded file refreshes instead of serving the old icon forever
+/// (that was the "some tiles use the previous cache" complaint).
+#[derive(Clone)]
+struct CachedIcon {
+    data: String,
+    stamp: Option<(u64, u64)>,
+}
+
+fn path_stamp(path: &str) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some((mtime, meta.len()))
+}
+
+static ICON_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedIcon>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn resolve_icons_batch(paths: &[String]) -> HashMap<String, String> {
+fn cache_icon(path: &str, data: &str) {
+    if let Ok(mut guard) = ICON_CACHE.lock() {
+        guard.insert(
+            path.to_string(),
+            CachedIcon {
+                data: data.to_string(),
+                stamp: path_stamp(path),
+            },
+        );
+    }
+}
+
+/// Resolve icons for `paths`. Cached entries are reused while the file is
+/// unchanged; `force` skips the cache so the upgrade pass can really try for a
+/// crisper icon instead of being handed back the 32px one it wants to replace.
+fn resolve_icons_batch(paths: &[String], force: bool) -> HashMap<String, String> {
     let mut results = HashMap::new();
     let mut needed = Vec::new();
 
     if let Ok(guard) = ICON_CACHE.lock() {
         for p in paths {
-            if let Some(cached) = guard.get(p) {
-                if cached != "none" && !is_low_res_icon(cached) {
-                    results.insert(p.clone(), cached.clone());
-                    continue;
+            if !force {
+                if let Some(cached) = guard.get(p) {
+                    if cached.stamp == path_stamp(p) {
+                        results.insert(p.clone(), cached.data.clone());
+                        continue;
+                    }
                 }
             }
             needed.push(p.clone());
@@ -872,9 +1433,7 @@ fn resolve_icons_batch(paths: &[String]) -> HashMap<String, String> {
 
         if let Some(icon_data) = fast_res {
             results.insert(p.clone(), icon_data.clone());
-            if let Ok(mut guard) = ICON_CACHE.lock() {
-                guard.insert(p.clone(), icon_data);
-            }
+            cache_icon(p, &icon_data);
         } else {
             still_needed.push(p.clone());
         }
@@ -891,12 +1450,187 @@ fn resolve_icons_batch(paths: &[String]) -> HashMap<String, String> {
         const NO_WINDOW: u32 = 0x08000000;
 
         let script = r#"
+# Explicit UTF-8 on both pipes: the console codepage mangles any path with
+# non-ASCII characters, which silently skipped those icons entirely.
+$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), (New-Object Text.UTF8Encoding($false)))
+$writer = New-Object System.IO.StreamWriter([Console]::OpenStandardOutput(), (New-Object Text.UTF8Encoding($false)))
+$writer.AutoFlush = $true
 Add-Type -AssemblyName System.Drawing;
+# PresentationCore/WindowsBase load WPF, which is what converts the shell's
+# HBITMAP to PNG with its alpha channel intact.
+Add-Type -AssemblyName PresentationCore, WindowsBase;
+
+$IconFetchSrc = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+public static class IconFetch {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PrivateExtractIcons(string szFileName, int nIconIndex, int cxIcon, int cyIcon, IntPtr[] phicon, uint[] piconid, uint nIcons, uint flags);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct SHFILEINFO {
+        public IntPtr hIcon;
+        public int iIcon;
+        public uint dwAttributes;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
+    }
+    [DllImport("user32.dll")]
+    public static extern bool DestroyIcon(IntPtr hIcon);
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr hObject);
+
+    // The shell's own item image: the exact bitmap Explorer draws for a path,
+    // and the only route that returns more than 32px for file types whose
+    // registered icon is a small resource (pdf / txt / zip / md / folders).
+    [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IShellItemImageFactory {
+        void GetImage(SIZE size, int flags, out IntPtr phbm);
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SIZE { public int cx; public int cy; }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    public static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out object ppv);
+
+    public static IntPtr GetShellImageHandle(string path, int px) {
+        Guid iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");
+        object o;
+        SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out o);
+        var factory = (IShellItemImageFactory)o;
+        IntPtr hbm;
+        factory.GetImage(new SIZE { cx = px, cy = px }, 4, out hbm); // 4 = SIIGBF_ICONONLY
+        return hbm;
+    }
+
+    // How much of the frame the artwork actually covers: 0-100, the larger of the
+    // width/height span. Some apps ship a 256px frame whose art is drawn tiny in
+    // the middle; the shell hands that frame back as-is, so a tile built from it
+    // looks like a minimised icon next to the others.
+    public static int ArtSpanPercent(string pngB64) {
+        try {
+            byte[] bytes = Convert.FromBase64String(pngB64);
+            using (var ms = new MemoryStream(bytes, false))
+            using (var bmp = new Bitmap(ms)) {
+                int w = bmp.Width, h = bmp.Height;
+                var data = bmp.LockBits(new Rectangle(0, 0, w, h),
+                    ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try {
+                    int stride = data.Stride;
+                    byte[] buf = new byte[stride * h];
+                    Marshal.Copy(data.Scan0, buf, 0, buf.Length);
+                    int minX = w, minY = h, maxX = -1, maxY = -1;
+                    for (int y = 0; y < h; y++) {
+                        int row = y * stride;
+                        for (int x = 0; x < w; x++) {
+                            if (buf[row + x * 4 + 3] > 96) {
+                                if (x < minX) minX = x;
+                                if (x > maxX) maxX = x;
+                                if (y < minY) minY = y;
+                                if (y > maxY) maxY = y;
+                            }
+                        }
+                    }
+                    if (maxX < 0) return 0;
+                    int pctW = (maxX - minX + 1) * 100 / w;
+                    int pctH = (maxY - minY + 1) * 100 / h;
+                    return pctW > pctH ? pctW : pctH;
+                } finally {
+                    bmp.UnlockBits(data);
+                }
+            }
+        } catch { return -1; }
+    }
+}
+'@
+
+Add-Type -TypeDefinition $IconFetchSrc -ReferencedAssemblies System.Drawing;
+
+# Bitmap -> PNG base64 for a shell icon handle, releasing the handle afterwards.
+function Get-HiconB64([IntPtr]$hIcon) {
+    if ($hIcon -eq [IntPtr]::Zero) { return $null }
+    $res = $null
+    try {
+        $ico = [System.Drawing.Icon]::FromHandle($hIcon)
+        $bmp = $ico.ToBitmap()
+        $ms = New-Object IO.MemoryStream
+        $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $res = [Convert]::ToBase64String($ms.ToArray())
+        $ms.Dispose(); $bmp.Dispose()
+    } catch { $res = $null }
+    [void][IconFetch]::DestroyIcon($hIcon)
+    return $res
+}
+
+# Real 256px icon straight out of an exe/dll/ico. ExtractAssociatedIcon only ever
+# returns 32x32, which is what made app icons look soft.
+function Get-BigIconB64($spec) {
+    $path = $spec
+    $index = 0
+    if ($spec -match '^(.*),(\d+)$') { $path = $matches[1]; [void][int]::TryParse($matches[2], [ref]$index) }
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $handles = New-Object IntPtr[] 1
+        $ids = New-Object uint32[] 1
+        $n = [IconFetch]::PrivateExtractIcons($path, $index, 256, 256, $handles, $ids, 1, 0)
+        if ($n -ge 1 -and $handles[0] -ne [IntPtr]::Zero) { return Get-HiconB64 $handles[0] }
+    } catch {}
+    return $null
+}
+
+# Icon bitmap straight out of the shell's item image factory. This is what
+# Explorer itself draws, and the only way to get 256px for types whose
+# registered icon is a 32px resource (.pdf/.txt/.zip/.md/.py/.json, folders).
+# The HBITMAP -> PNG step goes through WPF on purpose: System.Drawing's
+# Bitmap.FromHbitmap throws the alpha channel away, which turned every shell
+# icon into a black square on the desktop.
+function Get-ShellImageB64($path) {
+    if ([string]::IsNullOrEmpty($path) -or -not (Test-Path -LiteralPath $path)) { return $null }
+    $ms = $null
+    try {
+        $hbm = [IconFetch]::GetShellImageHandle($path, 256)
+        if ($hbm -eq [IntPtr]::Zero) { return $null }
+        try {
+            $src = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHBitmap($hbm, [IntPtr]::Zero, [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())
+            $enc = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+            $enc.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($src))
+            $ms = New-Object IO.MemoryStream
+            $enc.Save($ms)
+            return [Convert]::ToBase64String($ms.ToArray())
+        } finally {
+            [void][IconFetch]::DeleteObject($hbm)
+        }
+    } catch { return $null }
+    finally { if ($ms) { $ms.Dispose() } }
+}
+
+# Directories have no file to extract from, so ask the shell for their glyph.
+function Get-DirIconB64($path) {
+    $shellImg = Get-ShellImageB64 $path
+    if (-not [string]::IsNullOrEmpty($shellImg)) { return $shellImg }
+    try {
+        $info = New-Object 'IconFetch+SHFILEINFO'
+        $size = [Runtime.InteropServices.Marshal]::SizeOf($info)
+        $flags = 0x100
+        $r = [IconFetch]::SHGetFileInfo($path, 0x10, [ref]$info, [uint32]$size, $flags)
+        if ($r -ne [IntPtr]::Zero -and $info.hIcon -ne [IntPtr]::Zero) { return Get-HiconB64 $info.hIcon }
+    } catch {}
+    return $null
+}
 
 function Get-IconB64($filePath) {
-    if ([string]::IsNullOrEmpty($filePath) -or -not [System.IO.File]::Exists($filePath)) { return $null }
+    if ([string]::IsNullOrEmpty($filePath) -or -not (Test-Path -LiteralPath $filePath)) { return $null }
+    if (Test-Path -LiteralPath $filePath -PathType Container) { return Get-DirIconB64 $filePath }
 
     if ($filePath.EndsWith('.ico', [StringComparison]::OrdinalIgnoreCase)) {
+        # A .ico holds several frames, usually including a 256px one in BMP
+        # format. PrivateExtractIcons picks the biggest; the PNG-only frame scan
+        # below returned 32-48px for these (Sprite/Steam/App icons).
+        $bigIco = Get-BigIconB64 $filePath
+        if (-not [string]::IsNullOrEmpty($bigIco)) { return $bigIco }
         try {
             $bytes = [System.IO.File]::ReadAllBytes($filePath)
             if ($bytes.Length -ge 22) {
@@ -942,6 +1676,57 @@ function Get-IconB64($filePath) {
         } catch {}
     }
 
+    # Two routes disagree for some apps. The shell returns the app's real 256px
+    # frame, which a few ship with the artwork drawn tiny in the middle (Sandboxie's
+    # SandMan.exe), while PrivateExtractIcons upscales a full-bleed frame. So try
+    # the route that usually wins for this kind, and take the other one as well
+    # when the first does not fill the frame: a small glyph in a big square reads
+    # as a minimised tile next to the other icons.
+    $order = if ($filePath -match '\.(exe|dll|ocx|scr|cpl|msi|sys|com)$') { @('big', 'shell') } else { @('shell', 'big') }
+    $best = $null
+    $bestSpan = -1
+    foreach ($route in $order) {
+        $cand = if ($route -eq 'big') { Get-BigIconB64 $filePath } else { Get-ShellImageB64 $filePath }
+        if ([string]::IsNullOrEmpty($cand)) { continue }
+        $span = [IconFetch]::ArtSpanPercent($cand)
+        if ($span -ge 60) { return $cand }
+        if ($span -gt $bestSpan) { $bestSpan = $span; $best = $cand }
+    }
+    if (-not [string]::IsNullOrEmpty($best)) { return $best }
+
+    # no icon inside the file itself: ask the shell which icon the file *type*
+    # uses and pull that one at 256px. Explorer's per-user choice comes first:
+    # the machine-wide ProgID often has no DefaultIcon (that is why .pdf fell
+    # back to a 32x32 icon even though the shell shows a crisp one).
+    try {
+        $ext = [System.IO.Path]::GetExtension($filePath)
+        if (-not [string]::IsNullOrEmpty($ext)) {
+            $candidates = New-Object System.Collections.ArrayList
+            $choice = (Get-ItemProperty -LiteralPath ('Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\' + $ext + '\UserChoice') -ErrorAction SilentlyContinue).ProgId
+            if (-not [string]::IsNullOrEmpty($choice)) { [void]$candidates.Add($choice) }
+            $progDefault = (Get-ItemProperty -LiteralPath ('Registry::HKEY_CLASSES_ROOT\' + $ext) -ErrorAction SilentlyContinue).'(default)'
+            if (-not [string]::IsNullOrEmpty($progDefault)) { [void]$candidates.Add($progDefault) }
+            foreach ($cand in $candidates) {
+                $specs = New-Object System.Collections.ArrayList
+                $defIcon = (Get-ItemProperty -LiteralPath ('Registry::HKEY_CLASSES_ROOT\' + $cand + '\DefaultIcon') -ErrorAction SilentlyContinue).'(default)'
+                if (-not [string]::IsNullOrEmpty($defIcon) -and $defIcon -notmatch '^@\{') { [void]$specs.Add($defIcon) }
+                if ($cand -match '^Applications\(.+\.exe)$') { [void]$specs.Add($matches[1]) }
+                elseif ($cand -match '\.exe$') { [void]$specs.Add($cand) }
+                foreach ($spec in $specs) {
+                    $parts = $spec -split ','
+                    $iconPath = [System.Environment]::ExpandEnvironmentVariables($parts[0].Trim('"', ' '))
+                    $iconIdx = 0
+                    if ($parts.Count -gt 1) { [void][int]::TryParse($parts[1].Trim(), [ref]$iconIdx) }
+                    if (Test-Path -LiteralPath $iconPath) {
+                        $typed = Get-BigIconB64($iconPath + ',' + $iconIdx)
+                        if ([string]::IsNullOrEmpty($typed)) { $typed = Get-BigIconB64 $iconPath }
+                        if (-not [string]::IsNullOrEmpty($typed)) { return $typed }
+                    }
+                }
+            }
+        }
+    } catch {}
+
     try {
         $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($filePath)
         if ($null -ne $ico) {
@@ -958,9 +1743,11 @@ function Get-IconB64($filePath) {
 }
 
 $sh = $null
-$input | ForEach-Object {
-    $p = $_.Trim()
-    if ([string]::IsNullOrEmpty($p) -or -not [System.IO.File]::Exists($p)) { return }
+while ($true) {
+    $p = $reader.ReadLine()
+    if ($null -eq $p) { break }
+    $p = $p.Trim()
+    if ([string]::IsNullOrEmpty($p) -or -not (Test-Path -LiteralPath $p)) { continue }
     $b64 = $null
 
     if ($p.EndsWith('.url', [StringComparison]::OrdinalIgnoreCase)) {
@@ -996,11 +1783,12 @@ $input | ForEach-Object {
     }
 
     if (-not [string]::IsNullOrEmpty($b64)) {
-        [Console]::Out.WriteLine($p + '|' + $b64)
+        $writer.WriteLine($p + '|' + $b64)
     } else {
-        [Console]::Out.WriteLine($p + '|none')
+        $writer.WriteLine($p + '|none')
     }
 }
+$writer.Flush()
 "#;
 
         if let Ok(mut child) = std::process::Command::new("powershell")
@@ -1018,7 +1806,6 @@ $input | ForEach-Object {
             if let Ok(output) = child.wait_with_output() {
                 if output.status.success() {
                     let raw = String::from_utf8_lossy(&output.stdout);
-                    let mut cache_guard = ICON_CACHE.lock().ok();
                     for line in raw.lines() {
                         let trimmed = line.trim();
                         if let Some((p, b64)) = trimmed.split_once('|') {
@@ -1028,9 +1815,7 @@ $input | ForEach-Object {
                                 format!("data:image/png;base64,{b64}")
                             };
                             results.insert(p.to_string(), val.clone());
-                            if let Some(ref mut cg) = cache_guard {
-                                cg.insert(p.to_string(), val);
-                            }
+                            cache_icon(p, &val);
                         }
                     }
                 }
@@ -1042,12 +1827,8 @@ $input | ForEach-Object {
 }
 
 fn resolve_icon_data_url(lnk_path: &str) -> Option<String> {
-    if let Ok(guard) = ICON_CACHE.lock() {
-        if let Some(cached) = guard.get(lnk_path) {
-            return if cached == "none" { None } else { Some(cached.clone()) };
-        }
-    }
-    let map = resolve_icons_batch(&[lnk_path.to_string()]);
+    // resolve_icons_batch consults ICON_CACHE (with its file stamp) for us.
+    let map = resolve_icons_batch(&[lnk_path.to_string()], false);
     let res = map.get(lnk_path)?;
     if res == "none" {
         None
@@ -1064,7 +1845,10 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
         let guard = state.0.lock().map_err(|e| e.to_string())?;
         if let Some(r) = guard.widgets.get(&id) {
             if let Some(s) = r.data.get("icon").and_then(|v| v.as_str()) {
-                if !s.is_empty() && !is_low_res_icon(s) {
+                // Serve whatever we already have: only a *missing* icon is worth
+                // another PowerShell round-trip (size-based "low-res" is the
+                // background upgrade pass's business, not every mount's).
+                if !icon_is_missing(s) {
                     return Ok(s.to_string());
                 }
             }
@@ -1076,7 +1860,7 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
         guard
             .widgets
             .get(&id)
-            .filter(|r| r.kind == "app")
+            .filter(|r| is_path_kind(&r.kind))
             .and_then(|r| {
                 r.data
                     .get("target")
@@ -1097,11 +1881,25 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
         let state = app.state::<AppState>();
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
         if let Some(r) = guard.widgets.get_mut(&id) {
-            if let Some(obj) = r.data.as_object_mut() {
-                obj.insert(
-                    "icon".to_string(),
-                    serde_json::Value::String(data_url.clone()),
-                );
+            // a re-resolution must never downgrade an icon that is already good:
+            // remounts used to overwrite crisp 256px icons with 32px ones
+            let existing = r
+                .data
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let keep_existing = !existing.is_empty()
+                && existing != "none"
+                && !is_low_res_icon(&existing)
+                && is_low_res_icon(&data_url);
+            if !keep_existing {
+                if let Some(obj) = r.data.as_object_mut() {
+                    obj.insert(
+                        "icon".to_string(),
+                        serde_json::Value::String(data_url.clone()),
+                    );
+                }
             }
         }
     }
@@ -1112,17 +1910,22 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
 /// Background task that automatically detects any legacy 32x32 icons in saved app launchers
 /// or folders and upgrades them to crisp native high-res icons (up to 256x256).
 async fn upgrade_low_res_icons(app: &AppHandle) {
+    // A pipeline bump invalidates every stored icon once. Without this, icons an
+    // older resolver produced (black-background squares, 32px blanks) look
+    // "good enough" to the size test and would never be replaced.
+    let migrate = load_settings(app).icon_pipeline < ICON_PIPELINE;
+
     let to_upgrade: Vec<(String, String)> = {
         let state = app.state::<AppState>();
         let Ok(guard) = state.0.lock() else { return };
         guard
             .widgets
             .iter()
-            .filter(|(_, r)| r.kind == "app")
+            .filter(|(_, r)| is_path_kind(&r.kind))
             .filter_map(|(id, r)| {
                 let target = r.data.get("target")?.as_str()?.to_string();
                 let icon = r.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
-                if is_low_res_icon(icon) && !target.trim().is_empty() {
+                if (migrate || is_low_res_icon(icon)) && !target.trim().is_empty() {
                     Some((id.clone(), target))
                 } else {
                     None
@@ -1131,7 +1934,7 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
             .collect()
     };
 
-    let folders_to_check: Vec<(String, Vec<(usize, String)>)> = {
+    let folders_to_check: Vec<(String, Vec<String>)> = {
         let state = app.state::<AppState>();
         let Ok(guard) = state.0.lock() else { return };
         guard
@@ -1139,17 +1942,14 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
             .iter()
             .filter(|(_, r)| r.kind == "folder")
             .filter_map(|(id, r)| {
-                let items = folder_items(r);
-                let needed: Vec<(usize, String)> = items
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, it)| {
-                        if !it.is_dir && is_low_res_icon(&it.icon) && !it.target.trim().is_empty() {
-                            Some((idx, it.target.clone()))
-                        } else {
-                            None
-                        }
+                let needed: Vec<String> = folder_items(r)
+                    .into_iter()
+                    .filter(|it| {
+                        // directories included: the shell has a jumbo folder glyph,
+                        // and skipping them left every subfolder blank
+                        (migrate || is_low_res_icon(&it.icon)) && !it.target.trim().is_empty()
                     })
+                    .map(|it| it.target)
                     .collect();
                 if needed.is_empty() {
                     None
@@ -1160,15 +1960,25 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
             .collect()
     };
 
+    let stamp_pipeline = || {
+        let mut settings = load_settings(app);
+        settings.icon_pipeline = ICON_PIPELINE;
+        if let Ok(json) = serde_json::to_string_pretty(&settings) {
+            write_text_atomic(&settings_file(app), &json);
+        }
+        log_line(app, &format!("icon pipeline: stored icons re-resolved to v{ICON_PIPELINE}"));
+    };
+
     if to_upgrade.is_empty() && folders_to_check.is_empty() {
+        if migrate {
+            stamp_pipeline();
+        }
         return;
     }
 
     let mut all_paths: Vec<String> = to_upgrade.iter().map(|(_, t)| t.clone()).collect();
     for (_, needed) in &folders_to_check {
-        for (_, t) in needed {
-            all_paths.push(t.clone());
-        }
+        all_paths.extend(needed.iter().cloned());
     }
     all_paths.sort();
     all_paths.dedup();
@@ -1176,7 +1986,7 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
     log_line(app, &format!("upgrade_low_res_icons: batch resolving {} icons", all_paths.len()));
 
     let icon_map = tauri::async_runtime::spawn_blocking(move || {
-        resolve_icons_batch(&all_paths)
+        resolve_icons_batch(&all_paths, true)
     }).await.unwrap_or_default();
 
     let mut changed = false;
@@ -1202,10 +2012,16 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
             if let Some(r) = guard.widgets.get_mut(folder_id) {
                 let mut items = folder_items(r);
                 let mut folder_changed = false;
-                for (idx, target) in needed {
-                    if let Some(hi_res) = icon_map.get(target) {
-                        if hi_res != "none" && *idx < items.len() && items[*idx].icon != *hi_res {
-                            items[*idx].icon = hi_res.clone();
+                for target in needed {
+                    // matched by target, not by index: the resolve can take a
+                    // second, and the user can add or remove items meanwhile
+                    let Some(hi_res) = icon_map.get(target) else { continue };
+                    if hi_res == "none" {
+                        continue;
+                    }
+                    for it in items.iter_mut() {
+                        if it.target == *target && it.icon != *hi_res {
+                            it.icon = hi_res.clone();
                             folder_changed = true;
                             changed = true;
                         }
@@ -1228,6 +2044,10 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
         }
         log_line(app, "upgrade_low_res_icons: batch upgrade complete");
     }
+
+    if migrate {
+        stamp_pipeline();
+    }
 }
 
 #[tauri::command]
@@ -1239,7 +2059,9 @@ async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Resul
         let items = folder_items(rec);
         items
             .into_iter()
-            .filter(|it| !it.is_dir && is_low_res_icon(&it.icon) && !it.target.trim().is_empty())
+            // directories included: skipping them left every subfolder inside a
+            // folder widget blank (only the startup pass ever filled those in)
+            .filter(|it| icon_is_missing(&it.icon) && !it.target.trim().is_empty())
             .map(|it| it.target)
             .collect()
     };
@@ -1249,7 +2071,7 @@ async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Resul
     }
 
     let icon_map = tauri::async_runtime::spawn_blocking(move || {
-        resolve_icons_batch(&needed)
+        resolve_icons_batch(&needed, false)
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1297,7 +2119,7 @@ fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
         s.disabled.push(id.to_string());
     }
     if let Ok(json) = serde_json::to_string_pretty(&s) {
-        fs::write(settings_file(app), json).ok();
+        write_text_atomic(&settings_file(app), &json);
     }
     app.emit("floaty-plugins-changed", &plugins::all_plugin_info(&s.disabled)).ok();
 }
@@ -1307,19 +2129,18 @@ fn floaty_plugins(app: AppHandle) -> Vec<PluginInfo> {
     plugins::all_plugin_info(&load_settings(&app).disabled)
 }
 
-#[tauri::command]
-fn floaty_set_plugin_enabled(id: String, enabled: bool, app: AppHandle) {
-    log_line(&app, &format!("plugin {id} enabled={enabled}"));
-    set_plugin_enabled(&app, &id, enabled);
-    // close (disable) or respawn (enable) this kind's windows
+/// Show (enable) or hide (disable) every widget of one kind, in whichever mode
+/// is running. Spawning windows here while the overlay is up was what put a
+/// second copy of every file icon on the desktop.
+fn apply_plugin_visibility(app: &AppHandle, kind: &str, enabled: bool) {
     let ids: Vec<String> = app
         .state::<AppState>()
         .0
         .lock()
-        .map(|g| g.widgets.values().filter(|r| r.kind == id).map(|r| r.id.clone()).collect())
+        .map(|g| g.widgets.values().filter(|r| r.kind == kind).map(|r| r.id.clone()).collect())
         .unwrap_or_default();
-    if enabled {
-        for wid in ids {
+    for wid in ids {
+        if enabled {
             let rec: Option<WidgetRecord> = app
                 .state::<AppState>()
                 .0
@@ -1327,14 +2148,19 @@ fn floaty_set_plugin_enabled(id: String, enabled: bool, app: AppHandle) {
                 .ok()
                 .and_then(|g| g.widgets.get(&wid).cloned());
             if let Some(r) = rec {
-                spawn_widget_async(&app, &r);
+                show_widget(app, &r);
             }
-        }
-    } else {
-        for wid in &ids {
-            close_widget_async(&app, wid);
+        } else {
+            hide_widget(app, &wid);
         }
     }
+}
+
+#[tauri::command]
+fn floaty_set_plugin_enabled(id: String, enabled: bool, app: AppHandle) {
+    log_line(&app, &format!("plugin {id} enabled={enabled}"));
+    set_plugin_enabled(&app, &id, enabled);
+    apply_plugin_visibility(&app, &id, enabled);
 }
 
 #[tauri::command]
@@ -1342,9 +2168,9 @@ fn floaty_add_launcher(name: String, path: String, app: AppHandle) -> Result<Wid
     if path.trim().is_empty() {
         return Err("empty path".into());
     }
-    let data = serde_json::json!({ "name": name, "target": path });
+    let data = serde_json::json!({ "name": name, "target": path.clone() });
     // spawn near the top so it falls with gravity on arrival
-    create_record_with(&app, "app", data, Some((200, 40)))
+    create_record_with(&app, kind_for_path(std::path::Path::new(&path), false), data, Some((200, 40)))
 }
 
 // ---------- folders ----------
@@ -1376,7 +2202,7 @@ fn set_folder_items(rec: &mut WidgetRecord, items: &[FolderItem]) {
 }
 
 fn widget_as_folder_item(rec: &WidgetRecord) -> Option<FolderItem> {
-    if rec.kind == "app" {
+    if is_path_kind(&rec.kind) {
         Some(FolderItem {
             name: rec
                 .data
@@ -1440,6 +2266,32 @@ fn unique_dest_path(dest_dir: &std::path::Path, file_name: &std::ffi::OsStr) -> 
     original
 }
 
+/// Keep the icons already resolved for the same paths. A rescan returns items
+/// with empty icons, and dropping the stored ones (say, because they are only
+/// 32px) is what made folder tiles flap between an icon and a blank tile on
+/// every launch: most file types and every directory resolve to 32px.
+fn carry_icons_by_target(old: &[FolderItem], items: &mut [FolderItem]) {
+    for item in items.iter_mut() {
+        if let Some(prev) = old.iter().find(|o| o.target == item.target) {
+            if !prev.icon.is_empty() && prev.icon != "none" {
+                item.icon = prev.icon.clone();
+            }
+        }
+    }
+}
+
+/// Same, matched by name: for a rescan after the folder itself was renamed on
+/// disk, where every target path moved but the items are the same files.
+fn carry_icons_by_name(old: &[FolderItem], items: &mut [FolderItem]) {
+    for item in items.iter_mut() {
+        if let Some(prev) = old.iter().find(|o| o.name == item.name) {
+            if !prev.icon.is_empty() && prev.icon != "none" {
+                item.icon = prev.icon.clone();
+            }
+        }
+    }
+}
+
 fn scan_folder_items(dir_path: &std::path::Path) -> Vec<FolderItem> {
     if !dir_path.is_dir() {
         return Vec::new();
@@ -1478,6 +2330,10 @@ fn scan_folder_items(dir_path: &std::path::Path) -> Vec<FolderItem> {
 
 /// Close a widget window off the command thread (same reason as creation).
 fn close_widget_async(app: &AppHandle, id: &str) {
+    if app.get_webview_window("desktop-overlay").is_some() {
+        app.emit("floaty-widget-removed", id).ok();
+        return;
+    }
     let handle = app.clone();
     let owned = id.to_string();
     std::thread::spawn(move || {
@@ -1522,7 +2378,7 @@ fn floaty_launch(id: String, app: AppHandle) -> Result<(), String> {
         guard
             .widgets
             .get(&id)
-            .filter(|r| r.kind == "app")
+            .filter(|r| is_path_kind(&r.kind))
             .and_then(|r| {
                 r.data
                     .get("target")
@@ -1551,12 +2407,22 @@ fn floaty_launch_target(target: String, app: AppHandle) -> Result<(), String> {
 /// If the drop point lands on another icon/folder window, merge them.
 /// Returns the folder id when a merge happened.
 #[tauri::command]
-fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
-    // live physical rect of the dropped icon; compare in physical px throughout
-    let me = app.get_webview_window(&widget_label(&id))?;
-    let (mp, ms) = (me.outer_position().ok()?, me.inner_size().ok()?);
-    let cx = mp.x + ms.width as i32 / 2;
-    let cy = mp.y + ms.height as i32 / 2;
+fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) -> Option<String> {
+    // live rect of the dropped icon
+    let (cx, cy) = if let (Some(px), Some(py)) = (x, y) {
+        let (w, h) = {
+            let state = app.state::<AppState>();
+            let guard = state.0.lock().ok()?;
+            let rec = guard.widgets.get(&id)?;
+            plugins::widget_size(&rec.kind, &rec.data)
+        };
+        (px + w as i32 / 2, py + h as i32 / 2)
+    } else if let Some(me) = app.get_webview_window(&widget_label(&id)) {
+        let (mp, ms) = (me.outer_position().ok()?, me.inner_size().ok()?);
+        (mp.x + ms.width as i32 / 2, mp.y + ms.height as i32 / 2)
+    } else {
+        return None;
+    };
 
     // candidate targets (snapshot under the lock, probe windows after release)
     let cands: Vec<(String, String)> = {
@@ -1565,23 +2431,34 @@ fn floaty_dropped(id: String, app: AppHandle) -> Option<String> {
         guard
             .widgets
             .iter()
-            .filter(|(oid, r)| *oid != &id && (r.kind == "app" || r.kind == "folder"))
+            .filter(|(oid, r)| *oid != &id && (is_path_kind(&r.kind) || r.kind == "folder"))
             .map(|(oid, r)| (oid.clone(), r.kind.clone()))
             .collect()
     };
+    let is_overlay = app.get_webview_window("desktop-overlay").is_some();
     let mut hit: Option<(String, String)> = None;
     for (oid, kind) in cands {
-        if let Some(w) = app.get_webview_window(&widget_label(&oid)) {
-            if let (Ok(p), Ok(s)) = (w.outer_position(), w.inner_size()) {
-                let x = p.x - 12;
-                let y = p.y - 12;
-                let ww = s.width as i32 + 24;
-                let hh = s.height as i32 + 24;
-                if cx >= x && cx < x + ww && cy >= y && cy < y + hh {
-                    hit = Some((oid, kind));
-                    break;
-                }
+        let (hx, hy, ww, hh) = if is_overlay {
+            let state = app.state::<AppState>();
+            let guard = state.0.lock().ok()?;
+            if let Some(r) = guard.widgets.get(&oid) {
+                let (w, h) = plugins::widget_size(&r.kind, &r.data);
+                (r.x - 12, r.y - 12, w as i32 + 24, h as i32 + 24)
+            } else {
+                continue;
             }
+        } else if let Some(w) = app.get_webview_window(&widget_label(&oid)) {
+            if let (Ok(p), Ok(s)) = (w.outer_position(), w.inner_size()) {
+                (p.x - 12, p.y - 12, s.width as i32 + 24, s.height as i32 + 24)
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+        if cx >= hx && cx < hx + ww && cy >= hy && cy < hy + hh {
+            hit = Some((oid, kind));
+            break;
         }
     }
     let (target_id, target_kind) = hit?;
@@ -1739,9 +2616,12 @@ fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandl
         }
     }
 
-    // Treat as new floatie: directory -> folder floatie, file -> app launcher floatie
-    let rec = if item.is_dir || std::path::Path::new(&item.target).is_dir() {
-        let sub_items = scan_folder_items(std::path::Path::new(&item.target));
+    // Treat as new floatie: directory -> folder floatie, launchable -> app
+    // launcher floatie, anything else -> file floatie
+    let target_path = std::path::Path::new(&item.target).to_path_buf();
+    let is_dir = item.is_dir || target_path.is_dir();
+    let rec = if is_dir {
+        let sub_items = scan_folder_items(&target_path);
         let mut data = serde_json::json!({
             "name": item.name,
             "path": item.target,
@@ -1756,7 +2636,7 @@ fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandl
             "icon": item.icon,
         });
         data["pinned"] = serde_json::Value::Bool(true);
-        create_record_with(&app, "app", data, Some((x, y)))?
+        create_record_with(&app, kind_for_path(&target_path, false), data, Some((x, y)))?
     };
 
     log_line(&app, &format!("ungrouped {} from {folder_id} as {} (kind: {})", item.name, rec.id, rec.kind));
@@ -1781,7 +2661,12 @@ fn floaty_rename_folder_dir(folder_id: String, new_name: String, app: AppHandle)
                         obj.insert("path".to_string(), serde_json::Value::String(new_p_str.clone()));
                         obj.insert("name".to_string(), serde_json::Value::String(new_name));
                     }
-                    let items = scan_folder_items(&dest);
+                    // A rescan starts every item with no icon; the items are the
+                    // same files under a new parent, so keep them by name (a
+                    // rename used to blank every icon in the folder).
+                    let old_items = folder_items(rec);
+                    let mut items = scan_folder_items(&dest);
+                    carry_icons_by_name(&old_items, &mut items);
                     set_folder_items(rec, &items);
                     (old_p, new_p_str)
                 } else {
@@ -1814,7 +2699,7 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
             let mut s = load_settings(&app);
             s.files_root = r.trim().to_string();
             if let Ok(json) = serde_json::to_string_pretty(&s) {
-                std::fs::write(settings_file(&app), json).ok();
+                write_text_atomic(&settings_file(&app), &json);
             }
             s.files_root
         }
@@ -1838,6 +2723,9 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
     if s.disabled.iter().any(|d| d == "folder") {
         set_plugin_enabled(&app, "folder", true);
     }
+    if s.disabled.iter().any(|d| d == "file") {
+        set_plugin_enabled(&app, "file", true);
+    }
 
     let mut files_count = 0;
     let mut dirs_count = 0;
@@ -1852,9 +2740,9 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
                 if let Some(p) = w.data.get("path").and_then(|v| v.as_str()) {
                     map.insert(p.to_string(), (id.clone(), "folder".to_string()));
                 }
-            } else if w.kind == "app" {
+            } else if is_path_kind(&w.kind) {
                 if let Some(p) = w.data.get("target").and_then(|v| v.as_str()) {
-                    map.insert(p.to_string(), (id.clone(), "app".to_string()));
+                    map.insert(p.to_string(), (id.clone(), w.kind.clone()));
                 }
             }
         }
@@ -1899,13 +2787,7 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
                         if let Ok(guard) = app.state::<AppState>().0.lock() {
                             if let Some(w) = guard.widgets.get(fid) {
                                 let old_items = folder_items(w);
-                                for item in &mut items {
-                                    if let Some(old) = old_items.iter().find(|o| o.target == item.target) {
-                                        if !old.icon.is_empty() && old.icon != "none" && !is_low_res_icon(&old.icon) {
-                                            item.icon = old.icon.clone();
-                                        }
-                                    }
-                                }
+                                carry_icons_by_target(&old_items, &mut items);
                             }
                         }
                         updated_folders.push((fid.clone(), items));
@@ -1933,7 +2815,9 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
                 if !existing_map.contains_key(&path_str) {
                     let (px, py) = next_pos(&mut occupied_positions);
                     next_id += 1;
-                    let id = format!("app-{}", next_id);
+                    // launchable entries are apps, everything else is a file
+                    let kind = kind_for_path(&path, false);
+                    let id = format!("{kind}-{}", next_id);
                     let mut data = serde_json::json!({
                         "name": file_name,
                         "target": path_str,
@@ -1942,7 +2826,7 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
                     data["pinned"] = serde_json::Value::Bool(true);
                     new_records.push(WidgetRecord {
                         id,
-                        kind: "app".to_string(),
+                        kind: kind.to_string(),
                         x: px,
                         y: py,
                         data,
@@ -1973,18 +2857,24 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
     }
 
     if !new_records.is_empty() {
-        let app_handle = app.clone();
-        let to_spawn = new_records.clone();
-        std::thread::spawn(move || {
-            for rec in to_spawn {
-                let h = app_handle.clone();
-                let r = rec.clone();
-                let _ = app_handle.run_on_main_thread(move || {
-                    let _ = spawn_widget(&h, &r);
-                });
-                std::thread::sleep(std::time::Duration::from_millis(40));
+        if app.get_webview_window("desktop-overlay").is_some() {
+            for rec in &new_records {
+                app.emit("floaty-widget-added", rec).ok();
             }
-        });
+        } else {
+            let app_handle = app.clone();
+            let to_spawn = new_records.clone();
+            std::thread::spawn(move || {
+                for rec in to_spawn {
+                    let h = app_handle.clone();
+                    let r = rec.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        let _ = spawn_widget(&h, &r);
+                    });
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                }
+            });
+        }
     }
 
     let bg_app = app.clone();
@@ -2261,7 +3151,7 @@ fn floaty_layout(app: AppHandle) -> Vec<LayoutItem> {
     guard
         .widgets
         .values()
-        .filter(|r| r.kind == "app")
+        .filter(|r| is_path_kind(&r.kind))
         .map(|r| {
             let (w, h) = plugins::widget_size(&r.kind, &r.data);
             LayoutItem {
@@ -2299,15 +3189,20 @@ fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
         if guard.dead.contains(&record.id) {
             return; // removed meanwhile (remove / folder-merge)
         }
-        // Protect high-resolution icons from being overwritten by stale/low-res incoming data
+        // Protect a stored icon from being overwritten by stale incoming data:
+        // never lose an icon, and never trade a crisp one for a blurry one.
         if let Some(existing) = guard.widgets.get(&record.id) {
             if let Some(existing_icon) = existing.data.get("icon").and_then(|v| v.as_str()) {
-                if !is_low_res_icon(existing_icon) {
-                    let incoming_icon = record.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
-                    if is_low_res_icon(incoming_icon) {
-                        if let Some(obj) = record.data.as_object_mut() {
-                            obj.insert("icon".to_string(), serde_json::Value::String(existing_icon.to_string()));
-                        }
+                let incoming_icon = record.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
+                let would_lose = icon_is_missing(incoming_icon) && !icon_is_missing(existing_icon);
+                let would_downgrade =
+                    is_low_res_icon(incoming_icon) && !is_low_res_icon(existing_icon);
+                if would_lose || would_downgrade {
+                    if let Some(obj) = record.data.as_object_mut() {
+                        obj.insert(
+                            "icon".to_string(),
+                            serde_json::Value::String(existing_icon.to_string()),
+                        );
                     }
                 }
             }
@@ -2316,7 +3211,10 @@ fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
                 let mut incoming_items = folder_items(&record);
                 for in_it in incoming_items.iter_mut() {
                     if let Some(ex) = existing_items.iter().find(|e| e.target == in_it.target) {
-                        if !is_low_res_icon(&ex.icon) && is_low_res_icon(&in_it.icon) {
+                        let would_lose = icon_is_missing(&in_it.icon) && !icon_is_missing(&ex.icon);
+                        let would_downgrade =
+                            is_low_res_icon(&in_it.icon) && !is_low_res_icon(&ex.icon);
+                        if would_lose || would_downgrade {
                             in_it.icon = ex.icon.clone();
                         }
                     }
@@ -2338,22 +3236,154 @@ fn floaty_remove(id: String, app: AppHandle) {
         guard.dead.insert(id.clone());
     }
     persist(&app);
-    // Close off the command thread: like creation, window ops must not block
-    // command handling on the main-thread dispatch.
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        let h2 = handle.clone();
-        let id2 = id.clone();
-        if let Err(e) = handle.run_on_main_thread(move || {
-            if let Some(w) = h2.get_webview_window(&widget_label(&id2)) {
-                if let Err(e) = w.close() {
-                    log_line(&h2, &format!("close window FAILED for {id2}: {e}"));
+    close_widget_async(&app, &id);
+}
+
+// ---------- real file operations (desktop parity) ----------
+
+/// The on-disk path a widget points at, with its kind. Folders keep theirs in
+/// `path`, files and launchable items in `target`.
+fn widget_path(app: &AppHandle, id: &str) -> Result<(String, String), String> {
+    let state = app.state::<AppState>();
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    let rec = guard.widgets.get(id).ok_or("widget not found")?;
+    let key = if rec.kind == "folder" { "path" } else { "target" };
+    let path = rec
+        .data
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if path.trim().is_empty() {
+        return Err(format!("this {} has no path", rec.kind));
+    }
+    Ok((rec.kind.clone(), path))
+}
+
+/// True when the path is one this app manages (a desktop item), i.e. deleting
+/// the floatie may delete the file as well. Anything else is left alone —
+/// removing the floatie for an installed program must not uninstall it.
+fn is_desktop_item(app: &AppHandle, path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    let root = load_settings(app).files_root;
+    if !root.trim().is_empty() && p.starts_with(&root) {
+        return true;
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        if p.starts_with(std::path::Path::new(&home).join("Desktop")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Delete a floatie the way the desktop would: a file or folder that lives on
+/// the desktop goes to the Recycle Bin, so deleting the widget is a real
+/// delete. Paths outside the desktop only lose their floatie.
+#[tauri::command]
+fn floaty_delete(id: String, app: AppHandle) -> Result<String, String> {
+    let (kind, path) = widget_path(&app, &id)?;
+    let managed = is_desktop_item(&app, &path)
+        && (kind == "file" || kind == "folder" || kind == "app");
+    let note = if managed {
+        shell_ops::recycle(std::path::Path::new(&path))?;
+        format!("moved '{}' to the recycle bin", path)
+    } else {
+        format!("removed the floatie; '{}' stays on disk", path)
+    };
+    let state: State<'_, AppState> = app.state::<AppState>();
+    if let Ok(mut guard) = state.0.lock() {
+        guard.widgets.remove(&id);
+        guard.dead.insert(id.clone());
+    }
+    persist(&app);
+    close_widget_async(&app, &id);
+    app.emit("floaty-widget-removed", &id).ok();
+    log_line(&app, &format!("delete {id}: {note}"));
+    Ok(note)
+}
+
+/// The shell's own "Open with" picker.
+#[tauri::command]
+fn floaty_open_with(id: String, app: AppHandle) -> Result<(), String> {
+    let (_, path) = widget_path(&app, &id)?;
+    shell_ops::open_with(&path)
+}
+
+/// Show the item selected in File Explorer.
+#[tauri::command]
+fn floaty_reveal(id: String, app: AppHandle) -> Result<(), String> {
+    let (_, path) = widget_path(&app, &id)?;
+    shell_ops::reveal(&path)
+}
+
+/// The real Windows property sheet.
+#[tauri::command]
+fn floaty_properties(id: String, app: AppHandle) -> Result<(), String> {
+    let (_, path) = widget_path(&app, &id)?;
+    shell_ops::properties(&path)
+}
+
+/// Rename on disk, keeping the widget's label, target and folder path in step.
+#[tauri::command]
+fn floaty_rename(id: String, name: String, app: AppHandle) -> Result<WidgetRecord, String> {
+    let (kind, path) = widget_path(&app, &id)?;
+    let old = std::path::PathBuf::from(&path);
+    let new_path = shell_ops::rename(&old, &name)?;
+    let new_str = new_path.to_string_lossy().to_string();
+    let new_name = new_path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.clone());
+    let rec = {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let r = guard.widgets.get_mut(&id).ok_or("widget not found")?;
+        if let Some(obj) = r.data.as_object_mut() {
+            obj.insert("name".to_string(), serde_json::Value::String(new_name));
+            obj.insert("target".to_string(), serde_json::Value::String(new_str.clone()));
+            if kind == "folder" {
+                obj.insert("path".to_string(), serde_json::Value::String(new_str.clone()));
+            }
+        }
+        r.clone()
+    };
+    persist(&app);
+    app.emit("floaty-widget-updated", &rec).ok();
+    log_line(&app, &format!("renamed {id}: {} -> {new_str}", old.display()));
+
+    // A rename can change the icon (x.txt -> x.png): re-resolve in the background
+    // and push it, so the tile never keeps the icon of its old name.
+    let old_ext = old.extension().map(|e| e.to_string_lossy().to_lowercase());
+    let new_ext = new_path.extension().map(|e| e.to_string_lossy().to_lowercase());
+    if old_ext != new_ext {
+        let handle = app.clone();
+        let target = new_str.clone();
+        let widget_id = id.clone();
+        tauri::async_runtime::spawn(async move {
+            let resolved = {
+                let t = target.clone();
+                tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&t))
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            let Some(icon) = resolved else { return };
+            {
+                let state = handle.state::<AppState>();
+                let Ok(mut guard) = state.0.lock() else { return };
+                if let Some(r) = guard.widgets.get_mut(&widget_id) {
+                    if let Some(obj) = r.data.as_object_mut() {
+                        obj.insert("icon".to_string(), serde_json::Value::String(icon));
+                    }
                 }
             }
-        }) {
-            log_line(&handle, &format!("main-thread dispatch FAILED for {id}: {e}"));
-        }
-    });
+            persist(&handle);
+            handle.emit("floaty-icon-refreshed", &widget_id).ok();
+            log_line(&handle, &format!("icon re-resolved after renaming {widget_id}"));
+        });
+    }
+    Ok(rec)
 }
 
 #[tauri::command]
@@ -2366,6 +3396,10 @@ fn floaty_show_settings(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn floaty_quit(app: AppHandle) {
+    #[cfg(windows)]
+    {
+        desktop_pin::cleanup_hook();
+    }
     app.exit(0);
 }
 
@@ -2374,8 +3408,67 @@ fn floaty_log(msg: String, app: AppHandle) {
     log_line(&app, &format!("webview: {msg}"));
 }
 
+// ---------- audio visualizer ----------
+
+/// Claim the system-audio capture (ref-counted, started by the first
+/// visualizer widget). `fps` is the redraw rate the widget wants.
+#[tauri::command]
+fn floaty_audio_start(fps: Option<u32>, app: AppHandle) {
+    audio::start(&app, fps);
+}
+
+/// Release one visualizer's claim on the capture thread.
+#[tauri::command]
+fn floaty_audio_stop() {
+    audio::stop();
+}
+
+#[tauri::command]
+fn floaty_audio_set_fps(fps: u32) {
+    audio::set_fps(fps);
+}
+
+/// False when loopback capture could not start, so the visualizer can say so
+/// instead of sitting there as a flat line.
+#[tauri::command]
+fn floaty_audio_status() -> bool {
+    audio::is_running()
+}
+
+// ---------- system monitor ----------
+
+/// Claim system sampling (ref-counted, started by the first sysmon widget).
+#[tauri::command]
+fn floaty_sysmon_start(interval_ms: Option<u32>, app: AppHandle) {
+    sysmon::start(&app, interval_ms);
+}
+
+/// Release one sysmon widget's claim on the sampler.
+#[tauri::command]
+fn floaty_sysmon_stop() {
+    sysmon::stop();
+}
+
+#[tauri::command]
+fn floaty_sysmon_set_interval(ms: u32) {
+    sysmon::set_interval(ms);
+}
+
+/// Number of samples the widget graph keeps — one source of truth.
+#[tauri::command]
+fn floaty_sysmon_history() -> usize {
+    sysmon::HISTORY
+}
+
+/// False when the sampler could not start (e.g. no GPU performance counters),
+/// which lets the widget say so instead of showing dashes forever.
+#[tauri::command]
+fn floaty_sysmon_status() -> bool {
+    sysmon::is_running()
+}
+
 // ---------- app ----------
-// (probe build)
+// (probe build 2)
 
 pub fn run() {
     tauri::Builder::default()
@@ -2394,11 +3487,14 @@ pub fn run() {
 
             // restore persisted widgets into state
             let saved = load_all(&handle);
+            // the store we just loaded is known good: pin it as the backup
+            refresh_backup(&store_file(&handle), true);
+            let mut reclassified = 0usize;
             {
                 let state = handle.state::<AppState>();
                 let mut guard = state.0.lock().expect("store lock");
                 let mut max_n: u64 = 0;
-                for rec in saved {
+                for mut rec in saved {
                     if let Some(n) = rec
                         .id
                         .rsplit('-')
@@ -2407,9 +3503,28 @@ pub fn run() {
                     {
                         max_n = max_n.max(n);
                     }
+                    // Classification rule: launchable entries stay apps, loose
+                    // files are file floaties (document icon + open-with). Also
+                    // migrates records written before the rule existed.
+                    if is_path_kind(&rec.kind) {
+                        if let Some(t) = rec.data.get("target").and_then(|v| v.as_str()) {
+                            let want = kind_for_path(std::path::Path::new(t), false);
+                            if want != rec.kind.as_str() {
+                                log_line(
+                                    &handle,
+                                    &format!("reclassify {} {} -> {}", rec.id, rec.kind, want),
+                                );
+                                rec.kind = want.to_string();
+                                reclassified += 1;
+                            }
+                        }
+                    }
                     guard.widgets.insert(rec.id.clone(), rec);
                 }
                 guard.next = max_n;
+            }
+            if reclassified > 0 {
+                persist(&handle);
             }
 
             // tray: settings + quit only (widgets are managed via settings)
@@ -2484,16 +3599,9 @@ pub fn run() {
                     }
                     persist(&handle);
                 }
-            } else {
-                let disabled_kinds = load_settings(&handle).disabled;
-                for rec in &ids {
-                    if disabled_kinds.iter().any(|d| d == &rec.kind) {
-                        continue;
-                    }
-                    if let Err(e) = spawn_widget(&handle, rec) {
-                        log_line(&handle, &format!("restore spawn FAILED {}: {e}", rec.id));
-                    }
-                }
+            }
+            if let Err(e) = spawn_overlay_window(&handle) {
+                log_line(&handle, &format!("spawn_overlay_window FAILED: {e}"));
             }
             let bg_app = handle.clone();
             tauri::async_runtime::spawn(async move {
@@ -2512,6 +3620,11 @@ pub fn run() {
             floaty_create,
             floaty_save,
             floaty_remove,
+            floaty_delete,
+            floaty_open_with,
+            floaty_reveal,
+            floaty_properties,
+            floaty_rename,
             floaty_show_settings,
             floaty_quit,
             floaty_plugins,
@@ -2532,15 +3645,64 @@ pub fn run() {
             floaty_sync_files,
             floaty_rename_folder_dir,
             floaty_resolve_folder_icons,
-            floaty_log
+            floaty_update_hit_rects,
+            floaty_set_overlay_dragging,
+            floaty_log,
+            floaty_audio_start,
+            floaty_audio_stop,
+            floaty_audio_set_fps,
+            floaty_audio_status,
+            floaty_sysmon_start,
+            floaty_sysmon_stop,
+            floaty_sysmon_set_interval,
+            floaty_sysmon_history,
+            floaty_sysmon_status
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running floaty");
+        .build(tauri::generate_context!())
+        .expect("error while building floaty")
+        .run(|app, event| {
+            // last chance to flush: widgets save as they change, but a pending
+            // move or edit should not be lost when the app is closed
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                persist(app);
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_kind_for_path() {
+        use std::path::Path;
+        // directories are folders
+        assert_eq!(kind_for_path(Path::new("C:/x/Desktop/Stuff"), true), "folder");
+        // launchable entries are apps
+        for p in [
+            "C:/Users/e/Desktop/Code.lnk",
+            "C:/Program Files/App/app.EXE",
+            "C:/Users/e/Desktop/site.url",
+            "C:/tools/run.cmd",
+        ] {
+            assert_eq!(kind_for_path(Path::new(p), false), "app", "{p} should be an app");
+        }
+        // loose documents/images/archives are files
+        for p in [
+            "C:/Users/e/Desktop/notes.txt",
+            "C:/Users/e/Desktop/report.pdf",
+            "C:/Users/e/Desktop/photo.JPG",
+            "C:/Users/e/Desktop/archive.zip",
+            "C:/Users/e/Desktop/no-extension",
+        ] {
+            assert_eq!(kind_for_path(Path::new(p), false), "file", "{p} should be a file");
+        }
+        assert!(is_path_kind("app") && is_path_kind("file"));
+        assert!(!is_path_kind("folder") && !is_path_kind("note"));
+    }
 
     #[test]
     fn test_desktop_handle() {
@@ -2599,6 +3761,60 @@ mod tests {
     }
 
     #[test]
+    fn icons_are_measured_from_the_png_header() {
+        // 24 bytes: PNG signature + IHDR length/type + width/height, which is all
+        // icon_pixel_size reads. Built by hand so the test needs no image file.
+        fn png(w: u32, h: u32) -> String {
+            let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            bytes.extend_from_slice(&13u32.to_be_bytes());
+            bytes.extend_from_slice(b"IHDR");
+            bytes.extend_from_slice(&w.to_be_bytes());
+            bytes.extend_from_slice(&h.to_be_bytes());
+            format!("data:image/png;base64,{}", base64_encode(&bytes))
+        }
+
+        assert_eq!(icon_pixel_size(&png(32, 32)), Some((32, 32)));
+        assert_eq!(icon_pixel_size(&png(256, 256)), Some((256, 256)));
+        assert_eq!(icon_pixel_size("data:image/png;base64,not-base64!!"), None);
+
+        // A 32px icon is low-res (an upgrade may do better) but it is NOT missing:
+        // calling it missing is what re-ran the resolver on every mount.
+        assert!(is_low_res_icon(&png(32, 32)));
+        assert!(!icon_is_missing(&png(32, 32)));
+        assert!(icon_is_missing(""));
+        assert!(icon_is_missing("none"));
+        assert!(icon_is_missing("data:image/png;base64,not-base64!!"));
+        assert!(!is_low_res_icon(&png(256, 256)));
+        assert!(!icon_is_missing(&png(256, 256)));
+    }
+
+    #[test]
+    fn rescans_keep_the_icons_already_resolved() {
+        let item = |name: &str, target: &str, icon: &str| FolderItem {
+            name: name.to_string(),
+            target: target.to_string(),
+            icon: icon.to_string(),
+            is_dir: false,
+        };
+        let icon32 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg";
+        let old = vec![
+            item("a.txt", "C:\\d\\a.txt", icon32),
+            item("b.txt", "C:\\d\\b.txt", ""),
+        ];
+
+        // sync: matched by target, and a 32px icon must survive the rescan
+        let mut rescanned = vec![item("a.txt", "C:\\d\\a.txt", ""), item("b.txt", "C:\\d\\b.txt", "")];
+        carry_icons_by_target(&old, &mut rescanned);
+        assert_eq!(rescanned[0].icon, icon32);
+        assert_eq!(rescanned[1].icon, "");
+
+        // folder-dir rename: every target moved, so match by name instead
+        let mut renamed = vec![item("a.txt", "C:\\d\\RENAMED\\a.txt", "")];
+        carry_icons_by_name(&old, &mut renamed);
+        assert_eq!(renamed[0].icon, icon32);
+    }
+
+    #[test]
     fn test_disk_move_relative() {
         let temp_dir = std::env::temp_dir().join(format!("floaty_test_move_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let folder_dir = temp_dir.join("MyFolder");
@@ -2647,5 +3863,41 @@ mod tests {
             assert!(data_url.starts_with("data:image/png;base64,"), "should produce valid png data url");
             assert!(data_url.len() > 1000, "should produce high-res icon data");
         }
+    }
+
+    #[test]
+    fn store_loads_from_backup_when_the_live_file_is_damaged() {
+        let dir = std::env::temp_dir().join(format!("floaty-store-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("floaty-store.json");
+        let bak = dir.join("floaty-store.bak");
+        let good = r#"[{"id":"note-1","kind":"note","x":10,"y":20,"data":{}}]"#;
+
+        // a truncated write must not be mistaken for "nothing to load"
+        std::fs::write(&path, r#"[{"id":"note-1","kin"#).unwrap();
+        std::fs::write(&bak, good).unwrap();
+        let (recs, from_backup) = read_json_with_backup::<Vec<WidgetRecord>>(&path)
+            .expect("a damaged live file with a good backup must still load");
+        assert!(from_backup, "the backup should have been used");
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].id, "note-1");
+
+        // a healthy live file wins
+        std::fs::write(&path, good).unwrap();
+        let (_, from_backup) = read_json_with_backup::<Vec<WidgetRecord>>(&path).unwrap();
+        assert!(!from_backup);
+
+        // both damaged: nothing to load
+        std::fs::write(&path, "not json").unwrap();
+        std::fs::write(&bak, "{").unwrap();
+        assert!(read_json_with_backup::<Vec<WidgetRecord>>(&path).is_none());
+
+        // atomic write leaves the file readable and no temp behind
+        write_text_atomic(&path, good);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        assert!(!path.with_extension("tmp").exists());
+        assert_eq!(serde_json::from_str::<Vec<WidgetRecord>>(&std::fs::read_to_string(&path).unwrap()).unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

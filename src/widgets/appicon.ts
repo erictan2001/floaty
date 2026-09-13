@@ -1,17 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition } from "@tauri-apps/api/window";
+import { stepBody, supportGone } from "./physics";
 import {
   addPinMenu,
   appWin,
   applyFloatieAnimation,
   currentSettings,
+  iconIsMissing,
+  isOverlayMode,
   loadRecord,
   logicalPos,
   monitorArea,
+  notifyDragging,
+  overlaySlots,
   removeSelf,
   saveRecord,
   setLogicalPos,
+  setWidgetPos,
   watchPluginEnabled,
   watchSettings,
   type MonitorArea,
@@ -21,7 +27,6 @@ import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin
 
 const WIN_W = 92;
 const WIN_H = 112;
-const REST_WALL = 0.6;
 
 interface LayoutItem {
   id: string;
@@ -46,11 +51,11 @@ function gradientFor(name: string): [string, string] {
   return GRADIENTS[h % GRADIENTS.length] as [string, string];
 }
 
-export function mountLauncher(root: HTMLElement, id: string): void {
+export function mountLauncher(root: HTMLElement, id: string, kind: string = "app"): void {
   watchSettings();
-  watchPluginEnabled("app");
+  watchPluginEnabled(kind);
   const wrap = document.createElement("div");
-  wrap.className = "launcher idle-hidden";
+  wrap.className = `launcher idle-hidden kind-${kind}`;
   wrap.innerHTML = `
     <button class="launcher-x" title="Remove">\u00d7</button>
     <div class="tile"><span></span></div>
@@ -81,6 +86,11 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   let lastSavedX = -1;
   let lastSavedY = -1;
   let lastSavedPinned: boolean | undefined = undefined;
+  // physics state that has to survive between frames (see widgets/physics.ts)
+  let restTime = 0;
+  let restingOn: string | null = null;
+  let bounces = 0;
+  let supportTimer: number | undefined;
 
   const syncAnim = () => {
     applyFloatieAnimation(wrap, id);
@@ -116,6 +126,16 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     if (layoutInterval !== undefined) return;
     const fetchLayout = async () => {
       try {
+        if (isOverlayMode()) {
+          const items: LayoutItem[] = [];
+          for (const slot of overlaySlots.values()) {
+            if (slot.id !== id && (slot.kind === "app" || slot.kind === "folder")) {
+              items.push({ id: slot.id, x: slot.x, y: slot.y, w: slot.w, h: slot.h });
+            }
+          }
+          others = items;
+          return;
+        }
         const all = await invoke<LayoutItem[]>("floaty_layout");
         others = all.filter((o) => o.id !== id);
       } catch {
@@ -123,7 +143,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
       }
     };
     void fetchLayout();
-    layoutInterval = window.setInterval(fetchLayout, 500);
+    layoutInterval = window.setInterval(fetchLayout, isOverlayMode() ? 200 : 500);
   };
 
   const stopLayoutPolling = () => {
@@ -137,6 +157,11 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   const startAnimation = () => {
     if (animating) return;
     animating = true;
+    // physics is running again, so the resting-support watchdog is not needed
+    if (supportTimer !== undefined) {
+      window.clearInterval(supportTimer);
+      supportTimer = undefined;
+    }
     last = performance.now();
     startLayoutPolling();
     void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
@@ -189,36 +214,20 @@ export function mountLauncher(root: HTMLElement, id: string): void {
       }
       img.src = url;
     };
-    const isLowRes = (url: string): boolean => {
-      if (!url || url === "none") return false;
-      return (
-        url.includes("AAAAACAAAAAg") ||
-        url.includes("AAAACAAAAAg") ||
-        url.startsWith("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAg")
-      );
-    };
-
     const cachedIcon = typeof rec.data["icon"] === "string" ? (rec.data["icon"] as string) : "";
-    if (cachedIcon) {
-      if (cachedIcon !== "none") {
-        applyIcon(cachedIcon);
-      }
-      if (isLowRes(cachedIcon)) {
-        invoke<string>("floaty_icon", { id: rec.id })
-          .then((hiRes) => {
-            if (hiRes && hiRes !== cachedIcon) {
-              if (rec) rec.data["icon"] = hiRes;
-              if (hiRes !== "none") applyIcon(hiRes);
-            }
-          })
-          .catch(() => undefined);
-      }
-    } else {
+    if (cachedIcon && cachedIcon !== "none") {
+      applyIcon(cachedIcon);
+    }
+    // Only a *missing* icon is worth a resolver round-trip. A 32px icon is
+    // upgraded by the backend's background pass — re-resolving on every mount
+    // used to spawn PowerShell per widget and still came back 32px for most
+    // file types, so the tile looked like it was stuck on an old icon.
+    if (iconIsMissing(cachedIcon)) {
       invoke<string>("floaty_icon", { id: rec.id })
         .then((hiRes) => {
-          if (hiRes) {
+          if (hiRes && hiRes !== "none") {
             if (rec) rec.data["icon"] = hiRes;
-            if (hiRes !== "none") applyIcon(hiRes);
+            applyIcon(hiRes);
           }
         })
         .catch(() => undefined);
@@ -240,7 +249,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     wrap.classList.remove("idle-hidden");
 
     try {
-      const p = await logicalPos();
+      const p = await logicalPos(id);
       x = p.x;
       y = p.y;
     } catch {
@@ -295,23 +304,34 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     e.stopPropagation();
     // NOTE: no preventDefault() — canceling pointerdown kills click/dblclick.
     dragging = true;
+    notifyDragging(true);
     wrap.classList.add("held");
     squash();
     // capture lazily on first real movement (see pet.ts: eager capture eats taps)
     let captured = false;
+    const isOverlay = isOverlayMode();
     const startX = x;
     const startY = y;
-    const startSX = e.screenX;
-    const startSY = e.screenY;
+    const startSX = isOverlay ? e.clientX : e.screenX;
+    const startSY = isOverlay ? e.clientY : e.screenY;
     let moved = false;
     const onMove = (ev: PointerEvent) => {
-      x = startX + (ev.screenX - startSX);
-      y = startY + (ev.screenY - startSY);
-      if (x < mon.x) x = mon.x;
-      if (x > mon.x + mon.w - WIN_W) x = mon.x + mon.w - WIN_W;
-      if (y < mon.y) y = mon.y;
-      if (y > mon.y + mon.h - WIN_H) y = mon.y + mon.h - WIN_H;
-      if (Math.hypot(ev.screenX - startSX, ev.screenY - startSY) > 4) {
+      const curSX = isOverlay ? ev.clientX : ev.screenX;
+      const curSY = isOverlay ? ev.clientY : ev.screenY;
+      x = startX + (curSX - startSX);
+      y = startY + (curSY - startSY);
+      if (isOverlay) {
+        const monW = window.innerWidth || 1920;
+        const monH = window.innerHeight || 1080;
+        x = Math.max(0, Math.min(monW - WIN_W, x));
+        y = Math.max(0, Math.min(monH - WIN_H, y));
+      } else {
+        if (x < mon.x) x = mon.x;
+        if (x > mon.x + mon.w - WIN_W) x = mon.x + mon.w - WIN_W;
+        if (y < mon.y) y = mon.y;
+        if (y > mon.y + mon.h - WIN_H) y = mon.y + mon.h - WIN_H;
+      }
+      if (Math.hypot(curSX - startSX, curSY - startSY) > 4) {
         moved = true;
         suppressClickUntil = performance.now() + 300;
         if (!captured) {
@@ -323,9 +343,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
           }
         }
       }
-      void appWin
-        .setPosition(new PhysicalPosition(Math.round(x * scale), Math.round(y * scale)))
-        .catch(() => undefined);
+      setWidgetPos(id, x, y, scale);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -342,15 +360,35 @@ export function mountLauncher(root: HTMLElement, id: string): void {
         vx = 0;
         vy = 0;
         settled = true;
+        restingOn = null;
+        restTime = 0;
+        bounces = 0;
         syncFloat();
         wrap.classList.add("rest");
-        void saveSoon();
         stopAnimation();
-        // group mode: backend merges us into whatever icon/folder we landed on
-        invoke("floaty_dropped", { id }).catch(() => undefined);
+
+        void (async () => {
+          try {
+            // Group mode: backend merges us into whatever icon/folder we landed on
+            const merged = await invoke<string | null>("floaty_dropped", {
+              id,
+              x: Math.round(x),
+              y: Math.round(y),
+            });
+            if (merged) {
+              return; // Merged into folder; slot will be unmounted
+            }
+          } catch {
+            /* ignore */
+          }
+
+          // Not merged: keep exact dropped position and persist
+          void saveSoon();
+        })();
       }
       // a tap leaves `settled` untouched — click/dblclick decide what happens
       dragging = false;
+      notifyDragging(false);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -359,6 +397,9 @@ export function mountLauncher(root: HTMLElement, id: string): void {
 
   const doDrop = () => {
     settled = false;
+    restTime = 0;
+    bounces = 0;
+    restingOn = null;
     syncFloat();
     wrap.classList.remove("rest");
     vy = 0;
@@ -368,6 +409,9 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   };
   const doHop = () => {
     settled = false;
+    restTime = 0;
+    bounces = 0;
+    restingOn = null;
     syncFloat();
     wrap.classList.remove("rest");
     vy = -420;
@@ -379,6 +423,8 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     vx = 0;
     vy = 0;
     settled = true;
+    restingOn = null;
+    restTime = 0;
     syncFloat();
     wrap.classList.add("rest");
     void saveSoon();
@@ -421,6 +467,49 @@ export function mountLauncher(root: HTMLElement, id: string): void {
   });
   wrap.addEventListener("contextmenu", (e) => e.preventDefault());
 
+  /** Come to rest: pin in place, persist, and stop burning frames on it. */
+  const goToRest = (on: string | null): void => {
+    settled = true;
+    restingOn = on;
+    syncFloat();
+    wrap.classList.add("rest");
+    void saveSoon();
+    stopAnimation();
+    // An icon resting on another one is only stable while that one stays put.
+    if (on) watchSupport();
+  };
+
+  /** Cheap poll for a resting icon: fall again when its support moves away. */
+  const watchSupport = (): void => {
+    if (supportTimer !== undefined) return;
+    startLayoutPolling();
+    supportTimer = window.setInterval(() => {
+      if (!settled || dragging) return;
+      // no layout data yet (the fetch is async): that is not "support gone"
+      if (others.length === 0) return;
+      if (supportGone({ x, y, w: WIN_W, h: WIN_H }, others)) wake();
+    }, 250);
+  };
+
+  const stopSupportWatch = (): void => {
+    if (supportTimer !== undefined) {
+      window.clearInterval(supportTimer);
+      supportTimer = undefined;
+    }
+  };
+
+  /** Support disappeared (or the user moved things): run physics again. */
+  const wake = (): void => {
+    stopSupportWatch();
+    settled = false;
+    restingOn = null;
+    restTime = 0;
+    bounces = 0;
+    syncFloat();
+    wrap.classList.remove("rest");
+    startAnimation();
+  };
+
   const frame = (now: number) => {
     if (!animating) return;
     const dt = Math.min(0.05, (now - last) / 1000);
@@ -429,93 +518,28 @@ export function mountLauncher(root: HTMLElement, id: string): void {
     // Never drive the window before the stored position loads (ready),
     // or every icon first jumps to default coordinates and bunches up.
     if (ready && !dragging && !settled && !document.hidden) {
-      // gravity (live from settings)
-      vy += currentSettings().gravity * dt;
-      vx *= 1 - 0.12 * dt;
-      x += vx * dt;
-      y += vy * dt;
-
-      // inter-icon: slide sideways out of overlap and rest on top of piles.
-      // (The old radial push fought gravity into a mid-air hover equilibrium
-      // that stalled drops, fed by stale ghost positions.)
-      const cx = x + WIN_W / 2;
-      for (const o of others) {
-        const ox = o.x + o.w / 2;
-        const overlapX = Math.min(x + WIN_W, o.x + o.w) - Math.max(x, o.x);
-        const overlapY = Math.min(y + WIN_H, o.y + o.h) - Math.max(y, o.y);
-        if (overlapX > 8 && overlapY > 8) {
-          const dir = cx >= ox ? 1 : -1;
-          const shove = Math.min(overlapX, 40);
-          x += dir * shove * Math.min(1, 6 * dt);
-          vx += dir * 260 * dt;
-          // land on top when falling onto another icon
-          const ourBottom = y + WIN_H;
-          if (vy >= 0 && ourBottom >= o.y && ourBottom - o.y < 34) {
-            y = o.y - WIN_H;
-            if (Math.abs(vy) > 140) {
-              vy = -vy * currentSettings().bounce;
-              vx *= 0.9;
-              squash();
-            } else {
-              vy = 0;
-              vx *= 1 - Math.min(1, 4 * dt);
-              if (Math.abs(vx) < 14) {
-                vx = 0;
-                if (!settled) {
-                  settled = true;
-                  syncFloat();
-                  wrap.classList.add("rest");
-                  void saveSoon();
-                  stopAnimation();
-                  return;
-                }
-              }
-            }
-          }
-        }
+      const out = stepBody({
+        body: { x, y, vx, vy, w: WIN_W, h: WIN_H, restTime, restingOn, bounces },
+        gravity: currentSettings().gravity,
+        restitution: currentSettings().bounce,
+        bounds: mon,
+        others,
+        dt,
+      });
+      x = out.x;
+      y = out.y;
+      vx = out.vx;
+      vy = out.vy;
+      restTime = out.restTime;
+      bounces = out.bounces;
+      if (out.impacts > 0) squash();
+      if (out.settled) {
+        goToRest(out.restingOn);
+        return;
       }
-
-      // floor / walls / ceiling
-      const floor = mon.y + mon.h - WIN_H - 6;
-      if (y >= floor) {
-        y = floor;
-        if (Math.abs(vy) > 110) {
-          vy = -vy * currentSettings().bounce;
-          vx *= 0.9;
-          squash();
-        } else {
-          vy = 0;
-          vx *= 1 - Math.min(1, 4 * dt);
-          if (Math.abs(vx) < 14) {
-            vx = 0;
-            if (!settled) {
-              settled = true;
-              syncFloat();
-              wrap.classList.add("rest");
-              void saveSoon();
-              stopAnimation();
-              return;
-            }
-          }
-        }
-      }
-      if (x < mon.x) {
-        x = mon.x;
-        vx = Math.abs(vx) * REST_WALL;
-      }
-      if (x > mon.x + mon.w - WIN_W) {
-        x = mon.x + mon.w - WIN_W;
-        vx = -Math.abs(vx) * REST_WALL;
-      }
-      if (y < mon.y) {
-        y = mon.y;
-        vy = Math.abs(vy) * 0.5;
-      }
-
-      if (!settled) {
-        wrap.classList.remove("rest");
-        void setLogicalPos(x, y).catch(() => undefined);
-      }
+      restingOn = out.restingOn;
+      wrap.classList.remove("rest");
+      setWidgetPos(id, x, y, scale);
     }
     if (animating) {
       rafId = requestAnimationFrame(frame);
@@ -526,7 +550,7 @@ export function mountLauncher(root: HTMLElement, id: string): void {
 export const appPlugin: FloatyPlugin = {
   kind: "app",
   name: "App launcher",
-  mount: mountLauncher,
+  mount: (root, id) => mountLauncher(root, id, "app"),
   describe: (rec: PluginRecord) => {
     const n = rec.data["name"];
     return typeof n === "string" && n ? n : undefined;
@@ -536,6 +560,9 @@ export const appPlugin: FloatyPlugin = {
       "gravity",
       "bounce",
       "floatiness",
+      "float_amplitude",
+      "float_period",
+      "float_spread",
       "animated_ratio",
       "animation_mode",
       "single_click",
@@ -544,5 +571,20 @@ export const appPlugin: FloatyPlugin = {
       const r = ctx.getSharedRow(k);
       if (r) card.append(r);
     }
+  },
+};
+
+/**
+ * Loose files from the desktop root: same gravity/float behaviour as an app
+ * launcher, but the id/double-click opens the document with its default app
+ * instead of being spawned as a program (the backend classifies the kind).
+ */
+export const filePlugin: FloatyPlugin = {
+  kind: "file",
+  name: "File",
+  mount: (root, id) => mountLauncher(root, id, "file"),
+  describe: (rec: PluginRecord) => {
+    const n = rec.data["name"];
+    return typeof n === "string" && n ? n : undefined;
   },
 };
