@@ -208,8 +208,9 @@ export async function monitorArea(): Promise<MonitorArea> {
 }
 
 export async function loadRecord(id: string): Promise<WidgetRecord | undefined> {
-  const list = await invoke<WidgetRecord[]>("floaty_list");
-  return list.find((r) => r.id === id);
+  // One record per widget, never the whole store: `floaty_list` carries every
+  // icon inlined (~8.5MB) and this runs once per widget on a page load.
+  return await invoke<WidgetRecord | null>("floaty_get_record", { id }).then((r) => r ?? undefined);
 }
 
 export async function saveRecord(rec: WidgetRecord): Promise<void> {
@@ -562,6 +563,36 @@ export async function removeSelf(rec: WidgetRecord): Promise<void> {
   } catch {
     await appWin.close().catch(() => undefined);
   }
+}
+
+/**
+ * Tell the backend this page is alive: after a sleep/standby the app can end up
+ * with a wedged renderer, and the only way to tell is that the page stops
+ * reporting in (see `recover_windows` in the backend).
+ */
+/**
+ * Send one beat immediately. A hidden page has its timers throttled, so the
+ * interval in `startHeartbeat` can be a minute apart right when the backend most
+ * needs to know (this is called from `visibilitychange`, and events are not
+ * throttled).
+ */
+export function beatNow(label: string): void {
+  void invoke("floaty_heartbeat", { label, visibility: document.visibilityState }).catch(
+    () => undefined,
+  );
+}
+
+export function startHeartbeat(label: string): void {
+  // The first beat is sent straight away and is not a timer, so it is not
+  // throttled: it is the one signal the backend can trust after a standby, and
+  // it says whether this page believes it is visible (a page stuck believing it
+  // is hidden has its timers throttled and its widgets look frozen).
+  const beat = () =>
+    void invoke("floaty_heartbeat", { label, visibility: document.visibilityState }).catch(
+      () => undefined,
+    );
+  beat();
+  window.setInterval(beat, 5000);
 }
 
 // ---------- global floating settings (cached, live-updated) ----------

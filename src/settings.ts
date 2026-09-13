@@ -2,7 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { allPlugins, loadPlugins, pluginFor, type PluginSettingsContext } from "./widgets/plugin";
 import { crossCheckPlugins, manifestEntries, type PluginManifestEntry } from "./widgets/pluginManifest";
-import { confirmRemoveDialog, describeForConfirm, type FloatSettings } from "./widgets/lib";
+import {
+  confirmRemoveDialog,
+  describeForConfirm,
+  startHeartbeat,
+  type FloatSettings,
+} from "./widgets/lib";
 import "./style.css";
 
 interface WidgetRecord {
@@ -258,6 +263,8 @@ function renderAddRow(box: HTMLElement): void {
     host.append(el("div", "empty", "all plugins disabled"));
   }
 }
+
+startHeartbeat("settings");
 
 function build(): void {
   if (!root) return;

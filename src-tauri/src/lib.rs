@@ -14,7 +14,30 @@ use plugins::PluginInfo;
 
 // ---------- logging ----------
 
+/// `[hh:mm:ss.mmm]`, so a recovery that took ten seconds says so in the log.
+fn timestamp() -> String {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::GetLocalTime;
+        let t = unsafe { GetLocalTime() };
+        format!(
+            "[{:02}:{:02}:{:02}.{:03}]",
+            t.wHour, t.wMinute, t.wSecond, t.wMilliseconds
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        String::new()
+    }
+}
+
+/// Log lines now come from several threads (power callbacks, the pump watchdog);
+/// without this the appends interleave.
+static LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn log_line(app: &AppHandle, msg: &str) {
+    let _serialised = LOG_LOCK.lock();
+    let msg = &format!("{} {msg}", timestamp());
     eprintln!("[floaty] {msg}");
     let Ok(dir) = app.path().app_data_dir().map(|d| {
         fs::create_dir_all(&d).ok();
@@ -111,7 +134,37 @@ fn refresh_backup(path: &std::path::Path, force: bool) {
     }
 }
 
+/// Set while a write is outstanding; the writer clears it before writing.
+static STORE_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark the store dirty and let the background writer do the work.
+///
+/// `floaty_save` used to serialise and write the whole store itself — ~3MB of
+/// JSON with every icon base64-inlined. A single remount (every widget reports
+/// the position the layout just gave it) is sixty of those, and on the main
+/// thread that is a measured **18.8 seconds** of the app not answering, which is
+/// the "Not Responding" the user sees after a wake-up or a restart. Coalescing
+/// turns the sixty writes into one.
 fn persist(app: &AppHandle) {
+    STORE_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
+    static WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WRITER.get_or_init(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if !STORE_DIRTY.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                continue;
+            }
+            if let Some(app) = shared_app() {
+                write_store_now(&app);
+            }
+        });
+    });
+    let _ = app;
+}
+
+/// Write the store immediately, on this thread. Used by the background writer and
+/// by the exit path, which cannot wait for a timer.
+fn write_store_now(app: &AppHandle) {
     // Serialize under the lock, write after releasing it: holding the store
     // mutex across file IO serialized every save/list/create and stalled the
     // settings window while widgets persisted positions in the background.
@@ -122,10 +175,23 @@ fn persist(app: &AppHandle) {
         serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".to_string())
     };
     let store = store_file(app);
+    let started = std::time::Instant::now();
+    let bytes = json.len();
     write_text_atomic(&store, &json);
     // never let an empty desktop become the backup
     if json.len() > 4 {
         refresh_backup(&store, false);
+    }
+    let ms = started.elapsed().as_millis();
+    if ms > 120 {
+        log_line(
+            app,
+            &format!(
+                "store: wrote {:.1}MB in {}ms (this is the main thread; it used to happen                  once per widget, which is what made the app stop answering)",
+                bytes as f64 / (1024.0 * 1024.0),
+                ms
+            ),
+        );
     }
 }
 
@@ -374,7 +440,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
 }
 
 #[tauri::command]
-fn floaty_get_settings(app: AppHandle) -> FloatSettings {
+async fn floaty_get_settings(app: AppHandle) -> FloatSettings {
     load_settings(&app)
 }
 
@@ -577,6 +643,36 @@ mod desktop_pin {
         pub fn SetWindowRgn(hWnd: isize, hRgn: isize, bRedraw: i32) -> i32;
 
         pub fn InvalidateRect(hWnd: isize, lpRect: *const std::ffi::c_void, bErase: i32) -> i32;
+        pub fn RedrawWindow(
+            hWnd: isize,
+            lprcUpdate: *const std::ffi::c_void,
+            hrgnUpdate: isize,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const RDW_INVALIDATE: u32 = 0x0001;
+    const RDW_ERASE: u32 = 0x0004;
+    const RDW_ALLCHILDREN: u32 = 0x0080;
+    const RDW_UPDATENOW: u32 = 0x0100;
+
+    /// Make the window paint itself from scratch.
+    ///
+    /// A WebView2's first frame is white and Chromium only repaints the damage it
+    /// knows about, so after a standby that white can survive in regions the page
+    /// paints nothing into — it shows up as solid white bands through the
+    /// translucent tiles sitting above it. Raw Win32, on purpose: this must not
+    /// queue behind a wedged renderer.
+    pub fn force_repaint(hwnd: isize) {
+        if hwnd == 0 {
+            return;
+        }
+        unsafe {
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            // No RDW_UPDATENOW on purpose: that waits for the paint to happen, and
+            // the paint is what can be stuck. Invalidate and let it come back.
+            RedrawWindow(hwnd, std::ptr::null(), 0, RDW_INVALIDATE | RDW_ALLCHILDREN);
+        }
     }
 
     pub fn delete_taskbar_tab(hwnd: isize) {
@@ -676,6 +772,32 @@ mod desktop_pin {
             }
         }
 
+        // Sleep/resume lands here: the webview is never told, so the app has to
+        // put itself back together. Two shapes: a resume code after a classic
+        // sleep, or the display switching back on after Modern Standby (which
+        // sends no resume at all).
+        if msg == crate::WM_POWERBROADCAST {
+            if wparam == crate::PBT_POWERSETTINGCHANGE && lparam != 0 {
+                let setting = unsafe { &*(lparam as *const crate::POWERBROADCAST_SETTING) };
+                if setting.PowerSetting == crate::GUID_CONSOLE_DISPLAY_STATE
+                    && setting.DataLength >= 1
+                    && setting.Data[0] == 1
+                {
+                    // Never do this work on the pumping thread: it touches the
+                    // webview, the compositor and the disk, and a stall in any of
+                    // them makes Windows mark the whole app "Not Responding".
+                    std::thread::spawn(|| crate::recover_windows("display back on"));
+                    return 1;
+                }
+            } else if wparam == crate::PBT_APMRESUMEAUTOMATIC
+                || wparam == crate::PBT_APMRESUMESUSPEND
+                || wparam == crate::PBT_APMRESUMECRITICAL
+            {
+                std::thread::spawn(|| crate::recover_windows("woke from sleep"));
+                return 1;
+            }
+        }
+
         if STAY_ON_DESKTOP_ACTIVE.load(Ordering::Relaxed) {
             // Block SC_MINIMIZE syscommand
             if msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_MINIMIZE {
@@ -714,12 +836,30 @@ mod desktop_pin {
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
+    /// Install the window procedure that blocks minimize/show-desktop tricks and
+    /// answers the sleep/resume messages. Idempotent.
+    ///
+    /// Timing matters: a window's procedure can still be replaced while the
+    /// webview is being created, which drops an earlier subclass out of the
+    /// chain — and then the display-state notification is delivered into
+    /// nothing. Installing it again once the window is up (the first heartbeat)
+    /// is what makes the wake-up recovery reliable.
+    pub fn install_subclass(hwnd: isize) {
+        if hwnd != 0 {
+            unsafe {
+                SetWindowSubclass(hwnd, widget_subclass_proc, SUBCLASS_ID, 0);
+            }
+        }
+    }
+
     pub fn apply_desktop_pin(hwnd: isize, stay_on_desktop: bool) {
         unsafe {
             remove_from_taskbar(hwnd);
+            // one window takes the display-state notification for the process
+            crate::watch_display_state(hwnd);
 
             // Register subclass (idempotent if already registered)
-            SetWindowSubclass(hwnd, widget_subclass_proc, SUBCLASS_ID, 0);
+            install_subclass(hwnd);
 
             if stay_on_desktop {
                 let desktop_hwnd = get_desktop_shell_hwnd();
@@ -864,6 +1004,584 @@ mod desktop_pin {
     }
 }
 
+// ---------- sleep / resume ----------
+
+/// Windows tells every top-level window when the machine goes down and comes
+/// back. Nothing else re-creates what a sleep broke.
+const WM_POWERBROADCAST: u32 = 0x0218;
+const PBT_APMRESUMESUSPEND: usize = 0x0007;
+const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
+const PBT_APMRESUMECRITICAL: usize = 0x0006;
+const PBT_POWERSETTINGCHANGE: usize = 0x8013;
+
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Power::{
+    RegisterPowerSettingNotification, POWERBROADCAST_SETTING,
+};
+use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
+use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, DEVICE_NOTIFY_WINDOW_HANDLE};
+
+/// Windows delivers power-setting changes through a pool thread when registered
+/// in callback mode, which is the whole point: the callback still lands while the
+/// app's own pumping thread is blocked, and it can therefore both *measure* the
+/// wake-up and do the recovery from a thread that is not stuck.
+/// 2 = no report yet, 1 = display on, 0 = display off
+static DISPLAY_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2);
+/// when the display-on callback last ran, in ms since the process started
+static DISPLAY_ON_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[repr(C)]
+struct DeviceNotifySubscribeParameters {
+    callback: Option<
+        unsafe extern "system" fn(
+            context: *const core::ffi::c_void,
+            kind: u32,
+            setting: *const core::ffi::c_void,
+        ) -> u32,
+    >,
+    context: *const core::ffi::c_void,
+}
+
+unsafe extern "system" fn display_setting_changed(
+    _context: *const core::ffi::c_void,
+    kind: u32,
+    setting: *const core::ffi::c_void,
+) -> u32 {
+    if kind as usize == PBT_POWERSETTINGCHANGE && !setting.is_null() {
+        let s = &*(setting as *const POWERBROADCAST_SETTING);
+        if s.PowerSetting != GUID_CONSOLE_DISPLAY_STATE && s.DataLength >= 1 {
+            if let Some(app) = shared_app() {
+                log_line(
+                    &app,
+                    &format!(
+                        "power: other setting changed ({:?} = {})",
+                        s.PowerSetting,
+                        s.Data[0]
+                    ),
+                );
+            }
+        }
+        if s.PowerSetting == GUID_CONSOLE_DISPLAY_STATE && s.DataLength >= 1 {
+            let state = s.Data[0] as u64;
+            let previous = DISPLAY_STATE.swap(state, std::sync::atomic::Ordering::SeqCst);
+            if previous != state {
+                if let Some(app) = shared_app() {
+                    log_line(
+                        &app,
+                        &format!(
+                            "power: display {} (was {})",
+                            if state == 1 { "on" } else { "off" },
+                            if previous == 1 {
+                                "on"
+                            } else if previous == 0 {
+                                "off"
+                            } else {
+                                "unknown"
+                            }
+                        ),
+                    );
+                }
+            }
+            if state == 1 {
+                DISPLAY_ON_MS.store(elapsed_ms(), std::sync::atomic::Ordering::SeqCst);
+                // Recover here, on this pool thread, instead of waiting for a
+                // window message that a blocked main thread cannot process.
+                recover_windows("display back on (power callback)");
+            }
+        }
+    }
+    0
+}
+
+/// Register the display-state notification without binding it to a window, so no
+/// window rebuild can make the app deaf to a wake-up.
+pub fn watch_display_by_callback(app: &AppHandle) {
+    static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REGISTERED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let params = Box::leak(Box::new(DeviceNotifySubscribeParameters {
+        callback: Some(display_setting_changed),
+        context: std::ptr::null(),
+    }));
+    // Registered in callback mode, so the handle is never needed again: the
+    // callback outlives every window and every window rebuild.
+    match unsafe {
+        RegisterPowerSettingNotification(
+            HANDLE(params as *mut _ as *mut core::ffi::c_void),
+            &GUID_CONSOLE_DISPLAY_STATE,
+            DEVICE_NOTIFY_CALLBACK,
+        )
+    } {
+        Ok(_) => log_line(app, "power: display state is watched by callback (survives window rebuilds)"),
+        Err(e) => log_line(app, &format!("power: could not register the display callback: {e}")),
+    }
+}
+
+/// Does the pumping thread still answer? A window that stops answering for
+/// seconds is what Windows paints as "(Not Responding)", and this records how long
+/// it lasted. One no-op message every 2s.
+fn start_pump_watchdog() {
+    std::thread::spawn(|| {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SLOW_SINCE: AtomicU64 = AtomicU64::new(0);
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let Some(app) = shared_app() else { continue };
+            let Some(w) = app.get_webview_window("desktop-overlay") else { continue };
+            let Ok(hwnd) = w.hwnd() else { continue };
+            let t0 = std::time::Instant::now();
+            let mut res = 0usize;
+            // No SMTO_ABORTIFHUNG: that flag returns immediately for a window
+            // Windows already considers hung, which is exactly the case being
+            // measured. Without it a blocked thread makes this time out, and the
+            // timeout is the measurement.
+            let answered = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::SendMessageTimeoutW(
+                    windows::Win32::Foundation::HWND(hwnd.0),
+                    0, // WM_NULL: a no-op, answered as soon as the queue is pumped
+                    windows::Win32::Foundation::WPARAM(0),
+                    windows::Win32::Foundation::LPARAM(0),
+                    windows::Win32::UI::WindowsAndMessaging::SEND_MESSAGE_TIMEOUT_FLAGS(0),
+                    1500,
+                    Some(&mut res),
+                )
+            };
+            let ms = t0.elapsed().as_millis() as u64;
+            let _ = answered;
+            let since = SLOW_SINCE.load(Ordering::SeqCst);
+            if (ms > 400 || answered.0 == 0) && since == 0 {
+                SLOW_SINCE.store(elapsed_ms(), Ordering::SeqCst);
+                log_line(
+                    &app,
+                    &format!("pump: the overlay did not answer for {ms}ms — the main thread is blocked"),
+                );
+            } else if ms <= 400 && answered.0 != 0 && since != 0 {
+                SLOW_SINCE.store(0, Ordering::SeqCst);
+                log_line(
+                    &app,
+                    &format!(
+                        "pump: answering again after {}ms of being blocked",
+                        elapsed_ms().saturating_sub(since)
+                    ),
+                );
+            }
+        }
+    });
+}
+
+static SHARED_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+static RESUME_CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static LAST_RESUME_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The app handle, for the window procedures that only get an HWND.
+fn shared_app() -> Option<AppHandle> {
+    SHARED_APP.get().cloned()
+}
+
+/// Hands the display-state notification to the first window that asks: Modern
+/// Standby never sends a resume message, only this setting change, so without it
+/// nothing knows the screen came back.
+pub fn watch_display_state(hwnd: isize) {
+    use std::sync::atomic::{AtomicIsize, Ordering};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+
+    // The notification is bound to the window that registered it, so remember
+    // which one that was: when that window is replaced (the recovery re-creates
+    // a wedged overlay), the next window to ask takes over instead of leaving
+    // the app deaf to the display coming back.
+    static WATCHED: AtomicIsize = AtomicIsize::new(0);
+    let watched = WATCHED.load(Ordering::SeqCst);
+    if watched != 0
+        && unsafe { IsWindow(Some(HWND(watched as *mut core::ffi::c_void))) }.as_bool()
+    {
+        return;
+    }
+    unsafe {
+        let _ = RegisterPowerSettingNotification(
+            HANDLE(hwnd as *mut core::ffi::c_void),
+            &GUID_CONSOLE_DISPLAY_STATE,
+            DEVICE_NOTIFY_WINDOW_HANDLE,
+        );
+    }
+    WATCHED.store(hwnd, Ordering::SeqCst);
+}
+
+/// What to put back after the machine goes down and comes back.
+///
+/// Windows tells a window about a wake-up in two different ways: a classic sleep
+/// sends `WM_POWERBROADCAST` with a resume code, while Modern Standby (what this
+/// laptop does) sends *no resume message at all* — only a power-setting change
+/// for `GUID_CONSOLE_DISPLAY_STATE`. Either way the webview is told nothing, and
+/// after a standby Chromium can keep believing the window is occluded: the page
+/// stays hidden, its timers are throttled and rAF stops, which is the "widgets
+/// stuck for a long time" symptom.
+///
+/// So: refit the overlay to the monitor, put the desktop-level state back, nudge
+/// the window bounds (a bounds change is what makes Chromium re-evaluate
+/// occlusion), reload the windows and revive the samplers. Every top-level
+/// window receives these messages, hence the debounce.
+fn recover_windows(reason: &str) {
+    use std::sync::atomic::Ordering;
+    let now_ms = elapsed_ms();
+    let last = LAST_RESUME_MS.load(Ordering::SeqCst);
+    if now_ms.saturating_sub(last) < 15_000 {
+        return;
+    }
+    LAST_RESUME_MS.store(now_ms, Ordering::SeqCst);
+
+    let Some(app) = shared_app() else { return };
+    let s = load_settings(&app);
+    let windows: Vec<(String, tauri::WebviewWindow)> = app
+        .webview_windows()
+        .into_iter()
+        // The hidden manager window renders nothing and is never rebuilt, so it
+        // is not watched (it is still the window that holds the display-state
+        // notification, which is what matters about it).
+        .filter(|(label, _)| {
+            label == "desktop-overlay" || label == "settings" || label.starts_with("widget-")
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let seen = DISPLAY_ON_MS.load(std::sync::atomic::Ordering::SeqCst);
+    let lag = if seen > 0 { now_ms.saturating_sub(seen) } else { 0 };
+    log_line(
+        &app,
+        &format!(
+            "power: {reason} — checking {} windows (display reported {}ms ago)",
+            windows.len(),
+            lag
+        ),
+    );
+
+    // Each phase reports its own elapsed time: the user sees "a long time to
+    // recover", so the log has to say which step that time went into.
+    fit_overlay_to_monitor(&app);
+    log_line(
+        &app,
+        &format!("power: overlay refit (+{}ms)", started.elapsed().as_millis()),
+    );
+
+    let mut suspects: Vec<String> = Vec::new();
+    for (label, w) in &windows {
+        if let Ok(hwnd) = w.hwnd() {
+            if label == "desktop-overlay" {
+                desktop_pin::apply_overlay_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+            } else {
+                desktop_pin::apply_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+            }
+            // Raw Win32, on purpose: this is what wakes the compositor and makes
+            // Chromium re-evaluate occlusion. Going through the webview's own API
+            // queues behind the very renderer we are trying to wake — measured: a
+            // reload was accepted in 0.4s and executed 29s later.
+            nudge_bounds(hwnd.0 as isize);
+        }
+        // Decide per window and only touch the ones that look broken: a page that
+        // reported in shortly before the wake-up and said it was visible survived
+        // the standby and must be left alone (reloading it would cost a remount
+        // and then look like a failure in its own right).
+        let (beat_ms, visibility) = last_beat(label);
+        let age_s = if beat_ms == 0 {
+            f64::INFINITY
+        } else {
+            now_ms.saturating_sub(beat_ms) as f64 / 1000.0
+        };
+        if beat_ms > 0 && age_s <= 20.0 && visibility != "hidden" {
+            log_line(
+                &app,
+                &format!("power: {label} is alive (reported in {age_s:.0}s ago, {visibility})"),
+            );
+            continue;
+        }
+        log_line(
+            &app,
+            &format!("power: {label} looks stuck (last heard {age_s:.0}s ago, {visibility}) — reloading it"),
+        );
+        suspects.push(label.clone());
+    }
+
+    // a PDH query or a loopback stream can die in the sleep; revive them if a
+    // widget is still watching (they are ref-counted, so this never double-counts)
+    sysmon::ensure_running(&app, Some(s.sysmon_interval as u32));
+    audio::ensure_running(&app, Some(s.viz_fps as u32));
+
+    log_line(
+        &app,
+        &format!(
+            "power: pinned + repainted {} windows (+{}ms total)",
+            windows.len(),
+            started.elapsed().as_millis()
+        ),
+    );
+    if suspects.is_empty() {
+        log_line(&app, "power: nothing needed rebuilding");
+        return;
+    }
+
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        // Reload first: that alone rebuilds every widget's timers and re-claims
+        // the samplers. Only if the page still cannot say it is back (and
+        // visible) does the window get built again — the heavy step, and the only
+        // one that cannot be queued behind a wedged renderer.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        for label in &suspects {
+            if let Some(w) = app2.get_webview_window(label) {
+                match w.reload() {
+                    Ok(()) => log_line(&app2, &format!("power: reloaded {label}")),
+                    Err(e) => log_line(&app2, &format!("power: could not reload {label}: {e}")),
+                }
+            }
+        }
+        // A page that mounts a whole desktop takes a while (tens of seconds in a
+        // dev build), so give it room before calling it dead.
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        for label in &suspects {
+            let (beat_ms, visibility) = last_beat(label);
+            if beat_ms > now_ms && visibility != "hidden" {
+                log_line(&app2, &format!("power: {label} came back after the reload ({visibility})"));
+                continue;
+            }
+            if beat_ms > now_ms {
+                log_line(
+                    &app2,
+                    &format!("power: {label} came back but still believes it is hidden — re-creating it"),
+                );
+            } else {
+                log_line(&app2, &format!("power: {label} never reported in — re-creating it"));
+            }
+            recreate_window(&app2, label);
+        }
+    });
+}
+
+/// How many ms this process has been running, for the heartbeat bookkeeping.
+fn elapsed_ms() -> u64 {
+    RESUME_CLOCK.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// One-pixel resize and back, straight to the window: no webview API involved.
+fn nudge_bounds(hwnd: isize) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+        };
+        let mut r = RECT::default();
+        if unsafe { GetWindowRect(windows::Win32::Foundation::HWND(hwnd as *mut _), &mut r) }.is_ok() {
+            let (w, h) = (r.right - r.left, r.bottom - r.top);
+            if w < 2 || h < 2 {
+                return;
+            }
+            unsafe {
+                let hwnd = windows::Win32::Foundation::HWND(hwnd as *mut _);
+                let _ = SetWindowPos(hwnd, None, 0, 0, w + 1, h + 1, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        }
+        // a resize alone does not clear a stale surface: ask for a full repaint
+        desktop_pin::force_repaint(hwnd);
+    }
+    #[cfg(not(windows))]
+    let _ = hwnd;
+}
+
+/// Last heartbeat from a window, in ms since the process started (0 = never).
+/// When the window last reported in, and what it said about its own visibility.
+fn last_beat(label: &str) -> (u64, String) {
+    heartbeats()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(label).cloned())
+        .unwrap_or((0, String::new()))
+}
+
+/// Last report from each window: when it came in, and what the page thought its
+/// own visibility was.
+static HEARTBEATS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (u64, String)>>,
+> = std::sync::OnceLock::new();
+
+fn heartbeats() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u64, String)>> {
+    HEARTBEATS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// The windows report in every few seconds so the wake-up recovery can tell a
+/// live page from one that is wedged.
+/// Per-window record of what we did about a stale "hidden" verdict.
+static HEARTBEAT_REPAIRS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, (u64, u32)>>,
+> = std::sync::OnceLock::new();
+
+fn heartbeat_repairs() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u64, u32)>> {
+    HEARTBEAT_REPAIRS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[tauri::command]
+fn floaty_heartbeat(label: String, visibility: Option<String>, app: AppHandle) {
+    let now = elapsed_ms();
+    let visibility = visibility.unwrap_or_else(|| "unknown".to_string());
+    let mut first = false;
+    let mut previous_visibility = String::new();
+    if let Ok(mut m) = heartbeats().lock() {
+        match m.get(&label) {
+            None => first = true,
+            Some((_, v)) => previous_visibility = v.clone(),
+        }
+        m.insert(label.clone(), (now, visibility.clone()));
+    }
+    if !first && previous_visibility != visibility {
+        let display = DISPLAY_STATE.load(std::sync::atomic::Ordering::SeqCst);
+        let display = if display == 1 {
+            "on"
+        } else if display == 0 {
+            "off"
+        } else {
+            "unknown"
+        };
+        log_line(
+            &app,
+            &format!(
+                "heartbeat: {label} went {previous_visibility} -> {visibility} (display {display})"
+            ),
+        );
+    }
+    if first {
+        log_line(
+            &app,
+            &format!("heartbeat: {label} is reporting in ({visibility})"),
+        );
+        // The window is definitely finished being created by now: arm the resume
+        // handling on every window and re-home the display-state notification if
+        // the window that held it is gone.
+        for (_, w) in app.webview_windows() {
+            if let Ok(hwnd) = w.hwnd() {
+                desktop_pin::install_subclass(hwnd.0 as isize);
+                watch_display_state(hwnd.0 as isize);
+            }
+        }
+    }
+
+    // A page that believes it is hidden while the display is on is Chromium's
+    // stale occlusion verdict, and a hidden page has its timers throttled — this
+    // is the "widgets are stuck" state. Nudge the window so it re-checks; if it
+    // still insists half a minute later, rebuild the page. Checked on every beat,
+    // not just the first one.
+    if visibility == "hidden" && DISPLAY_STATE.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+        // Only act when the counter actually advances: every hidden beat inside
+        // the same 30s window used to re-run the repair and re-log it.
+        let (attempts, acted) = match heartbeat_repairs().lock() {
+            Ok(mut m) => {
+                let e = m.entry(label.clone()).or_insert((0, 0));
+                if now.saturating_sub(e.0) > 30_000 {
+                    e.0 = now;
+                    e.1 += 1;
+                    (e.1, true)
+                } else {
+                    (e.1, false)
+                }
+            }
+            Err(_) => (0, false),
+        };
+        if !acted {
+            return;
+        }
+        match attempts {
+            1 => {
+                log_line(
+                    &app,
+                    &format!("power: {label} says hidden while the display is on — forcing the webview visible again"),
+                );
+                let (app2, label2) = (app.clone(), label.clone());
+                std::thread::spawn(move || {
+                    if let Some(w) = app2.get_webview_window(&label2) {
+                        // Neither a 1px nudge nor hiding and showing the *window*
+                        // clears this: the page's verdict comes from the WebView2
+                        // controller's own visibility flag. Set it directly — this
+                        // is the API the stale state lives in.
+                        let _ = w.with_webview(|webview| {
+                            let controller = webview.controller();
+                            unsafe {
+                                let _ = controller.SetIsVisible(true);
+                            }
+                        });
+                        if let Ok(hwnd) = w.hwnd() {
+                            nudge_bounds(hwnd.0 as isize);
+                        }
+                    }
+                });
+            }
+            2 => {
+                log_line(
+                    &app,
+                    &format!("power: {label} is still hidden after being forced visible — rebuilding the page"),
+                );
+                let (app2, label2) = (app.clone(), label.clone());
+                std::thread::spawn(move || {
+                    if let Some(w) = app2.get_webview_window(&label2) {
+                        let _ = w.reload();
+                    }
+                });
+            }
+            _ => {}
+        }
+    } else if visibility != "hidden" {
+        if let Ok(mut m) = heartbeat_repairs().lock() {
+            m.remove(&label);
+        }
+    }
+}
+
+/// Replace a wedged window: nothing the page or the webview API does can be
+/// trusted by this point, so close it for real and build it again.
+fn recreate_window(app: &AppHandle, label: &str) {
+    if label == "desktop-overlay" {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.destroy();
+        }
+        // Tauri's registry keeps a destroyed window for as long as the webview
+        // takes to come down, and `spawn_overlay_window` bails out while it is
+        // still listed — which once left the desktop with no widgets at all.
+        // Wait for the registry to clear (up to 15s) and then build it again.
+        for attempt in 1..=60 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if app.get_webview_window(label).is_some() {
+                continue;
+            }
+            match spawn_overlay_window(app) {
+                Ok(()) => {
+                    let waited = attempt as f64 * 0.25;
+                    log_line(app, &format!("power: overlay re-created after {waited:.1}s"));
+                    return;
+                }
+                Err(e) => log_line(app, &format!("power: overlay re-create failed: {e}")),
+            }
+        }
+        log_line(
+            app,
+            "power: the old overlay window never came down — leaving it alone",
+        );
+        return;
+    }
+    // one widget per window: close it and show it again from its record
+    let Some(rec) = record_for_window(app, label) else { return };
+    close_widget_async(app, &rec.id);
+    show_widget(app, &rec);
+}
+
+/// The record behind a per-widget window label, if that window has one.
+fn record_for_window(app: &AppHandle, label: &str) -> Option<WidgetRecord> {
+    let state = app.state::<AppState>();
+    let guard = state.0.lock().ok()?;
+    guard
+        .widgets
+        .values()
+        .find(|r| widget_label(&r.id) == label)
+        .cloned()
+}
+
 // ---------- windows ----------
 
 fn widget_label(id: &str) -> String {
@@ -902,12 +1620,10 @@ fn is_path_kind(kind: &str) -> bool {
     plugins::is_path_kind(kind)
 }
 
-fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
-    if app.get_webview_window("desktop-overlay").is_some() {
-        return Ok(());
-    }
-
-    let (x, y, w, h) = if let Ok(Some(mon)) = app.primary_monitor() {
+/// Where the overlay belongs on the primary monitor: logical px, so it matches
+/// the coordinates the widgets and the store use.
+fn overlay_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
+    if let Ok(Some(mon)) = app.primary_monitor() {
         let s = mon.scale_factor();
         let size = mon.size();
         let pos = mon.position();
@@ -919,7 +1635,38 @@ fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
         )
     } else {
         (0.0, 0.0, 1920.0, 1080.0)
-    };
+    }
+}
+
+/// Follow the primary monitor: the resolution or the DPI can change while the
+/// machine is asleep (a dock, a projector, a different scaling), which leaves the
+/// overlay the wrong size and the widgets outside it looking stuck.
+fn fit_overlay_to_monitor(app: &AppHandle) {
+    let Some(w) = app.get_webview_window("desktop-overlay") else { return };
+    let (x, y, ww, hh) = overlay_rect(app);
+    if ww < 100.0 || hh < 100.0 {
+        return;
+    }
+    use tauri::{LogicalPosition, LogicalSize};
+    if let Ok(size) = w.inner_size() {
+        let scale = w.scale_factor().unwrap_or(1.0);
+        let cur_w = size.width as f64 / scale;
+        let cur_h = size.height as f64 / scale;
+        if (cur_w - ww).abs() < 2.0 && (cur_h - hh).abs() < 2.0 {
+            return;
+        }
+    }
+    log_line(app, &format!("overlay: refitting to {x},{y} {ww}x{hh}"));
+    let _ = w.set_position(LogicalPosition::new(x, y));
+    let _ = w.set_size(LogicalSize::new(ww, hh));
+}
+
+fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window("desktop-overlay").is_some() {
+        return Ok(());
+    }
+
+    let (x, y, w, h) = overlay_rect(app);
 
     log_line(app, &format!("spawn desktop-overlay at {x},{y} size {w}x{h}"));
     let win = WebviewWindowBuilder::new(
@@ -950,7 +1697,7 @@ fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn floaty_update_hit_rects(rects: Vec<desktop_pin::HitRect>) {
+async fn floaty_update_hit_rects(rects: Vec<desktop_pin::HitRect>) {
     desktop_pin::set_hit_rects(rects);
 }
 
@@ -3222,8 +3969,22 @@ fn floaty_layout(app: AppHandle) -> Vec<LayoutItem> {
 
 // ---------- commands ----------
 
+/// One widget record.
+///
+/// This exists because `loadRecord` used to call `floaty_list` and filter: every
+/// widget's mount then pulled the whole store over IPC — 8.5MB with the icons
+/// inlined — so a page with sixty widgets moved ~510MB and parsed it sixty times.
+/// Measured: `floaty_list` at ~5s per call, reloads of 20-60s. One record is a
+/// few KB.
 #[tauri::command]
-fn floaty_list(app: AppHandle) -> Vec<WidgetRecord> {
+async fn floaty_get_record(id: String, app: AppHandle) -> Option<WidgetRecord> {
+    let state = app.state::<AppState>();
+    let guard = state.0.lock().ok()?;
+    guard.widgets.get(&id).cloned()
+}
+
+#[tauri::command]
+async fn floaty_list(app: AppHandle) -> Vec<WidgetRecord> {
     let state = app.state::<AppState>();
     state
         .0
@@ -3238,7 +3999,7 @@ fn floaty_create(kind: String, app: AppHandle) -> Result<WidgetRecord, String> {
 }
 
 #[tauri::command]
-fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
+async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
     let state = app.state::<AppState>();
     if let Ok(mut guard) = state.0.lock() {
         if guard.dead.contains(&record.id) {
@@ -3458,7 +4219,7 @@ fn floaty_quit(app: AppHandle) {
 }
 
 #[tauri::command]
-fn floaty_log(msg: String, app: AppHandle) {
+async fn floaty_log(msg: String, app: AppHandle) {
     log_line(&app, &format!("webview: {msg}"));
 }
 
@@ -3529,7 +4290,21 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState(Mutex::new(StoreData::default())))
         .setup(|app| {
+            let _ = SHARED_APP.set(app.handle().clone());
+            // the hidden manager window outlives the overlay: it is the most
+            // stable place to hang the display-state notification
+            if let Some(m) = app.get_webview_window("manager") {
+                if let Ok(hwnd) = m.hwnd() {
+                    watch_display_state(hwnd.0 as isize);
+                }
+            }
+            // The window-bound registration above depends on that window's
+            // message procedure staying in the chain. This one is delivered to a
+            // pool thread instead, so it survives any window rebuild — and it is
+            // the only path that still runs while the main thread is blocked.
             let handle = app.handle().clone();
+            watch_display_by_callback(&handle);
+            start_pump_watchdog();
             log_line(&handle, "=== floaty starting ===");
             log_line(&handle, &format!("backend build {}", env!("FLOATY_BUILD_MARK")));
 
@@ -3688,6 +4463,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             floaty_list,
+            floaty_get_record,
             floaty_create,
             floaty_save,
             floaty_remove,
@@ -3722,6 +4498,7 @@ pub fn run() {
             floaty_update_hit_rects,
             floaty_set_overlay_dragging,
             floaty_log,
+            floaty_heartbeat,
             floaty_audio_start,
             floaty_audio_stop,
             floaty_audio_set_fps,
@@ -3736,12 +4513,15 @@ pub fn run() {
         .expect("error while building floaty")
         .run(|app, event| {
             // last chance to flush: widgets save as they change, but a pending
-            // move or edit should not be lost when the app is closed
+            // move or edit should not be lost when the app is closed. Synchronous
+            // on purpose — the coalescing writer is on a timer and would not get
+            // another chance to run.
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
-                persist(app);
+                STORE_DIRTY.store(false, std::sync::atomic::Ordering::SeqCst);
+                write_store_now(app);
             }
         });
 }

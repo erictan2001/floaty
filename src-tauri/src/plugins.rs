@@ -273,8 +273,6 @@ pub struct InstalledPlugin {
     pub layout_priority: i32,
     /// Absolute path of the module the windows import.
     pub entry: std::path::PathBuf,
-    /// Folder it was loaded from.
-    pub dir: std::path::PathBuf,
 }
 
 impl InstalledPlugin {
@@ -299,10 +297,6 @@ fn installed(kind: &str) -> Option<InstalledPlugin> {
 /// The plugins the user has installed, as loaded at startup.
 pub fn installed_plugins() -> Vec<InstalledPlugin> {
     INSTALLED.read().map(|g| g.clone()).unwrap_or_default()
-}
-
-pub fn is_installed(kind: &str) -> bool {
-    installed(kind).is_some()
 }
 
 pub fn exists(kind: &str) -> bool {
@@ -348,22 +342,6 @@ pub fn default_data(kind: &str) -> serde_json::Value {
     find(kind)
         .map(|p| p.default_data())
         .unwrap_or_else(|| serde_json::json!({}))
-}
-
-/// Quick-add label for the settings row, or None for "no button".
-pub fn add_label(kind: &str) -> Option<String> {
-    if let Some(p) = installed(kind) {
-        return p.add_label;
-    }
-    find(kind).and_then(|p| p.add_label.map(|l| l.to_string()))
-}
-
-/// Overlay placement order, lower first.
-pub fn layout_priority(kind: &str) -> i32 {
-    if let Some(p) = installed(kind) {
-        return p.layout_priority;
-    }
-    find(kind).map(|p| p.layout_priority).unwrap_or(DEFAULT_LAYOUT_PRIORITY)
 }
 
 /// Every plugin with its enabled state: built-ins in declaration order, then the
@@ -512,7 +490,6 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
             .and_then(|v| v.as_i64())
             .unwrap_or(DEFAULT_LAYOUT_PRIORITY as i64) as i32,
         entry,
-        dir: dir.to_path_buf(),
         id,
     })
 }
@@ -856,12 +833,10 @@ mod tests {
         assert!(rejected[0].contains("broken"), "{rejected:?}");
 
         // the installed plugin answers every question the backend asks a kind
-        assert!(exists("countdown") && is_installed("countdown"));
+        assert!(exists("countdown"));
         assert!(resizable("countdown"));
         assert_eq!(size("countdown", &serde_json::json!({})), (240.0, 140.0));
         assert_eq!(default_data("countdown")["seconds"], 300);
-        assert_eq!(add_label("countdown").as_deref(), Some("+ countdown"));
-        assert_eq!(layout_priority("countdown"), 6);
         assert!(!is_desktop_item("countdown") && path_key("countdown").is_none());
 
         let listed = manifest(&[]);
@@ -869,6 +844,10 @@ mod tests {
         assert_eq!(entry.source, "installed");
         assert_eq!(entry.default_size, [240.0, 140.0]);
         assert_eq!(entry.version, "1.2.0");
+        assert_eq!(entry.author, "someone");
+        assert_eq!(entry.add_label.as_deref(), Some("+ countdown"));
+        assert_eq!(entry.layout_priority, 6);
+        assert!(entry.resizable);
         assert!(entry.entry.as_ref().unwrap().ends_with("index.js"));
 
         // unloading leaves the built-ins alone

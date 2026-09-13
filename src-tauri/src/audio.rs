@@ -67,6 +67,15 @@ pub fn stop() {
     }
 }
 
+/// Bring the capture back if its thread died in the sleep, without touching the
+/// ref-count: only revives when a visualizer is still watching.
+pub fn ensure_running(app: &AppHandle, fps: Option<u32>) {
+    if RUNNING.load(Ordering::SeqCst) || CLIENTS.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    start(app, fps);
+}
+
 pub fn set_fps(fps: u32) {
     FPS.store(fps.clamp(5, 60), Ordering::Relaxed);
 }

@@ -64,6 +64,15 @@ pub fn stop() {
     }
 }
 
+/// Bring the sampler back if its thread died (a sleep can kill the PDH query)
+/// without touching the ref-count: only revives when a widget is still watching.
+pub fn ensure_running(app: &AppHandle, interval_ms: Option<u32>) {
+    if RUNNING.load(Ordering::SeqCst) || CLIENTS.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    start(app, interval_ms);
+}
+
 pub fn set_interval(ms: u32) {
     INTERVAL_MS.store(ms.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS), Ordering::Relaxed);
 }

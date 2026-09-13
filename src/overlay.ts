@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import {
   currentSettings,
   isOverlayMode,
+  beatNow,
+  startHeartbeat,
   monitorArea,
   preventOverlap,
   registerOverlaySlot,
@@ -114,6 +116,7 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea): vo
 
 export function mountOverlay(root: HTMLElement): void {
   watchSettings();
+  startHeartbeat("desktop-overlay");
   root.innerHTML = "";
 
   const canvas = document.createElement("div");
@@ -182,14 +185,36 @@ export function mountOverlay(root: HTMLElement): void {
   // the backend keeps sizes and no widget is laid out with a guess.
   void (async () => {
     try {
+      const t0 = performance.now();
       await loadPlugins();
+      const tPlugins = performance.now();
       crossCheckPlugins(pluginKinds());
       const list = await invoke<WidgetRecord[]>("floaty_list");
+      const tList = performance.now();
       const mon = await monitorArea();
+      const tMonitor = performance.now();
+      invoke("floaty_log", {
+        msg: `[overlay] init: plugins ${Math.round(tPlugins - t0)}ms, list(${list.length}) ${Math.round(
+          tList - tPlugins,
+        )}ms, monitor ${Math.round(tMonitor - tList)}ms, from page start ${Math.round(tMonitor)}ms`,
+      }).catch(() => undefined);
       resolveOverlayLayout(list, mon);
+      // Time each mount per kind: a reload's cost is dominated by whatever this
+      // says, and the mount loop is synchronous, so the sum is the page's stall.
+      const mountCost = new Map<string, number>();
       for (const rec of list) {
+        const t0 = performance.now();
         mountWidget(rec);
+        mountCost.set(rec.kind, (mountCost.get(rec.kind) ?? 0) + (performance.now() - t0));
       }
+      invoke("floaty_log", {
+        msg:
+          "[overlay] mount cost: " +
+          Array.from(mountCost)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, ms]) => `${k} ${Math.round(ms)}ms`)
+            .join(", "),
+      }).catch(() => undefined);
       scheduleHitRectsUpdate();
       // One line per launch: which kinds mounted, at which size, and where the
       // sizes came from. If the manifest did not arrive, every kind would be
@@ -290,6 +315,34 @@ export function mountOverlay(root: HTMLElement): void {
     }
   });
 
+  // Sleep/standby evidence: the backend does the recovery (it gets the display
+  // power setting), but a hidden/visible transition is rare and is the only
+  // record of what the page thought while the lid was shut.
+  let hiddenSince = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      hiddenSince = Date.now();
+      // Tell the backend now: it knows whether the display is actually on, and a
+      // hidden page while the display is on means Chromium's occlusion verdict is
+      // stale and this page's timers are about to be throttled.
+      beatNow("desktop-overlay");
+      invoke("floaty_log", { msg: "[overlay] hidden" }).catch(() => undefined);
+      return;
+    }
+    const gap = hiddenSince ? Date.now() - hiddenSince : 0;
+    hiddenSince = 0;
+    // Coming back from hidden is exactly when the webview's surface can still be
+    // holding its very first (white) frame in the regions this page paints
+    // nothing into — the translucent tiles on top of it then show it as white
+    // bands. Detaching the canvas for one frame makes Chromium repaint the whole
+    // surface instead of only the damage it knows about.
+    forceRepaint();
+    beatNow("desktop-overlay");
+    invoke("floaty_log", {
+      msg: `[overlay] visible again after ${Math.round(gap / 1000)}s`,
+    }).catch(() => undefined);
+  });
+
   // Global escape key to collapse open folders / close menus
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -298,4 +351,22 @@ export function mountOverlay(root: HTMLElement): void {
       scheduleHitRectsUpdate();
     }
   });
+}
+
+/**
+ * Make the whole surface paint again.
+ *
+ * A transparent WebView2 starts life painting a white frame of its own, and
+ * Chromium only repaints the damage it is told about. Anything this page never
+ * covers can therefore keep that white indefinitely — which reads as solid white
+ * bands wherever a translucent tile sits over it. Hiding the canvas for one
+ * frame invalidates the whole layer, so the next frame replaces it.
+ */
+export function forceRepaint(): void {
+  const canvas = document.querySelector(".overlay-canvas");
+  if (!(canvas instanceof HTMLElement)) return;
+  const prev = canvas.style.visibility;
+  canvas.style.visibility = "hidden";
+  void canvas.offsetHeight;
+  canvas.style.visibility = prev;
 }

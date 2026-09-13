@@ -1053,7 +1053,13 @@ body.settings-page::-webkit-scrollbar-thumb { background: linear-gradient(180deg
   height: 100vh;
   pointer-events: none;
   overflow: hidden;
-  background: transparent;
+  /* Not `transparent`: a WebView2 starts out painting its own white frame, and
+     Chromium only repaints damage it knows about — so any part of the window
+     this element never covers can keep that white forever, which shows up as
+     bright bands through the translucent tiles sitting on top of it. An
+     invisible wash makes the page cover the surface, so its own paint replaces
+     the white. Opacity is 1/2550: invisible, but a real paint. */
+  background: linear-gradient(rgba(0, 0, 0, 0.0004), rgba(0, 0, 0, 0.0004));
 }
 
 .overlay-slot {
