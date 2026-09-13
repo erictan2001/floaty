@@ -561,8 +561,6 @@ export function mountFolder(root: HTMLElement, id: string): void {
 
 export const folderPlugin: FloatyPlugin = {
   kind: "folder",
-  name: "Folder",
-  addLabel: "+ folder",
   mount: mountFolder,
   describe: (rec: PluginRecord) => {
     const raw = rec.data["items"];

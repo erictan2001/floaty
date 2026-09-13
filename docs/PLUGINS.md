@@ -1,185 +1,239 @@
-# Creating Plugins for Floaty
+# Plugins
 
-Floaty is built with a modular plugin architecture that makes it easy to add new desktop widgets. Each widget is isolated in its own transparent, borderless Tauri webview window and communicates with the backend via a standardized registry.
+A plugin is a widget kind: a launcher, a note, a clock, a live companion, or
+whatever you write. Floaty ships nine of them, and it loads more from a folder on
+disk — so you can install one somebody else wrote, or ship your own, without
+touching floaty's source.
 
----
+- **Installing a plugin:** [drop a folder in and press rescan](#installing-a-plugin)
+- **Writing a plugin (no floaty source needed):** [the plugin format](#writing-a-plugin)
+- **Writing a built-in plugin (floaty contributor):** [the two halves](#built-in-plugins)
 
-## Architecture Overview
+## The two halves
 
-Floaty widgets have two parts:
-1. **Backend Registry (`src-tauri/src/plugins.rs`)**: Defines plugin metadata, default window sizes, resizability, and default state.
-2. **Frontend Plugin (`src/widgets/plugin.ts`)**: Defines the widget lifecycle (`mount`), settings controls, and per-widget management controls.
+Every widget kind is described in two places, split by *who needs the fact*:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       Rust Backend                          │
-│                                                             │
-│   src-tauri/src/plugins.rs                                  │
-│   └── PLUGINS table: [PluginDef]                            │
-│       ├── id, name, description                             │
-│       ├── default_size, resizable                           │
-│       └── default_data, custom_size                         │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ IPC / Windows
-┌──────────────────────────────┴──────────────────────────────┐
-│                     TypeScript Frontend                     │
-│                                                             │
-│   src/widgets/plugin.ts                                     │
-│   └── registerPlugin(FloatyPlugin)                          │
-│       ├── kind, name, addLabel                              │
-│       ├── mount(root, id)                                   │
-│       ├── describe(record)                                  │
-│       ├── renderWidgetControls(card, rec, ctx, delBtn)      │
-│       └── renderSettings(card, ctx)                         │
-└─────────────────────────────────────────────────────────────┘
-```
+| | Backend — `src-tauri/src/plugins.rs` | Frontend — `src/widgets/<name>.ts` |
+| --- | --- | --- |
+| owns | identity (`id`, `name`, `description`), geometry (`default_size`, `resizable`, the per-record clamp), the data a fresh widget starts with, the quick-add label, layout priority, and whether the kind stands for something on disk | behaviour: `mount`, `describe`, optional settings rows |
+| needed by | the store, the hit rects, `floaty_plugins` (the manifest) | the windows that draw the widget |
 
----
+The frontend reads the backend's half from the manifest (`src/widgets/pluginManifest.ts`),
+so the numbers and names exist once. For built-ins that is a compile-time table;
+for installed plugins it is a `plugin.json` that floaty reads at startup. Both end
+up in the same manifest and behave identically — installed plugins are data, not
+a special case.
 
-## Step-by-Step Guide to Adding a Plugin
+## Installing a plugin
 
-### 1. Register in the Rust Backend
+1. Open floaty's settings → **Plugins** → **open plugin folder**. That is
+   `%APPDATA%\com.floaty.app\plugins`.
+2. Put the plugin's folder there, so you have
+   `…\plugins\countdown\plugin.json` and `…\plugins\countdown\index.js`.
+3. Press **rescan plugins**. Both windows reload and the plugin shows up in the
+   plugin list, with a button in **+ New floatie** if it asked for one.
 
-Open [`src-tauri/src/plugins.rs`](file:///C:/Users/erict/OneDrive/Desktop/floaty/src-tauri/src/plugins.rs) and add your plugin definition to the `PLUGINS` array:
+A folder floaty cannot use is named in settings under the buttons, with the
+reason — a broken plugin never takes the desktop down with it. The plugins folder
+is read at startup and on rescan.
 
-```rust
-PluginDef {
-    id: "counter",
-    name: "Click Counter",
-    description: "A simple desktop click counter.",
-    default_size: (160.0, 160.0),
-    resizable: false,
-    default_data: || serde_json::json!({ "count": 0 }),
-    custom_size: None,
-},
+**Plugins are trusted code.** They run inside floaty's windows with the same
+access floaty has. There is no sandbox and no marketplace: read a plugin before
+you install it, exactly as you would a browser extension.
+
+## Writing a plugin
+
+Two files. No build step, no dependencies, no floaty source.
+
+```text
+%APPDATA%\com.floaty.app\plugins\countdown\
+  plugin.json     what the desktop needs to know about the widget
+  index.js        the widget itself (an ES module)
 ```
 
-#### Field Reference:
-- **`id`**: Unique string identifier (e.g. `"counter"`, `"weather"`, `"timer"`).
-- **`name`**: Human-readable display name shown in settings.
-- **`description`**: Explanatory text shown in the Settings -> Plugins card.
-- **`default_size`**: `(width, height)` in logical pixels.
-- **`resizable`**: Set to `true` if the window should have native resize capability (e.g. Note, Clock).
-- **`default_data`**: Closure returning initial JSON data for new widgets of this kind.
-- **`custom_size`**: Optional closure `fn(base: (f64, f64), data: &Value) -> (f64, f64)` to restore dynamically sized windows from persisted data.
+### `plugin.json`
 
----
-
-### 2. Create the Frontend Plugin Module
-
-Create a new file under `src/widgets/<name>.ts` (for example, `src/widgets/counter.ts`):
-
-```typescript
-import { appWin, loadRecord, saveRecord, removeSelf, addPinMenu, watchPluginEnabled } from "./lib";
-import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin";
-
-export function mountCounter(root: HTMLElement, id: string): void {
-  // Listen for plugin enable/disable state
-  watchPluginEnabled("counter");
-
-  const box = document.createElement("div");
-  box.className = "counter-widget";
-
-  const num = document.createElement("div");
-  num.className = "count-display";
-
-  const btn = document.createElement("button");
-  btn.textContent = "+1";
-
-  box.append(num, btn);
-  root.append(box);
-
-  // Right-click context menu (pin on top, reload, remove)
-  addPinMenu(root, id);
-
-  // Load and persist widget state
-  void (async () => {
-    const rec = await loadRecord(id);
-    let count = typeof rec?.data["count"] === "number" ? rec.data["count"] : 0;
-    num.textContent = String(count);
-
-    btn.addEventListener("click", () => {
-      count++;
-      num.textContent = String(count);
-      if (rec) {
-        rec.data["count"] = count;
-        void saveRecord(rec);
-      }
-    });
-  })();
+```json
+{
+  "id": "countdown",
+  "name": "Countdown",
+  "description": "Counts down to a date you pick.",
+  "version": "1.0.0",
+  "author": "you",
+  "apiVersion": 1,
+  "entry": "index.js",
+  "size": { "w": 240, "h": 140 },
+  "resizable": true,
+  "minSize": { "w": 170, "h": 96 },
+  "maxSize": { "w": 620, "h": 400 },
+  "defaultData": { "target": "" },
+  "addLabel": "+ countdown",
+  "layoutPriority": 6
 }
+```
 
-export const counterPlugin: FloatyPlugin = {
-  kind: "counter",
-  name: "Click Counter",
-  addLabel: "+ counter", // Adds a button in Settings -> New Floatie
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | Unique kind name: 2–32 chars of `a-z`, `0-9`, `-`, `_`. Must not clash with a built-in (`note`, `clock`, `pet`, `app`, `file`, `folder`, `live2d`, `visualizer`, `sysmon`). Widget records are named `<id>-<n>`. |
+| `name` | yes | Shown in the settings list. |
+| `description` | no | Shown under the name. |
+| `version`, `author` | no | Shown in the settings list. |
+| `apiVersion` | yes | Must be `1`. How a future format change stays honest. |
+| `entry` | no | Module file, default `index.js`. Must stay inside the plugin folder. |
+| `size` | yes | Size a fresh widget gets, in logical pixels (60–4000). |
+| `resizable` | no | `true` lets the user drag a size grip; `false` pins it to `size`. |
+| `minSize`, `maxSize` | no | Clamp for a resizable widget (defaults 80×60 … 2000×2000). |
+| `defaultData` | no | The `data` a new widget record starts with (an object, yours to use). |
+| `addLabel` | no | Button text in **+ New floatie** (`"+ countdown"`). Omit for no button. |
+| `layoutPriority` | no | Where the desktop layout puts it, lower first. Built-ins: live2d 1, note 2, clock 3, pet 4, visualizer/sysmon 5, icon grid 10. |
+| `desktopItem` | no | Only for a widget that stands for a real file: `{ "pathKey": "target", "noun": "… floatie", "group": false }` gives it the shell verbs and a Recycle Bin delete. |
 
-  mount: mountCounter,
+### `index.js`
 
-  // Optional: summary displayed in Settings -> "On your desktop" list
-  describe: (rec: PluginRecord) => {
-    const c = rec.data["count"];
-    return typeof c === "number" ? `count: ${c}` : undefined;
+Export a default object. `mount` is the only required member.
+
+```js
+export default {
+  // root: an empty container sized like the widget. id: this widget's record id.
+  // api: the supported surface for talking to floaty (table below).
+  async mount(root, id, api) {
+    const rec = await api.record.load(id);
+    const box = document.createElement("div");
+    box.textContent = `hello from ${id}`;
+    box.style.cssText = "width:100%;height:100%;display:grid;place-items:center;color:#fff";
+    root.append(box);
+
+    api.enableDrag(box, rec);       // drag the widget by `box`, position saved
+    api.addPinMenu(box, () => rec); // right-click menu with the standard rows
+    api.log(`${id} mounted`);       // goes to floaty.log
   },
 
-  // Optional: custom controls inside the plugin's card in Settings -> Plugins
-  renderSettings: (card: HTMLElement, ctx: PluginSettingsContext) => {
-    // Append custom buttons, file pickers, or slider rows here
+  // one line next to the id in settings (optional)
+  describe(rec) {
+    return "a short summary";
+  },
+
+  // extra controls in the widget's card in "On your desktop" (optional)
+  renderControls(card, rec, ctx, deleteBtn) {
+    // ctx.safe("label", () => api.invoke(...)), ctx.refreshWidgets(), ctx.showError(msg)
+  },
+
+  // extra rows under the plugin's card in the plugin list (optional)
+  renderSettings(card, ctx) {
+    // ctx.getSettings(), ctx.getSharedRow("gravity"), ctx.updateSettings(patch),
+    // ctx.safe(...), ctx.showError(...), ctx.refreshWidgets()
   },
 };
 ```
 
----
+### The `api` object
 
-### 3. Register the Frontend Plugin
+Everything a plugin needs from floaty. Use this instead of importing floaty's
+own modules: this surface stays stable, floaty's internals do not.
 
-Open [`src/widgets/plugin.ts`](file:///C:/Users/erict/OneDrive/Desktop/floaty/src/widgets/plugin.ts):
+| Member | What it does |
+| --- | --- |
+| `api.invoke(cmd, args)` | Call any backend command, e.g. `floaty_list`, `floaty_save`, `floaty_scan_apps`. |
+| `api.log(msg)` | Append to `%APPDATA%\com.floaty.app\floaty.log`. The only way to see inside the overlay — use it while developing. |
+| `api.record.load(id)` | The widget's record: `id`, `kind`, `x`, `y`, `data`. |
+| `api.record.save(rec)` | Persist it. `data` is yours. |
+| `api.enableDrag(el, rec, opts?)` | Make `el` drag the widget around (whole surface, or a title bar) **and keep the position saved**. A press only becomes a drag after ~4px of travel, so clicks still reach your own handlers, and buttons/inputs/the resize grip keep working. |
+| `api.setPos(id, x, y)` | Move the widget (keeps the desktop's hit rects in step). |
+| `api.setSize(id, w, h)` | Resize the widget's slot. |
+| `api.addPinMenu(wrap, getRec)` | The standard right-click menu for this widget. |
+| `api.addResizeHandle(wrap, rec, minW, minH)` | Bottom-right grip that resizes and saves the record. |
+| `api.removeSelf(rec)` | Remove the widget, asking first when the user enabled confirmation. |
+| `api.settings()` | Current global settings (`gravity`, `bounce`, `pet_speed`, …). |
+| `api.watchSettings()` | Call once to be told when those change. |
+| `api.monitorArea()` | The desktop area the widget may use: `{ x, y, w, h }`. |
 
-1. Import your plugin:
-   ```typescript
-   import { counterPlugin } from "./counter";
+Style the widget yourself: size the container to `100%` and inject a `<style>`
+element from your module. Theme variables such as `--card-shadow` are available
+on `:root`.
+
+### Debugging
+
+- `api.log("…")` → `%APPDATA%\com.floaty.app\floaty.log`.
+- A plugin that fails to import is logged (`[plugin] <id> failed to load: …`) and
+  skipped; a `mount()` that throws is logged too (`[overlay] mount <id> failed: …`).
+- Edit the files, press **rescan plugins**, and both windows reload — no restart.
+  A `plugin.json` you broke is reported by name in settings.
+
+### Reference plugin
+
+[`examples/plugins/countdown`](../examples/plugins/countdown) is a complete,
+commented plugin: it saves state in the record, redraws every second, and wires up
+dragging, the right-click menu and the resize grip — with no dependencies. Copy it into your
+plugins folder as a starting point.
+
+## Built-in plugins
+
+Same contract, but shipped inside floaty. Adding one is three edits:
+
+1. **`src-tauri/src/plugins.rs`** — add a `PluginDef`:
+
+   ```rust
+   PluginDef {
+       id: "counter",
+       name: "Click counter",
+       description: "A desktop click counter.",
+       default_size: (160.0, 160.0),
+       resizable: false,
+       default_data: || serde_json::json!({ "count": 0 }),
+       custom_size: None,
+       desktop_item: None,
+       add_label: Some("+ counter"),
+       layout_priority: 10,
+   },
    ```
-2. Call `registerPlugin()`:
-   ```typescript
-   registerPlugin(counterPlugin);
+
+   `custom_size` is the per-record clamp used by resizable widgets
+   (`fn(base, data) -> (w, h)`, usually `size_from_wh(base, data, min, max)`).
+   Add the id to the `KINDS` list in the tests.
+
+2. **`src/widgets/counter.ts`** — the module, exporting a `FloatyPlugin`:
+
+   ```ts
+   import { loadRecord, saveRecord, addPinMenu, addResizeHandle, watchPluginEnabled } from "./lib";
+   import type { FloatyPlugin } from "./plugin";
+
+   export const counterPlugin: FloatyPlugin = {
+     kind: "counter",
+     async mount(root, id) {
+       watchPluginEnabled("counter");
+       const rec = await loadRecord(id);
+       // ... build the DOM, then addPinMenu(root, () => rec)
+     },
+     describe: (rec) => `count: ${String(rec.data["count"] ?? 0)}`,
+   };
    ```
-3. Add it to the exported `plugins` array for backwards compatibility.
 
-That's it! Floaty will automatically:
-- Render an enable/disable toggle in the **Settings -> Plugins** manager.
-- Render a **+ counter** button in **Settings -> New floatie**.
-- Route `/counter/<id>` window URLs directly to your `mount()` function.
-- Display custom descriptions and controls in the **On your desktop** list.
+   No `name`, size or label here — the manifest owns those.
 
----
+3. **`src/widgets/plugin.ts`** — import it and add it to `BUILTINS`. The registry,
+   `pluginFor`, `allPlugins` and `layoutPriority` derive from that one list.
 
-## Helpful Utilities in `src/widgets/lib.ts`
+Then `npm run build` (which runs `node scripts/check-plugins.mjs`) and add the CSS
+block plus a `.k-<kind>` chip colour in `src/style.css`. The check script fails
+when the two id lists disagree or when a JSON field the frontend reads was
+renamed — that is the guard rail the old two-registry setup was missing.
 
-When authoring widgets, [`src/widgets/lib.ts`](file:///C:/Users/erict/OneDrive/Desktop/floaty/src/widgets/lib.ts) provides standard helpers:
+**Never keep a kind list anywhere else.** Core code asks the manifest instead:
+`pathOf(rec)`, `desktopItemFor(kind)`, `pluginSize(rec)`, `layoutPriorityFor(kind)`,
+`isDesktopItem`. Testing `kind === "folder"` in shared code is how a new kind
+silently loses the shell verbs.
 
-- **`loadRecord(id)`**: Fetches current persisted widget state (coordinates and `data` JSON).
-- **`saveRecord(rec)`**: Persists updated `rec.data` or `rec.x`/`rec.y`.
-- **`removeSelf(rec)`**: Closes and deletes the widget window cleanly.
-- **`addPinMenu(root, id)`**: Adds standard right-click context menu (always on top toggle, reload, remove).
-- **`watchSettings()`**: Listens for global settings change events (e.g. speed, bounce).
-- **`watchPluginEnabled(kind)`**: Automatically hides/closes the widget if its plugin is disabled in settings.
-- **`monitorArea()`**: Returns current desktop display bounds `{ x, y, w, h }` accounting for DPI scale.
+### Lazy-load heavy runtimes
 
----
+Do not statically import pixi, a 3D engine or an audio stack in a plugin
+descriptor or in settings. Follow `src/widgets/live2dPlugin.ts`: keep the
+descriptor light and `await import("./heavy")` inside `mount()`, so the overlay
+and settings window stay cheap for every other widget.
 
-## Advanced: Lazy-Loaded Heavy Runtimes
+### Standard helpers in `src/widgets/lib.ts`
 
-If your plugin uses heavy external libraries (such as PixiJS, 3D engines, or audio synthesizers), **do not statically import them in `plugin.ts` or `settings.ts`**.
-
-Instead, follow the pattern established in [`src/widgets/live2dPlugin.ts`](file:///C:/Users/erict/OneDrive/Desktop/floaty/src/widgets/live2dPlugin.ts):
-1. Keep the plugin descriptor lightweight in `<name>Plugin.ts`.
-2. Inside `mount()`, dynamically import the heavy module:
-   ```typescript
-   mount: (root, id) => {
-     void (async () => {
-       const { mountHeavyRuntime } = await import("./heavyRuntime");
-       mountHeavyRuntime(root, id);
-     })();
-   }
-   ```
-This ensures other widgets and the settings window remain lightweight and fast.
+Built-in plugins may import these directly (third-party plugins get them through
+`api`): `loadRecord`, `saveRecord`, `removeSelf`, `addPinMenu`, `addResizeHandle`,
+`setWidgetPos`, `setWidgetSize`, `watchSettings`, `currentSettings`,
+`watchPluginEnabled`, `monitorArea`, `iconIsMissing`, `iconSize`,
+`confirmRemoveDialog`, `describeForConfirm`.

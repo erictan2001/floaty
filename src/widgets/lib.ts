@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { desktopItemFor, isDesktopItem, pathOf } from "./pluginManifest";
 import { listen } from "@tauri-apps/api/event";
 import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 
@@ -232,7 +233,11 @@ export function debounce<F extends (...args: never[]) => void>(
 }
 
 /** Persist window position (logical px) every 2s + on unload. */
+const trackedPositions = new Set<string>();
+
 export function trackPosition(rec: WidgetRecord): void {
+  if (trackedPositions.has(rec.id)) return; // one watcher per widget
+  trackedPositions.add(rec.id);
   const snap = async () => {
     try {
       if (isOverlayMode()) {
@@ -499,8 +504,9 @@ export function makeBar(title: string, onClose: () => void, id?: string): HTMLEl
  * `confirm_remove` in settings turns this off.
  */
 export async function confirmRemoveDialog(what: string, kind: string): Promise<boolean> {
-  const onDisk = kind === "app" || kind === "file" || kind === "folder";
-  const noun = kind === "app" ? "app floatie" : kind === "file" ? "file floatie" : `${kind} floatie`;
+  const item = desktopItemFor(kind);
+  const onDisk = item !== undefined;
+  const noun = item?.noun ?? `${kind} floatie`;
   const body = onDisk
     ? `Delete this ${noun}?\n\n${what}\n\nIf it lives on your desktop it goes to the Recycle Bin (recoverable); anything outside the desktop only loses its floatie.`
     : `Remove this ${noun} from the desktop?\n\n${what}`;
@@ -545,8 +551,10 @@ export async function removeSelf(rec: WidgetRecord): Promise<void> {
     return; // user kept it
   }
   try {
-    const pathKinds = ["app", "file", "folder"];
-    if (pathKinds.includes(rec.kind)) {
+    // Desktop items are deleted on disk (the backend sends them to the Recycle
+    // Bin); widgets that are not desktop items only stop floating. Which is
+    // which comes from the plugin manifest, not from a list kept here.
+    if (hasDesktopPath(rec)) {
       await invoke<string>("floaty_delete", { id: rec.id });
     } else {
       await invoke("floaty_remove", { id: rec.id });
@@ -852,9 +860,10 @@ export function addPinMenu(wrap: HTMLElement, getRec: () => WidgetRecord | undef
       menu.append(hr);
     };
 
-    // Files, folders and shortcut floaties get the desktop's own operations.
-    const path = widgetPath(rec);
-    const isFileish = path !== "" && ["app", "file", "folder"].includes(rec.kind);
+    // Files, folders and shortcut floaties get the desktop's own operations;
+    // which kinds those are is the manifest's business, not this file's.
+    const path = pathOf(rec);
+    const isFileish = path !== "" && hasDesktopPath(rec);
     if (isFileish) {
       run("Open", () => invoke("floaty_launch", { id: rec.id }));
       run("Open with…", () => invoke("floaty_open_with", { id: rec.id }));
@@ -916,11 +925,14 @@ export function addPinMenu(wrap: HTMLElement, getRec: () => WidgetRecord | undef
   });
 }
 
-/** The on-disk path a floatie points at (folders keep it in `path`). */
-function widgetPath(rec: WidgetRecord): string {
-  const key = rec.kind === "folder" ? "path" : "target";
-  const value = rec.data[key];
-  return typeof value === "string" ? value : "";
+/**
+ * True when the floatie stands for something on disk, so removing it should
+ * delete for real (through the Recycle Bin) instead of only un-floating it.
+ * The manifest answers for the kind; if it has not arrived yet, a record that
+ * carries a path still counts, so removal never turns into a silent no-op.
+ */
+function hasDesktopPath(rec: WidgetRecord): boolean {
+  return isDesktopItem(rec.kind) || pathOf(rec) !== "";
 }
 
 /** Inline rename, replacing the menu with an input pre-filled with the name. */
@@ -930,7 +942,7 @@ function startRename(
   note: (msg: string) => void,
 ): Promise<void> {
   return new Promise<void>((resolve) => {
-    const current = widgetPath(rec);
+    const current = pathOf(rec);
     const base = current.split(/[\\/]/).pop() ?? "";
     menu.textContent = "";
     const input = document.createElement("input");

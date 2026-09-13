@@ -13,47 +13,8 @@ import {
   type MonitorArea,
   type WidgetRecord,
 } from "./widgets/lib";
-import { plugins } from "./widgets/plugin";
-
-function getInitialWidgetSize(rec: WidgetRecord): { w: number; h: number } {
-  switch (rec.kind) {
-    case "app":
-    case "file":
-      return { w: 92, h: 112 };
-    case "folder":
-      return { w: 92, h: 112 };
-    case "pet":
-      return { w: 170, h: 170 };
-    case "live2d": {
-      // the zoom sizes the box (clamped to the desktop in live2d.ts)
-      const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 300;
-      const h = typeof rec.data["h"] === "number" ? (rec.data["h"] as number) : 400;
-      return { w, h };
-    }
-    case "visualizer": {
-      const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 280;
-      const h = typeof rec.data["h"] === "number" ? (rec.data["h"] as number) : 130;
-      return { w, h };
-    }
-    case "sysmon": {
-      const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 250;
-      const h = typeof rec.data["h"] === "number" ? (rec.data["h"] as number) : 170;
-      return { w, h };
-    }
-    case "note": {
-      const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 300;
-      const h = typeof rec.data["h"] === "number" ? (rec.data["h"] as number) : 330;
-      return { w, h };
-    }
-    case "clock": {
-      const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 250;
-      const h = typeof rec.data["h"] === "number" ? (rec.data["h"] as number) : 330;
-      return { w, h };
-    }
-    default:
-      return { w: 100, h: 100 };
-  }
-}
+import { loadPlugins, pluginFor, pluginKinds, widgetApi } from "./widgets/plugin";
+import { crossCheckPlugins, layoutPriorityFor, pluginSize } from "./widgets/pluginManifest";
 
 /**
  * Resolves initial desktop layout to prevent icons and folders from overlapping.
@@ -74,31 +35,12 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea): vo
   const placed: PlacedItem[] = [];
   const needsRelocation: WidgetRecord[] = [];
 
-  // Special/custom widgets take priority to preserve user placement
-  const priorityOrder = (kind: string): number => {
-    switch (kind) {
-      case "live2d":
-        return 1;
-      case "note":
-        return 2;
-      case "clock":
-        return 3;
-      case "pet":
-        return 4;
-      // widgets the user places by hand outrank the icon/folder grid, so a
-      // dragged position is not reshuffled on the next launch
-      case "visualizer":
-      case "sysmon":
-        return 5;
-      default:
-        return 10;
-    }
-  };
-
-  const sorted = [...list].sort((a, b) => priorityOrder(a.kind) - priorityOrder(b.kind));
+  const sorted = [...list].sort(
+    (a, b) => layoutPriorityFor(a.kind) - layoutPriorityFor(b.kind),
+  );
 
   for (const rec of sorted) {
-    const { w, h } = getInitialWidgetSize(rec);
+    const { w, h } = pluginSize(rec);
     const hasPos = rec.x > 10 || rec.y > 10;
     const inBounds =
       rec.x >= 16 &&
@@ -137,30 +79,36 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea): vo
 
   let gridIndex = 0;
   for (const rec of needsRelocation) {
-    const { w, h } = getInitialWidgetSize(rec);
-    while (true) {
+    const { w, h } = pluginSize(rec);
+    // Clamp into the screen *before* testing for room. The clamp used to run
+    // after, so any widget wider than a grid cell (a 240px plugin, a 392px
+    // live2d) was pushed back onto the icon grid and ended up hidden behind the
+    // tiles that were already there.
+    let placedAt: { x: number; y: number } | undefined;
+    for (let tries = 0; tries < 500 && !placedAt; tries++) {
       const col = Math.floor(gridIndex / rowsPerCol);
       const row = gridIndex % rowsPerCol;
-      const gx = MARGIN_LEFT + col * CELL_W;
-      const gy = MARGIN_TOP + row * CELL_H;
       gridIndex++;
+      const gx = Math.max(MARGIN_LEFT, Math.min(MARGIN_LEFT + col * CELL_W, screenW - w - 16));
+      const gy = Math.max(MARGIN_TOP, Math.min(MARGIN_TOP + row * CELL_H, screenH - h - 16));
 
       const collides = placed.some((p) => {
         const ox = Math.min(gx + w, p.x + p.w) - Math.max(gx, p.x);
         const oy = Math.min(gy + h, p.y + p.h) - Math.max(gy, p.y);
         return ox > 12 && oy > 12;
       });
-
-      if (!collides) {
-        // clamp into the screen: a long grid column used to park floaties past
-        // the right/bottom edge, where they were only half visible
-        rec.x = Math.max(MARGIN_LEFT, Math.min(gx, screenW - w - 16));
-        rec.y = Math.max(MARGIN_TOP, Math.min(gy, screenH - h - 16));
-        placed.push({ id: rec.id, x: rec.x, y: rec.y, w, h });
-        void saveRecord(rec);
-        break;
-      }
+      if (!collides) placedAt = { x: gx, y: gy };
     }
+    // a full desktop still gets the widget: last clamped spot rather than an
+    // endless search
+    placedAt ??= {
+      x: Math.max(MARGIN_LEFT, Math.min(MARGIN_LEFT, screenW - w - 16)),
+      y: Math.max(MARGIN_TOP, Math.min(MARGIN_TOP, screenH - h - 16)),
+    };
+    rec.x = placedAt.x;
+    rec.y = placedAt.y;
+    placed.push({ id: rec.id, x: rec.x, y: rec.y, w, h });
+    void saveRecord(rec);
   }
 }
 
@@ -180,10 +128,10 @@ export function mountOverlay(root: HTMLElement): void {
     const s = currentSettings();
     if (s.disabled && s.disabled.includes(rec.kind)) return;
 
-    const plugin = plugins.find((p) => p.kind === rec.kind);
+    const plugin = pluginFor(rec.kind);
     if (!plugin) return;
 
-    const { w, h } = getInitialWidgetSize(rec);
+    const { w, h } = pluginSize(rec);
     const slot = document.createElement("div");
     slot.className = "overlay-slot";
     slot.id = `slot-${rec.id}`;
@@ -206,8 +154,15 @@ export function mountOverlay(root: HTMLElement): void {
       element: slot,
     });
 
+    // mount may be async (installed plugins load their record first), so the
+    // rejection has to be caught on the promise: a throw alone used to lose the
+    // only clue a third-party plugin left behind.
     try {
-      plugin.mount(slot, rec.id);
+      void Promise.resolve(plugin.mount(slot, rec.id, widgetApi)).catch((e: unknown) => {
+        invoke("floaty_log", { msg: `[overlay] mount ${rec.id} failed: ${String(e)}` }).catch(
+          () => undefined,
+        );
+      });
     } catch (e) {
       invoke("floaty_log", { msg: `[overlay] failed to mount ${rec.id}: ${String(e)}` }).catch(
         () => undefined,
@@ -223,9 +178,12 @@ export function mountOverlay(root: HTMLElement): void {
     if (slot) slot.remove();
   };
 
-  // Initial load
+  // Initial load: the manifest first, so every slot is sized from the one place
+  // the backend keeps sizes and no widget is laid out with a guess.
   void (async () => {
     try {
+      await loadPlugins();
+      crossCheckPlugins(pluginKinds());
       const list = await invoke<WidgetRecord[]>("floaty_list");
       const mon = await monitorArea();
       resolveOverlayLayout(list, mon);
@@ -233,6 +191,21 @@ export function mountOverlay(root: HTMLElement): void {
         mountWidget(rec);
       }
       scheduleHitRectsUpdate();
+      // One line per launch: which kinds mounted, at which size, and where the
+      // sizes came from. If the manifest did not arrive, every kind would be
+      // missing here and the slots would be the 100x100 fallback.
+      const summary = new Map<string, { n: number; size: string }>();
+      for (const rec of list) {
+        const { w, h } = pluginSize(rec);
+        const slot = summary.get(rec.kind) ?? { n: 0, size: `${w}x${h}` };
+        slot.n += 1;
+        summary.set(rec.kind, slot);
+      }
+      invoke("floaty_log", {
+        msg: `[overlay] mounted ${mountedSlots.size}/${list.length} floaties — ${Array.from(summary)
+          .map(([kind, s]) => `${kind} ${s.n}x${s.size}`)
+          .join(", ")}`,
+      }).catch(() => undefined);
     } catch (e) {
       invoke("floaty_log", { msg: `[overlay] initial load failed: ${String(e)}` }).catch(
         () => undefined,
@@ -245,7 +218,7 @@ export function mountOverlay(root: HTMLElement): void {
     if (e.payload) {
       const rec = e.payload;
       if (rec.data["pinned"] !== true) {
-        const { w, h } = getInitialWidgetSize(rec);
+        const { w, h } = pluginSize(rec);
         const safe = preventOverlap(rec.id, rec.x, rec.y, w, h);
         if (safe.x !== rec.x || safe.y !== rec.y) {
           rec.x = safe.x;

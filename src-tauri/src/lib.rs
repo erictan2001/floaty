@@ -897,9 +897,9 @@ fn kind_for_path(path: &std::path::Path, is_dir: bool) -> &'static str {
 }
 
 /// Widget kinds that describe a single launchable path (icon resolution, launch,
-/// layout and folder grouping treat them the same).
+/// layout and folder grouping treat them the same). The manifest owns the list.
 fn is_path_kind(kind: &str) -> bool {
-    kind == "app" || kind == "file"
+    plugins::is_path_kind(kind)
 }
 
 fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
@@ -984,7 +984,7 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
     if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let (w, h) = plugins::widget_size(&rec.kind, &rec.data);
+    let (w, h) = plugins::size(&rec.kind, &rec.data);
     let url = format!("index.html#/{}/{}", rec.kind, rec.id);
     log_line(app, &format!("spawn {} at {},{}", label, rec.x, rec.y));
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
@@ -995,7 +995,7 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
         .decorations(false)
         .shadow(false)
         // delegates resizability to the plugin definition
-        .resizable(plugins::is_resizable(&rec.kind))
+        .resizable(plugins::resizable(&rec.kind))
         .skip_taskbar(true)
         // desktop layer for everything by default; per-widget pin-on-top
         // lives in the webview (right-click menu) instead
@@ -1038,7 +1038,7 @@ fn create_record_with(
     data: serde_json::Value,
     at: Option<(i32, i32)>,
 ) -> Result<WidgetRecord, String> {
-    if !plugins::is_valid_kind(kind) {
+    if !plugins::exists(kind) {
         return Err("unknown widget kind".into());
     }
     {
@@ -2121,12 +2121,67 @@ fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         write_text_atomic(&settings_file(app), &json);
     }
-    app.emit("floaty-plugins-changed", &plugins::all_plugin_info(&s.disabled)).ok();
+    app.emit("floaty-plugins-changed", &plugins::manifest(&s.disabled)).ok();
 }
 
 #[tauri::command]
 fn floaty_plugins(app: AppHandle) -> Vec<PluginInfo> {
-    plugins::all_plugin_info(&load_settings(&app).disabled)
+    plugins::manifest(&load_settings(&app).disabled)
+}
+
+/// Where user plugins live: one folder each, `plugin.json` + its module.
+fn plugins_dir(app: &AppHandle) -> std::path::PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join(plugins::PLUGINS_DIR_NAME)
+}
+
+/// The plugins folder (created if missing) so the settings window can offer
+/// "install by dropping a folder in here".
+#[tauri::command]
+fn floaty_plugins_dir(app: AppHandle) -> Result<String, String> {
+    let dir = plugins_dir(&app);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// Show that folder in File Explorer.
+#[tauri::command]
+fn floaty_open_plugins_dir(app: AppHandle) -> Result<(), String> {
+    let dir = plugins_dir(&app);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    shell_ops::reveal(&dir.to_string_lossy())
+}
+
+/// Re-scan the plugins folder without restarting: what authors do after editing
+/// a manifest. Returns the rejections so the settings window can show them.
+#[tauri::command]
+fn floaty_rescan_plugins(app: AppHandle) -> Result<Vec<String>, String> {
+    let (installed, rejected) = plugins::install_from(&plugins_dir(&app));
+    log_line(
+        &app,
+        &format!(
+            "plugins: rescanned, {} installed [{}]{}",
+            installed.len(),
+            installed.join(", "),
+            if rejected.is_empty() {
+                String::new()
+            } else {
+                format!(", {} rejected [{}]", rejected.len(), rejected.join("; "))
+            }
+        ),
+    );
+    // Both windows cache the plugin list and the loaded modules, so pick the new
+    // ones up by reloading them: a plugin author should not need a restart.
+    for label in ["desktop-overlay", "settings"] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.eval("location.reload()");
+        }
+    }
+    app.emit("floaty-plugins-changed", &plugins::manifest(&load_settings(&app).disabled))
+        .ok();
+    Ok(rejected)
 }
 
 /// Show (enable) or hide (disable) every widget of one kind, in whichever mode
@@ -2414,7 +2469,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             let state = app.state::<AppState>();
             let guard = state.0.lock().ok()?;
             let rec = guard.widgets.get(&id)?;
-            plugins::widget_size(&rec.kind, &rec.data)
+            plugins::size(&rec.kind, &rec.data)
         };
         (px + w as i32 / 2, py + h as i32 / 2)
     } else if let Some(me) = app.get_webview_window(&widget_label(&id)) {
@@ -2431,7 +2486,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
         guard
             .widgets
             .iter()
-            .filter(|(oid, r)| *oid != &id && (is_path_kind(&r.kind) || r.kind == "folder"))
+            .filter(|(oid, r)| *oid != &id && plugins::is_desktop_item(&r.kind))
             .map(|(oid, r)| (oid.clone(), r.kind.clone()))
             .collect()
     };
@@ -2442,7 +2497,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             let state = app.state::<AppState>();
             let guard = state.0.lock().ok()?;
             if let Some(r) = guard.widgets.get(&oid) {
-                let (w, h) = plugins::widget_size(&r.kind, &r.data);
+                let (w, h) = plugins::size(&r.kind, &r.data);
                 (r.x - 12, r.y - 12, w as i32 + 24, h as i32 + 24)
             } else {
                 continue;
@@ -3153,7 +3208,7 @@ fn floaty_layout(app: AppHandle) -> Vec<LayoutItem> {
         .values()
         .filter(|r| is_path_kind(&r.kind))
         .map(|r| {
-            let (w, h) = plugins::widget_size(&r.kind, &r.data);
+            let (w, h) = plugins::size(&r.kind, &r.data);
             LayoutItem {
                 id: r.id.clone(),
                 x: r.x,
@@ -3247,10 +3302,9 @@ fn widget_path(app: &AppHandle, id: &str) -> Result<(String, String), String> {
     let state = app.state::<AppState>();
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     let rec = guard.widgets.get(id).ok_or("widget not found")?;
-    let key = if rec.kind == "folder" { "path" } else { "target" };
-    let path = rec
-        .data
-        .get(key)
+    let key = plugins::path_key(&rec.kind);
+    let path = key
+        .and_then(|k| rec.data.get(k))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -3600,6 +3654,23 @@ pub fn run() {
                     persist(&handle);
                 }
             }
+            let (installed, rejected) = plugins::install_from(&plugins_dir(&handle));
+            if !installed.is_empty() || !rejected.is_empty() {
+                log_line(
+                    &handle,
+                    &format!(
+                        "plugins: {} installed [{}]{}",
+                        installed.len(),
+                        installed.join(", "),
+                        if rejected.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {} rejected [{}]", rejected.len(), rejected.join("; "))
+                        }
+                    ),
+                );
+            }
+
             if let Err(e) = spawn_overlay_window(&handle) {
                 log_line(&handle, &format!("spawn_overlay_window FAILED: {e}"));
             }
@@ -3628,6 +3699,9 @@ pub fn run() {
             floaty_show_settings,
             floaty_quit,
             floaty_plugins,
+            floaty_plugins_dir,
+            floaty_open_plugins_dir,
+            floaty_rescan_plugins,
             floaty_set_plugin_enabled,
             floaty_get_settings,
             floaty_set_settings,

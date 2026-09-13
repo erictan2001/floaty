@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "node scripts/check-plugins.mjs && tsc --noEmit && vite build",
+    "check:plugins": "node scripts/check-plugins.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

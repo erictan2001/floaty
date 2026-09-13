@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { pluginFor, plugins, type PluginSettingsContext } from "./widgets/plugin";
+import { allPlugins, loadPlugins, pluginFor, type PluginSettingsContext } from "./widgets/plugin";
+import { crossCheckPlugins, manifestEntries, type PluginManifestEntry } from "./widgets/pluginManifest";
 import { confirmRemoveDialog, describeForConfirm, type FloatSettings } from "./widgets/lib";
 import "./style.css";
 
@@ -123,7 +124,7 @@ async function refreshWidgets(box: HTMLElement): Promise<void> {
     const kind = el("span", `kind k-${w.kind}`, w.kind);
     const ident = el("span", "id", w.id);
     const plugin = pluginFor(w.kind);
-    const detail = plugin?.describe(w);
+    const detail = plugin?.describe?.(w);
     ident.textContent = detail ? `${w.id} — ${detail}` : w.id;
     const del = el("button", "danger", "remove");
     del.addEventListener("click", async () => {
@@ -236,14 +237,16 @@ function renderAddRow(box: HTMLElement): void {
   const host = document.getElementById("add-row");
   if (!host) return;
   host.innerHTML = "";
-  for (const p of plugins) {
-    if (!p.addLabel || disabledSet.has(p.kind)) continue;
-    const b = el("button", "pill", p.addLabel);
+  // straight from the plugin manifest, so a plugin the user installed gets a
+  // button here the moment it appears in the list — no frontend list to edit
+  for (const p of manifestEntries()) {
+    if (!p.add_label || disabledSet.has(p.id)) continue;
+    const b = el("button", "pill", p.add_label);
     b.addEventListener("click", async () => {
       if ((b as HTMLButtonElement).disabled) return;
       (b as HTMLButtonElement).disabled = true;
       try {
-        const rec = await safe("add widget", () => invoke<WidgetRecord>("floaty_create", { kind: p.kind }));
+        const rec = await safe("add widget", () => invoke<WidgetRecord>("floaty_create", { kind: p.id }));
         if (rec) await refreshWidgets(box);
       } finally {
         (b as HTMLButtonElement).disabled = false;
@@ -521,15 +524,14 @@ function build(): void {
   pluginHost.id = "plugin-list";
   box.append(pluginHost);
 
-  interface PluginState {
-    id: string;
-    name: string;
-    description: string;
-    enabled: boolean;
-  }
-
   async function loadManager(): Promise<void> {
-    const list = await safe("load plugins", () => invoke<PluginState[]>("floaty_plugins"));
+    await loadPlugins();
+    crossCheckPlugins(
+      allPlugins()
+        .map((p) => p.kind)
+        .filter((kind) => manifestEntries().some((e) => e.id === kind && e.source === "builtin")),
+    );
+    const list = await safe("load plugins", () => invoke<PluginManifestEntry[]>("floaty_plugins"));
     if (!list) return;
     disabledSet.clear();
     for (const p of list) if (!p.enabled) disabledSet.add(p.id);
@@ -537,7 +539,11 @@ function build(): void {
     for (const p of list) {
       const card = el("div", "card plugin-card");
       const head = el("div", "plugin-head");
-      head.append(el("span", `kind k-${p.id}`, p.id), el("span", "id", p.name));
+      const origin =
+        p.source === "installed"
+          ? ` — installed${p.version ? ` v${p.version}` : ""}${p.author ? ` by ${p.author}` : ""}`
+          : "";
+      head.append(el("span", `kind k-${p.id}`, p.id), el("span", "id", `${p.name}${origin}`));
       const tog = el("label", "plugin-toggle");
       const chk = el("input", "");
       chk.type = "checkbox";
@@ -569,12 +575,53 @@ function build(): void {
       }
       pluginHost.append(card);
     }
+    renderPluginFolder();
     renderAddRow(box);
     await refreshWidgets(box);
   }
   import("@tauri-apps/api/event")
     .then((m) => m.listen("floaty-plugins-changed", () => void loadManager()))
     .catch(() => undefined);
+
+  /** Where third-party plugins come from, and a way to reload them in place. */
+  function renderPluginFolder(): void {
+    const card = el("div", "card plugin-card");
+    const head = el("div", "plugin-head");
+    head.append(el("span", "kind k-note", "plugins"), el("span", "id", "install your own"));
+    card.append(head);
+    card.append(
+      el(
+        "p",
+        "hint",
+        "Drop a folder with plugin.json and index.js into the plugins directory, then press rescan. The format is documented in docs/plugins.md in the floaty repository.",
+      ),
+    );
+    const pathLine = el("p", "hint", "");
+    const status = el("p", "hint", "");
+    const open = el("button", "pill", "open plugin folder");
+    open.addEventListener("click", () => {
+      void safe("open plugin folder", () => invoke("floaty_open_plugins_dir"));
+    });
+    const rescan = el("button", "pill", "rescan plugins");
+    rescan.addEventListener("click", async () => {
+      (rescan as HTMLButtonElement).disabled = true;
+      const rejected = await safe("rescan plugins", () => invoke<string[]>("floaty_rescan_plugins"));
+      (rescan as HTMLButtonElement).disabled = false;
+      if (rejected === undefined) return;
+      status.textContent =
+        rejected.length === 0
+          ? "all plugin folders loaded"
+          : `rejected: ${rejected.join(" | ")}`;
+      await loadManager();
+    });
+    card.append(open, rescan, pathLine, status);
+    pluginHost.append(card);
+    void invoke<string>("floaty_plugins_dir")
+      .then((dir) => {
+        pathLine.textContent = dir;
+      })
+      .catch(() => undefined);
+  }
 
   // desktop behavior
   sectionTitle(box, "desktop behavior");

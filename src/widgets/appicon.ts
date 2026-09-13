@@ -549,7 +549,6 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
 
 export const appPlugin: FloatyPlugin = {
   kind: "app",
-  name: "App launcher",
   mount: (root, id) => mountLauncher(root, id, "app"),
   describe: (rec: PluginRecord) => {
     const n = rec.data["name"];
@@ -581,7 +580,6 @@ export const appPlugin: FloatyPlugin = {
  */
 export const filePlugin: FloatyPlugin = {
   kind: "file",
-  name: "File",
   mount: (root, id) => mountLauncher(root, id, "file"),
   describe: (rec: PluginRecord) => {
     const n = rec.data["name"];

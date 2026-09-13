@@ -238,8 +238,6 @@ export function mountPet(root: HTMLElement, id: string): void {
 
 export const petPlugin: FloatyPlugin = {
   kind: "pet",
-  name: "Pet",
-  addLabel: "+ pet",
   mount: mountPet,
   describe: (rec: PluginRecord) => {
     const n = rec.data["name"];

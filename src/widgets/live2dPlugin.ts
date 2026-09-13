@@ -39,8 +39,6 @@ export async function scanModels(root: string): Promise<Live2dModelEntry[]> {
 
 export const live2dPlugin: FloatyPlugin = {
   kind: "live2d",
-  name: "Live2D",
-  addLabel: "+ live2d",
 
   // lazy: keeps pixi out of every other widget window. Core MUST load
   // before the import — cubism2 throws at module evaluation without it.

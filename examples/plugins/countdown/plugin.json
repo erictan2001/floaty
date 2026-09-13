@@ -1,0 +1,16 @@
+{
+  "id": "countdown",
+  "name": "Countdown",
+  "description": "Counts down to a date you pick. Click it to set the target; the remaining time is saved in the widget.",
+  "version": "1.0.0",
+  "author": "floaty examples",
+  "apiVersion": 1,
+  "entry": "index.js",
+  "size": { "w": 240, "h": 140 },
+  "resizable": true,
+  "minSize": { "w": 170, "h": 96 },
+  "maxSize": { "w": 620, "h": 400 },
+  "defaultData": { "target": "" },
+  "addLabel": "+ countdown",
+  "layoutPriority": 6
+}

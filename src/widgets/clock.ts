@@ -222,8 +222,6 @@ export function mountClock(root: HTMLElement, id: string): void {
 
 export const clockPlugin: FloatyPlugin = {
   kind: "clock",
-  name: "Clock",
-  addLabel: "+ clock",
   mount: mountClock,
   describe: () => undefined,
 };

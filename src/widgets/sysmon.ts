@@ -279,8 +279,6 @@ export function mountSysmon(root: HTMLElement, id: string): void {
 
 export const sysmonPlugin: FloatyPlugin = {
   kind: "sysmon",
-  name: "System monitor",
-  addLabel: "+ system monitor",
   mount: mountSysmon,
   describe: (rec: PluginRecord) => {
     const g = rec.data["graph"];

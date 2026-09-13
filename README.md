@@ -1,7 +1,8 @@
 # Floaty — widgets living on your desktop
 
-Rust + Tauri v2 desktop app (Vite + TypeScript frontend). Every widget is its
-own small borderless window, so the rest of your desktop stays clickable.
+Rust + Tauri v2 desktop app (Vite + TypeScript frontend). Widgets are drawn
+inside one full-screen transparent overlay, so the rest of your desktop stays
+clickable; a per-widget window path still exists (`index.html#/<kind>/<id>`).
 
 ## Widgets
 
@@ -84,16 +85,25 @@ src-tauri/
 
 ## Plugins
 
-Each floatie is a modular plugin implementing the `FloatyPlugin` interface in
-`src/widgets/plugin.ts` and registered in `src-tauri/src/plugins.rs`.
+Every floatie is a modular plugin. A plugin is described twice, on purpose: the
+backend manifest (`src-tauri/src/plugins.rs`) owns names, sizes, the quick-add
+label and whether the kind stands for a file on disk, and the frontend module
+(`src/widgets/*.ts`, listed in `src/widgets/plugin.ts`) owns behaviour — mounting,
+describing, settings rows. The frontend reads the manifest, so those facts exist
+once; `npm run build` runs `scripts/check-plugins.mjs`, which fails when the two
+id lists disagree.
 
-Adding a new plugin requires only adding the widget module and registering it — no
-invasive edits across settings or backend dispatcher files.
+**Third-party plugins need no floaty source at all.** Drop a folder with
+`plugin.json` + `index.js` into `%APPDATA%\com.floaty.app\plugins`, press
+**rescan plugins** in settings, and the widget is available — same manifest, same
+API, same settings card as a built-in. Installing, the full `plugin.json`
+reference, the module contract and the `api` object are in
+**[docs/PLUGINS.md](docs/PLUGINS.md)**; a complete worked example lives in
+[`examples/plugins/countdown`](examples/plugins/countdown).
 
-For a full contributor guide with code templates, see **[docs/PLUGINS.md](docs/PLUGINS.md)**.
-
-The settings **Plugins** section lists plugins with enable toggles and delegating
-per-plugin parameter cards. Disabling a plugin closes its windows (records are
+The settings **Plugins** section lists every plugin (built-in and installed) with
+enable toggles and per-plugin parameter cards, plus the buttons that open the
+plugins folder and rescan it. Disabling a plugin closes its widgets (records are
 kept); re-enabling respawns them; creating a widget re-enables its plugin.
 Global values live in `floaty-settings.json` with per-widget data in
 `floaty-store.json`.

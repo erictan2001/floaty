@@ -271,8 +271,6 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
 
 export const visualizerPlugin: FloatyPlugin = {
   kind: "visualizer",
-  name: "Audio visualizer",
-  addLabel: "+ visualizer",
   mount: mountVisualizer,
   describe: (rec: PluginRecord) => {
     const m = rec.data["mode"];

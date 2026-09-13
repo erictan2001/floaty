@@ -1,5 +1,5 @@
 import "./style.css";
-import { plugins } from "./widgets/plugin";
+import { loadPlugins, pluginFor, widgetApi } from "./widgets/plugin";
 
 const app = document.getElementById("app");
 if (app) {
@@ -11,8 +11,10 @@ if (app) {
       console.error("failed to mount overlay", e);
     });
   } else {
-    const plugin = plugins.find((p) => p.kind === kind);
-    if (plugin && id) plugin.mount(app, id);
+    void loadPlugins().then(() => {
+      const plugin = pluginFor(kind);
+      if (plugin && id) plugin.mount(app, id, widgetApi);
+    });
   }
   // "manager" hidden window and unknown routes intentionally render nothing
 }

@@ -41,8 +41,6 @@ export function mountNote(root: HTMLElement, id: string): void {
 
 export const notePlugin: FloatyPlugin = {
   kind: "note",
-  name: "Note",
-  addLabel: "+ note",
   mount: mountNote,
   describe: (rec: PluginRecord) => {
     const t = rec.data["text"];
