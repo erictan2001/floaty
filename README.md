@@ -236,7 +236,7 @@ arrive with, and the tab lives in the URL hash so a reload stays where you were:
 | Files | `#/files` | the root folder and its contents |
 | Motion | `#/motion` | the table above, plus click behaviour |
 | Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
-| General | `#/general` | stay on desktop, ask before removing |
+| General | `#/general` | stay on desktop, start with Windows, ask before removing |
 
 Edits are applied immediately; slider drags are debounced so a five-step drag is
 one save.
@@ -257,6 +257,14 @@ Exactly one process owns that store. Floaty holds a mutex named after its
 identifier, so a second launch hands its arguments to the instance already running
 — which raises its settings window — and exits before it can load the store. The
 second launch is a request to see Floaty, not a second desktop.
+
+Start with Windows is the one setting that does not live in those files: it is a
+`Run` entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, written when
+you turn it on and removed when you turn it off (Windows' own Startup tab in Task
+Manager shows the same entry). Launch reconciles the two, which is how the entry
+survives an update that installs the app somewhere new; and if the write fails, the
+switch goes back to where it was rather than promising a start that will not
+happen.
 
 ## Project layout
 

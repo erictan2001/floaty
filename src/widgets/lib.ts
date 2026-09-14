@@ -687,6 +687,8 @@ export interface FloatSettings {
   files_root: string;
   disabled: string[];
   stay_on_desktop: boolean;
+  /** launch floaty when the user signs in */
+  start_on_boot: boolean;
   animated_ratio: number;
   animation_mode: string;
   /** base float travel in px (icons bob this far) */
@@ -716,6 +718,7 @@ export const DEFAULT_SETTINGS: FloatSettings = {
   files_root: "",
   disabled: [],
   stay_on_desktop: true,
+  start_on_boot: false,
   animated_ratio: 100,
   animation_mode: "wave",
   float_amplitude: 4.5,

@@ -1,7 +1,7 @@
 /**
  * The settings that are about floaty itself rather than about a widget:
- * whether it stays put under Show desktop, whether it asks before removing
- * something, and how to stop it.
+ * whether it stays put under Show desktop, whether it starts with Windows,
+ * whether it asks before removing something, and how to stop it.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -27,6 +27,16 @@ export const generalPane: Pane = {
       ),
     );
 
+    const startup = group("Startup");
+    startup.body.append(
+      toggleCard(
+        "Start with Windows",
+        "Open floaty when you sign in, so your desktop is already there. The switch follows the real Windows startup entry: if the registry write fails, it stays where it was rather than claim something that will not happen.",
+        settings().start_on_boot,
+        (on) => void updateSettings({ start_on_boot: on }, { now: true }),
+      ),
+    );
+
     const removal = group("Removing things");
     removal.body.append(
       toggleCard(
@@ -47,6 +57,6 @@ export const generalPane: Pane = {
       row,
     );
 
-    node.append(desktop.root, removal.root, app.root);
+    node.append(desktop.root, startup.root, removal.root, app.root);
   },
 };

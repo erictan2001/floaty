@@ -280,6 +280,9 @@ struct FloatSettings {
     /// keep widgets visible on desktop when Show Desktop (Win+D) is triggered
     #[serde(default = "default_stay_on_desktop")]
     stay_on_desktop: bool,
+    /// launch floaty when the user signs in (a Run entry in the registry)
+    #[serde(default = "default_start_on_boot")]
+    start_on_boot: bool,
     /// percentage of floaties that participate in animation (0 to 100)
     #[serde(default = "default_animated_ratio")]
     animated_ratio: f64,
@@ -326,6 +329,10 @@ fn default_icon_pipeline() -> u32 {
 
 fn default_stay_on_desktop() -> bool {
     true
+}
+
+fn default_start_on_boot() -> bool {
+    false
 }
 
 fn default_float_amplitude() -> f64 {
@@ -425,6 +432,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             files_root: String::new(),
             disabled: Vec::new(),
             stay_on_desktop: default_stay_on_desktop(),
+            start_on_boot: default_start_on_boot(),
             animated_ratio: default_animated_ratio(),
             animation_mode: default_animation_mode(),
             float_amplitude: default_float_amplitude(),
@@ -451,7 +459,7 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
     // whatever is already on disk instead of letting a save reset it to 0.
     let stored = load_settings(&app);
     let stored_pipeline = stored.icon_pipeline;
-    let s = FloatSettings {
+    let mut s = FloatSettings {
         pet_speed: settings.pet_speed.clamp(0.0, 3.0),
         gravity: settings.gravity.clamp(0.0, 8000.0),
         bounce: settings.bounce.clamp(0.0, 0.95),
@@ -468,6 +476,7 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
         files_root: settings.files_root,
         disabled: settings.disabled,
         stay_on_desktop: settings.stay_on_desktop,
+        start_on_boot: settings.start_on_boot,
         animated_ratio: settings.animated_ratio.clamp(0.0, 100.0),
         animation_mode: match settings.animation_mode.as_str() {
             "sync" | "gentle" | "static" => settings.animation_mode,
@@ -482,6 +491,12 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
         sysmon_interval: settings.sysmon_interval.clamp(250.0, 10_000.0),
         icon_pipeline: stored_pipeline.max(settings.icon_pipeline),
     };
+    // Start on boot is a registry entry, not a preference: write it now and, if
+    // that fails, put the old value back rather than save a checkbox that claims
+    // something Windows does not agree with.
+    if s.start_on_boot != stored.start_on_boot && !set_start_on_boot(&app, s.start_on_boot) {
+        s.start_on_boot = stored.start_on_boot;
+    }
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         write_text_atomic(&settings_file(&app), &json);
     }
@@ -531,6 +546,48 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
         let _ = floaty_sync_files(None, app.clone());
     }
     s
+}
+
+// ---------- start on boot ----------
+
+/// Make Windows start floaty when the user signs in — or stop doing that.
+///
+/// The setting is only a record of the intent; the `Run` entry is what actually
+/// starts the app, so the two have to be written together. Returns false when the
+/// registry write failed, which is why callers put the old value back instead of
+/// logging and moving on: a switch that says "on" while nothing happens at sign-in
+/// is worse than one that visibly refuses to move.
+///
+/// Called on every save that changes the value, and once at launch, where it also
+/// repairs an entry left pointing at an older copy of the executable.
+fn set_start_on_boot(app: &AppHandle, on: bool) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+
+    let manager = app.autolaunch();
+    // `is_enabled` reads the entry back, so this is a no-op when it already says
+    // what we want (a launch, or a save that did not touch the setting).
+    if manager.is_enabled().unwrap_or(false) == on {
+        return true;
+    }
+
+    match if on { manager.enable() } else { manager.disable() } {
+        Ok(()) => {
+            log_line(
+                app,
+                if on {
+                    "autostart: floaty will start when you sign in"
+                } else {
+                    "autostart: floaty will not start on its own"
+                },
+            );
+            true
+        }
+        Err(e) => {
+            let what = if on { "enable" } else { "disable" };
+            log_line(app, &format!("autostart: FAILED to {what}: {e}"));
+            false
+        }
+    }
 }
 
 // ---------- desktop window pinning (stay on desktop / Win+D) ----------
@@ -5369,6 +5426,10 @@ pub fn run() {
                 });
             });
         }))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState(Mutex::new(StoreData::default())))
         .setup(|app| {
@@ -5437,6 +5498,15 @@ pub fn run() {
             }
             if reclassified > 0 {
                 persist(&handle);
+            }
+
+            // Start on boot is a registry entry, so reconcile it with the setting
+            // at launch: this is what repairs the entry when the executable has
+            // moved (an update in place, a new build), which a toggle alone cannot
+            // do.
+            let boot = load_settings(&handle);
+            if !set_start_on_boot(&handle, boot.start_on_boot) {
+                log_line(&handle, "autostart: could not reconcile the startup entry");
             }
 
             // tray: settings + quit only (widgets are managed via settings)
@@ -5616,6 +5686,22 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A settings file written before `start_on_boot` existed has to keep loading:
+    /// the new field defaults to off, and everything the file did say survives.
+    #[test]
+    fn an_old_settings_file_leaves_start_on_boot_off() {
+        let old = r#"{ "gravity": 1200.0, "animated_ratio": 0.0, "stay_on_desktop": false }"#;
+        let s: FloatSettings =
+            serde_json::from_str(old).expect("an old settings file must still parse");
+        assert!(!s.start_on_boot, "a file without the field means off");
+        assert!(!s.stay_on_desktop, "what the file did say must survive");
+        assert_eq!(s.gravity, 1200.0);
+        // and it round-trips, so the new field is written out from now on
+        let back: FloatSettings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+        assert!(!back.start_on_boot);
+    }
 
     /// The desktop-layer window policy — no taskbar button, swallowed minimize,
     /// the tool-window style re-applied on every move — belongs to the windows

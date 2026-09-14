@@ -98,9 +98,17 @@ async function flushSettings(): Promise<void> {
   const stored = await safe("save settings", () =>
     invoke<FloatSettings>("floaty_set_settings", { settings: sent }),
   );
-  // The backend clamps what it stores; take its answer as the truth so the
-  // window shows what was actually saved.
-  if (stored) settingsState = { ...settingsState, ...stored };
+  // The backend clamps what it stores — and refuses a start-on-boot switch it
+  // could not write — so take its answer as the truth and redraw if it differs
+  // from what was sent. Otherwise the window keeps showing the value the user
+  // asked for while the app runs with the one it actually accepted.
+  if (stored) {
+    const differs = (Object.keys(stored) as (keyof FloatSettings)[]).some(
+      (key) => sent[key] !== stored[key],
+    );
+    settingsState = { ...settingsState, ...stored };
+    if (differs) notify();
+  }
 }
 
 export async function setPluginEnabled(id: string, enabled: boolean): Promise<void> {
