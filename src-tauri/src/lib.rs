@@ -5340,6 +5340,35 @@ fn floaty_sysmon_status() -> bool {
 
 pub fn run() {
     tauri::Builder::default()
+        // First, before anything that touches the store: a second instance must
+        // not get as far as loading `floaty-store.json`. The plugin holds a
+        // mutex named after the app identifier and, when it is already held,
+        // hands the new launch's arguments to this instance and exits — before
+        // the app's own `setup` runs. What a second launch means, then, is "the
+        // user wants Floaty": raise the settings window they were probably
+        // reaching for, instead of two backends fighting over one store.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            log_line(
+                app,
+                &format!(
+                    "second launch ignored ({} arg(s)): raising the settings window",
+                    argv.len().saturating_sub(1)
+                ),
+            );
+            // Deferred on purpose: this runs inside the first instance's window
+            // procedure, with the second process blocked on it. Creating a
+            // webview window from there would do the work with a foreign message
+            // on the stack, so let the event loop pick it up instead.
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                let inner = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    if let Err(e) = show_settings(&inner) {
+                        log_line(&inner, &format!("second launch: settings FAILED: {e}"));
+                    }
+                });
+            });
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState(Mutex::new(StoreData::default())))
         .setup(|app| {

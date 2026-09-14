@@ -164,6 +164,7 @@ fn watch_loop(
         let mut last = Instant::now();
         let mut renames: Renames = Vec::new();
         let mut touched = false;
+        let mut overflowed = false;
         // A rename can be split across two reads (the OLD entry in one, the NEW
         // in the next), so the half-seen name is carried between batches.
         let mut pending_old: Option<String> = None;
@@ -181,6 +182,7 @@ fn watch_loop(
                             started.get_or_insert(now);
                             last = now;
                             touched |= batch.touched;
+                            overflowed |= batch.overflow;
                             // The API names the file, not the path: join it with
                             // the root, or nothing downstream can match a record.
                             renames.extend(batch.renames.into_iter().map(|(from, to)| {
@@ -205,9 +207,19 @@ fn watch_loop(
             let due = started.is_some_and(|at| last.elapsed() >= QUIET || at.elapsed() >= MAX_WAIT);
             if due {
                 let burst = std::mem::take(&mut renames);
+                // An overflowed queue arrives with no names at all: the batch only
+                // says "something happened", so the reconcile it triggers is a
+                // full pass over the root — which is why a burst that outran the
+                // buffer still ends up correct on screen. Worth saying out loud:
+                // it is the one case where the desktop catches up without any
+                // notification naming what changed.
+                if overflowed {
+                    log("watch: change queue overflowed — reconciling the whole root");
+                }
                 sink(burst, touched);
                 started = None;
                 touched = false;
+                overflowed = false;
             }
         }
     }
@@ -220,6 +232,9 @@ fn watch_loop(
 struct Batch {
     /// Something was created or deleted: worth a reconcile.
     touched: bool,
+    /// The queue held more than the buffer could: names are missing from this
+    /// batch, so the reconcile it triggers has to be a full one.
+    overflow: bool,
     /// Renames, paired old → new.
     renames: Renames,
 }
@@ -368,11 +383,16 @@ fn parse_batch(buffer: &[u8], bytes: u32, pending: &mut Option<String>) -> Batch
 
     let mut batch = Batch {
         touched: false,
+        overflow: false,
         renames: Vec::new(),
     };
     let end = (bytes as usize).min(buffer.len());
     if end == 0 {
-        batch.touched = true; // overflow: reconcile from scratch
+        // Overflow: more changes queued than the buffer could hold, so this batch
+        // knows nothing about which names they were. `touched` asks for the full
+        // reconcile; `overflow` exists so that can be said in the log.
+        batch.touched = true;
+        batch.overflow = true;
         return batch;
     }
 
@@ -535,9 +555,15 @@ mod tests {
         let batch = parse_batch(&lone, lone.len() as u32, &mut None);
         assert!(batch.touched && batch.renames.is_empty());
 
-        // An overflowed queue says "anything may have changed".
+        // An overflowed queue says "anything may have changed" — and is flagged
+        // as such, so the reconcile it asks for can be reported as a full pass.
         let overflow = parse_batch(&buffer, 0, &mut None);
         assert!(overflow.touched && overflow.renames.is_empty());
+        assert!(overflow.overflow, "an overflowed queue has to say so");
+
+        // An ordinary create is not an overflow: the log tells them apart.
+        let plain = parse_batch(&buffer, buffer.len() as u32, &mut None);
+        assert!(plain.touched && !plain.overflow);
 
         // The two halves can land in different reads: the OLD is remembered.
         let mut pending = None;

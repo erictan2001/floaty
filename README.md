@@ -56,6 +56,28 @@ $env:FLOATY_OPEN_SETTINGS=1   # open the settings window on boot
 $env:FLOATY_DEMO=1            # float a few sample apps, a clock and the pet
 ```
 
+### Signing
+
+Builds are unsigned: Windows has no certificate to check, so the first run gets
+SmartScreen's "Windows protected your PC" (*More info* → *Run anyway*) and the
+installer's publisher shows as unknown. That is a certificate, not a code change —
+with one in the machine's certificate store, Tauri signs through `signtool`:
+
+Use `signCommand` (with a `%1` placeholder for the binary) for any other signing
+tool. In `src-tauri/tauri.conf.json`:
+
+```json
+"bundle": {
+  "windows": {
+    "digestAlgorithm": "sha256",
+    "certificateThumbprint": "<thumbprint of your certificate>",
+    "timestampUrl": "http://timestamp.digicert.com"
+  }
+}
+```
+
+The thumbprint is per-machine, which is why this repository carries none.
+
 ## Checks
 
 ```powershell
@@ -80,7 +102,9 @@ entry in it, and the backend keeps the two in step:
   `ReadDirectoryChangesW` on the root — name changes only, because a desktop root
   is usually cloud-synced and size/mtime churn constantly — debounced 700 ms
   quiet / 2.5 s maximum. It reports a create, a rename (the floatie keeps its id,
-  position and icon and simply moves) or a removal (the floatie leaves).
+  position and icon and simply moves) or a removal (the floatie leaves). A burst
+  that outruns the 64 KiB change buffer is not dropped: it asks for a full
+  reconcile of the root and says so in the log.
 - Removal is guarded hard: records come off the desktop only when the directory
   could be read *and* every entry in it was readable, and only for entries that
   are direct children of the root. A transient read failure must not delete
@@ -208,6 +232,11 @@ one save.
 Frontend errors and rejections are forwarded to that log through `floaty_log`, so
 a broken widget says why instead of going quiet.
 
+Exactly one process owns that store. Floaty holds a mutex named after its
+identifier, so a second launch hands its arguments to the instance already running
+— which raises its settings window — and exits before it can load the store. The
+second launch is a request to see Floaty, not a second desktop.
+
 ## Project layout
 
 ```text
@@ -267,8 +296,11 @@ scripts/check-plugins.mjs       backend/frontend plugin id agreement
 
 ## Known limits
 
-- Windows only, and one instance at a time: there is no single-instance guard, and
-  two backends sharing one store will step on each other.
-- Release builds are unsigned, so SmartScreen will warn on first run.
-- The watcher reports names, not contents, and gives up a batch when it overflows;
-  a root being rewritten en masse may need one manual re-scan.
+- **Windows only.** The shell verbs, the Recycle Bin, WASAPI loopback and the
+  desktop-layer window policy are all Win32, so there is no cross-platform path.
+- **Release builds are unsigned** unless you sign them, so SmartScreen warns on
+  first run and the installer's publisher is unknown. See [Signing](#signing).
+- **The watcher reports names, not contents.** Deliberate: a desktop root is
+  usually cloud-synced, where content notifications fire on every write while
+  nothing on the desktop depends on a file's contents. Editing a file in place is
+  not a desktop change, so nothing has to happen for it.
