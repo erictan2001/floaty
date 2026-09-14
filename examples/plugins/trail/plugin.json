@@ -1,0 +1,16 @@
+{
+  "id": "trail",
+  "name": "Trail",
+  "description": "Draw a path across the desktop and the app, file and folder icons line up along it. Drag the panel by its bar; right-click it for the usual rows.",
+  "version": "1.0.0",
+  "author": "floaty examples",
+  "apiVersion": 1,
+  "entry": "index.js",
+  "size": { "w": 268, "h": 146 },
+  "resizable": true,
+  "minSize": { "w": 268, "h": 146 },
+  "maxSize": { "w": 4000, "h": 4000 },
+  "defaultData": { "ids": [] },
+  "addLabel": "+ trail",
+  "layoutPriority": 7
+}

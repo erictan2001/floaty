@@ -236,8 +236,10 @@ Built in (`src-tauri/src/plugins.rs` is the manifest):
 | `visualizer` | spectrum bars for system audio (loopback, not the mic) |
 | `sysmon` | CPU, 3D GPU and RAM load with a scrolling graph |
 
-`countdown`, in [`examples/plugins/countdown`](examples/plugins/countdown), is a
-complete third-party-style plugin and a good reference.
+`countdown` and `trail`, in [`examples/plugins`](examples/plugins), are complete
+plugins written the third-party way — `countdown` is a widget that keeps to itself,
+`trail` draws a path on the desktop and arranges the icons along it — and both are
+good references.
 
 ## Plugins
 

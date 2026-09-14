@@ -150,7 +150,7 @@ own modules: this surface stays stable, floaty's internals do not.
 
 | Member | What it does |
 | --- | --- |
-| `api.invoke(cmd, args)` | Call any backend command, e.g. `floaty_list`, `floaty_save`, `floaty_scan_apps`. |
+| `api.invoke(cmd, args)` | Call any backend command, e.g. `floaty_list`, `floaty_save`, `floaty_scan_apps`. `floaty_refresh` takes `{ ids }` and remounts those widgets: the way to make floaties you moved or changed from your own widget notice their new records. |
 | `api.log(msg)` | Append to `%APPDATA%\com.floaty.app\floaty.log`. The only way to see inside the overlay — use it while developing. |
 | `api.record.load(id)` | The widget's record: `id`, `kind`, `x`, `y`, `data`. |
 | `api.record.save(rec)` | Persist it. `data` is yours. |
@@ -203,12 +203,20 @@ of the root, and only when the whole directory could be read. If you write a kin
 of this sort, expect `rec.data` to be reconciled with the disk rather than owned by
 your widget.
 
-### Reference plugin
+### Reference plugins
 
 [`examples/plugins/countdown`](../examples/plugins/countdown) is a complete,
 commented plugin: it saves state in the record, redraws every second, and wires up
 dragging, the right-click menu and the resize grip — with no dependencies. Copy it into your
 plugins folder as a starting point.
+
+[`examples/plugins/trail`](../examples/plugins/trail) is the other half of the
+picture, for a plugin that acts on the desktop instead of sitting on it: it resizes
+its own slot to the monitor area to take the mouse (the overlay is click-through
+outside a widget's own rectangle), captures a stroke on a canvas, then moves the
+*other* floaties with `floaty_list`, `api.setPos` and `api.record.save` — and calls
+`floaty_refresh` so the ones already on screen re-read their records instead of
+carrying on falling.
 
 ## Built-in plugins
 

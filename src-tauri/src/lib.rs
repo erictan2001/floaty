@@ -5153,6 +5153,38 @@ async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
     persist(&app);
 }
 
+/// Re-read these widgets from the store and rebuild them where they now are.
+///
+/// A floatie mounts once and then holds its own copy of the record: a plugin that
+/// moves *other* floaties — the trail plugin lines them up along a drawn path —
+/// can write their positions, but the ones on screen will not notice until they are
+/// remounted. This is that remount, over the same event a rename sends. It is how
+/// an icon that was still in the air when it was placed ends up standing where it
+/// was put, instead of falling to the floor the next time it is mounted.
+#[tauri::command]
+fn floaty_refresh(ids: Vec<String>, app: AppHandle) {
+    let records: Vec<WidgetRecord> = {
+        let state = app.state::<AppState>();
+        let guard = match state.0.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        ids.iter()
+            .filter_map(|id| guard.widgets.get(id).cloned())
+            .collect()
+    };
+    if records.is_empty() {
+        return;
+    }
+    log_line(
+        &app,
+        &format!("refresh: remounted {} floatie(s)", records.len()),
+    );
+    for rec in &records {
+        app.emit("floaty-widget-updated", rec).ok();
+    }
+}
+
 #[tauri::command]
 fn floaty_remove(id: String, app: AppHandle) {
     log_line(&app, &format!("remove {id}"));
@@ -5622,6 +5654,7 @@ pub fn run() {
             floaty_get_record,
             floaty_create,
             floaty_save,
+            floaty_refresh,
             floaty_remove,
             floaty_delete,
             floaty_open_with,
