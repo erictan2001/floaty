@@ -66,8 +66,13 @@ export interface WidgetApi {
    * then snapped back on the next launch.
    */
   enableDrag: (el: HTMLElement, rec: WidgetRecord, opts?: { threshold?: number }) => void;
-  /** Move the widget (handles the overlay slot and the hit rects). */
-  setPos: (id: string, x: number, y: number) => void;
+  /**
+   * Move the widget (handles the overlay slot and the hit rects). Pass
+   * `{transient: true}` when the slot is only being stretched to catch the mouse —
+   * a drawing surface, a page of slots — so the position watcher does not save that
+   * scaffolding as the widget's place. Any later `setPos` without it clears the flag.
+   */
+  setPos: (id: string, x: number, y: number, opts?: { transient?: boolean }) => void;
   /** Resize the widget slot. */
   setSize: (id: string, w: number, h: number) => void;
   /** Right-click menu with the standard floaty rows for this widget. Pass
@@ -169,7 +174,7 @@ export const widgetApi: WidgetApi = {
     floaty.enableOverlayDrag(el, rec.id, opts);
     floaty.trackPosition(rec);
   },
-  setPos: floaty.setWidgetPos,
+  setPos: (id, x, y, opts) => floaty.setWidgetPos(id, x, y, 1, opts),
   setSize: floaty.setWidgetSize,
   addPinMenu: floaty.addPinMenu,
   addResizeHandle: floaty.addResizeHandle,

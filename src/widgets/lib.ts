@@ -155,7 +155,18 @@ export function notifyDragMove(id: string, x: number, y: number): void {
   window.dispatchEvent(new CustomEvent("floaty-drag-move", { detail: { id, x, y } }));
 }
 
-export function setWidgetPos(id: string, x: number, y: number, scale = 1): void {
+/**
+ * Slots a plugin has stretched over the desktop to catch the mouse (a drawing surface, a
+ * page of save slots). While a widget is reserving, the slot's position is scaffolding and
+ * not the user's choice, so the position watcher must not persist it — a click on the last
+ * thing that happens inside the stretch is a `pointerup`, and the watcher's snap 60ms later
+ * would otherwise save (0,0) over the widget's real place.
+ */
+const reservingSlots = new Set<string>();
+
+export function setWidgetPos(id: string, x: number, y: number, scale = 1, opts?: { transient?: boolean }): void {
+  if (opts?.transient) reservingSlots.add(id);
+  else reservingSlots.delete(id);
   if (isOverlayMode()) {
     const slot = overlaySlots.get(id);
     if (slot) {
@@ -285,6 +296,8 @@ export function trackPosition(rec: WidgetRecord): void {
   if (trackedPositions.has(rec.id)) return; // one watcher per widget
   trackedPositions.add(rec.id);
   const snap = async () => {
+    // a slot stretched over the desktop is scaffolding, not the widget's place
+    if (reservingSlots.has(rec.id)) return;
     try {
       if (isOverlayMode()) {
         const slot = overlaySlots.get(rec.id);
