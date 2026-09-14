@@ -71,6 +71,51 @@ export default {
          hint pushed the row 4px out of the bottom */
       .tr-hint{margin:0;opacity:.72;flex:1}
       .tr-count{margin:0;opacity:.55;font-variant-numeric:tabular-nums}
+      /* naming a slot, in place of the hint */
+      .tr-ask{display:flex;gap:5px;align-items:center;flex:1;min-height:17px}
+      .tr-input{flex:1;min-width:0;padding:3px 7px;border-radius:8px;font:inherit;font-size:11px;
+        color:#ece9ff;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2)}
+      .tr-input:focus{outline:none;border-color:rgba(150,130,255,.7)}
+      .tr-btn.compact{flex:0 0 auto;padding:3px 8px;font-size:11px}
+      /* the page of slots */
+      .tr-page{position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483000;
+        display:flex;align-items:center;justify-content:center;background:rgba(11,10,20,.55);
+        font:12px/1.45 ui-sans-serif,system-ui,"Segoe UI",sans-serif;color:#ece9ff}
+      .tr-sheet{width:min(760px,86vw);max-height:82vh;display:flex;flex-direction:column;gap:10px;
+        padding:14px 16px 16px;border-radius:18px;border:1px solid rgba(255,255,255,.14);
+        background:linear-gradient(160deg,rgba(20,18,38,.95),rgba(28,24,52,.92));
+        box-shadow:0 24px 60px rgba(0,0,0,.5)}
+      .tr-page-bar{display:flex;align-items:center;font-size:11px;letter-spacing:.14em;
+        text-transform:uppercase;opacity:.72}
+      .tr-page-bar span{flex:1}
+      .tr-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;overflow:auto}
+      .tr-card{position:relative;display:flex;border-radius:12px;border:1px solid rgba(255,255,255,.14);
+        background:rgba(255,255,255,.06);min-height:178px}
+      .tr-thumb{display:block;width:100%;height:auto;aspect-ratio:210/118;object-fit:contain;
+        border-radius:8px;border:1px solid rgba(255,255,255,.12);background:rgba(0,0,0,.35)}
+      .tr-thumb.blank{background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 6px,transparent 6px 12px)}
+      .tr-card:hover{background:rgba(255,255,255,.12)}
+      .tr-card.empty{opacity:.32}
+      .tr-card.empty:hover{background:rgba(255,255,255,.06)}
+      .tr-pick{flex:1;display:flex;flex-direction:column;gap:3px;justify-content:center;align-items:flex-start;
+        padding:10px 12px;border:0;background:none;color:#ece9ff;font:inherit;text-align:left;cursor:pointer}
+      .tr-pick:focus-visible{outline:2px solid rgba(150,130,255,.7);outline-offset:-2px;border-radius:12px}
+      .tr-card.empty .tr-pick{cursor:default}
+      .tr-card-name{font-size:13px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .tr-card-meta{font-size:11px;opacity:.6;font-variant-numeric:tabular-nums}
+      .tr-x{position:absolute;right:4px;top:4px;border:0;background:none;color:#ece9ff;opacity:.45;
+        font:inherit;padding:1px 5px;border-radius:6px;cursor:pointer}
+      .tr-x:hover{opacity:1;background:rgba(255,255,255,.14)}
+      .tr-edit{right:24px}
+      .tr-card-input{font-size:13px;padding:2px 6px}
+      .tr-page-foot{display:flex;align-items:center;gap:6px}
+      .tr-page-num{width:56px;padding:3px 6px;border-radius:8px;font:inherit;font-size:11px;
+        color:#ece9ff;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);
+        font-variant-numeric:tabular-nums}
+      .tr-page-num:focus{outline:none;border-color:rgba(150,130,255,.7)}
+      .tr-page-num::-webkit-outer-spin-button,.tr-page-num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+      .tr-page-total{opacity:.6;font-variant-numeric:tabular-nums}
+      .tr-gap{flex:1}
       .tr-row{display:flex;gap:6px}
       .tr-btn{flex:1;padding:6px 8px;border-radius:9px;border:1px solid rgba(255,255,255,.16);
         background:rgba(255,255,255,.07);color:#ece9ff;font:inherit;cursor:pointer}
@@ -107,11 +152,13 @@ export default {
     body.className = "tr-body";
     const hint = document.createElement("p");
     hint.className = "tr-hint";
-    hint.textContent = "Single arranges as you draw; multiple waits for done. Drag the bar to move this panel.";
-    const count = document.createElement("p");
-    count.className = "tr-count";
+    hint.textContent = "single arranges as you draw; multiple waits for done";
     const row = document.createElement("div");
     row.className = "tr-row";
+    const row2 = document.createElement("div");
+    row2.className = "tr-row";
+    const row3 = document.createElement("div");
+    row3.className = "tr-row";
 
     const button = (label, cls, onClick) => {
       const b = document.createElement("button");
@@ -122,24 +169,416 @@ export default {
     };
     const singleBtn = button("single", "", () => void openMode("single"));
     const multiBtn = button("multiple", "", () => void openMode("multiple"));
+    const saveBtn = button("save", "", () => askName());
+    const loadBtn = button("load", "", () => void openPage());
+    const quickSaveBtn = button("quick save", "compact", () => quickSave());
+    const quickLoadBtn = button("quick load", "compact", () => quickLoad());
     row.append(singleBtn, multiBtn);
-    body.append(hint, count, row);
+    row2.append(saveBtn, loadBtn);
+    row3.append(quickSaveBtn, quickLoadBtn);
+    body.append(hint, row, row2, row3);
     panel.append(bar, body);
     root.append(panel);
+
+    // The panel grew a row for quick save and quick load: ask for the room once, rather
+    // than clip a button off the bottom of every slot that was saved before they existed.
+    const NEEDED_H = 182;
+    if ((rec.data.h || PANEL.h) < NEEDED_H) {
+      rec.data.w = rec.data.w || PANEL.w;
+      rec.data.h = NEEDED_H;
+      api.setSize(id, rec.data.w, NEEDED_H);
+      void api.record.save(rec);
+    }
 
     api.enableDrag(bar, rec);
     api.addPinMenu(panel, () => rec);
 
     /** The paths drawn so far, in desktop coordinates. */
     const trails = () => (Array.isArray(rec.data.trails) ? rec.data.trails : []);
-    const issued = () => (Array.isArray(rec.data.ids) ? rec.data.ids.length : 0);
-    const showCount = () => {
-      const t = trails().length;
-      const n = issued();
-      const paths = t ? `${t} trail${t === 1 ? "" : "s"}` : "no trail";
-      count.textContent = n ? `${paths} · ${n} icon${n === 1 ? "" : "s"}` : paths;
+
+    // ---------- save and load ----------
+    //
+    // Built like a visual novel's save screen. `save` asks for a name and writes a slot;
+    // `load` opens a page of slots, nine to a page, with a page box you can type into and
+    // arrows either side; `quick save` and `quick load` keep one slot at each end of the
+    // same idea with no name to type. Slots are never capped — pages go on for as long as
+    // there is something to put on them.
+    //
+    // A slot holds the *paths* and nothing else. The icons that stand on them are worked
+    // out again when it is loaded, which is the point: a slot saved with twenty icons
+    // still means something when the desktop has eighteen, and one saved before an icon
+    // existed still means something when it has twenty-one.
+
+    const HINT = "single arranges as you draw; multiple waits for done";
+    const PAGE = 9;
+    const saves = () => (Array.isArray(rec.data.saves) ? rec.data.saves : []);
+    const quickSlot = () => (rec.data.quick && Array.isArray(rec.data.quick.paths) ? rec.data.quick : null);
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const clonePaths = (paths) => JSON.parse(JSON.stringify(paths));
+    const when = (at) => {
+      const d = new Date(at || Date.now());
+      const pad = (v) => String(v).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
+        d.getMinutes(),
+      )}`;
     };
-    showCount();
+
+    let flashTimer;
+    const flash = (text) => {
+      hint.textContent = text;
+      window.clearTimeout(flashTimer);
+      flashTimer = window.setTimeout(() => {
+        hint.textContent = HINT;
+      }, 2200);
+    };
+
+    /** Put a slot's paths back on the desktop, working the icons out from scratch. */
+    const loadSlot = async (paths, label) => {
+      if (!Array.isArray(paths) || paths.length === 0) {
+        flash("that slot has no paths");
+        return;
+      }
+      api.log(`trail ${id}: loading ${label} — ${plural(paths.length, "trail")}`);
+      await openMode("multiple", { silent: true, paths });
+    };
+
+    /** A little picture of the paths, so a slot can be recognised at a glance. */
+    const thumbnail = async (paths) => {
+      try {
+        const area = await api.monitorArea();
+        const W = 210;
+        const H = 118;
+        const cv = document.createElement("canvas");
+        cv.width = W * 2; // a hair of resolution for a hi-dpi desktop
+        cv.height = H * 2;
+        const c = cv.getContext("2d");
+        if (!c) return "";
+        c.scale(2, 2);
+        c.fillStyle = "#0c0b16";
+        c.fillRect(0, 0, W, H);
+        const k = Math.min(W / (area.w || 1), H / (area.h || 1));
+        const ox = (W - (area.w || 0) * k) / 2;
+        const oy = (H - (area.h || 0) * k) / 2;
+        c.lineWidth = 2;
+        c.lineJoin = "round";
+        c.lineCap = "round";
+        c.strokeStyle = "rgba(236,233,255,.85)";
+        c.beginPath();
+        for (const t of paths) {
+          t.forEach((p, i) => {
+            const x = ox + (p.x - (area.x || 0)) * k;
+            const y = oy + (p.y - (area.y || 0)) * k;
+            if (i === 0) c.moveTo(x, y);
+            else c.lineTo(x, y);
+          });
+        }
+        c.stroke();
+        return cv.toDataURL("image/png");
+      } catch {
+        return ""; // no picture is better than no slot
+      }
+    };
+
+    const writeSlot = async (name, into) => {
+      const paths = trails();
+      if (paths.length === 0) {
+        flash("nothing arranged yet — draw a path first");
+        return;
+      }
+      const entry = { name, at: Date.now(), paths: clonePaths(paths), thumb: await thumbnail(paths) };
+      if (into === "quick") rec.data.quick = entry;
+      else rec.data.saves = [...saves(), entry];
+      await api.record.save(rec);
+      api.log(`trail ${id}: saved ${name} — ${plural(paths.length, "trail")}`);
+      flash(`saved ${name}`);
+      if (pageOpen) renderPage();
+    };
+
+    const quickSave = () => void writeSlot("quick", "quick");
+    const quickLoad = () => {
+      const q = quickSlot();
+      if (!q) {
+        flash("nothing quick-saved yet");
+        return;
+      }
+      closePage();
+      void loadSlot(q.paths, q.name);
+    };
+
+    // ---------- naming a slot ----------
+
+    let asking = false;
+    const askName = () => {
+      if (asking || drawing) return;
+      if (trails().length === 0) {
+        flash("nothing arranged yet — draw a path first");
+        return;
+      }
+      asking = true;
+      const wrap = document.createElement("div");
+      wrap.className = "tr-ask";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "tr-input";
+      input.maxLength = 40;
+      input.placeholder = "name this arrangement";
+      input.value = `trail ${saves().length + 1}`;
+      const done = async (keep) => {
+        if (!asking) return;
+        asking = false;
+        const value = input.value.trim();
+        wrap.remove();
+        hint.style.display = "";
+        if (keep && value) await writeSlot(value, "slot");
+      };
+      const ok = button("name it", "compact", () => void done(true));
+      const no = button("cancel", "ghost compact", () => void done(false));
+      input.addEventListener("keydown", (e) => {
+        // the surface listens on the window in the capture phase: typing here is not a
+        // mode's business
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void done(true);
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          void done(false);
+        }
+      });
+      wrap.append(input, ok, no);
+      hint.style.display = "none";
+      body.insertBefore(wrap, row);
+      input.focus();
+      input.select();
+    };
+
+    // ---------- the page of slots ----------
+
+    let pageEl;
+    let pageOpen = false;
+    let page = 1;
+
+    const pageCount = () => Math.max(1, Math.ceil(saves().length / PAGE));
+
+    /** A page number of 0 or less is not a page; past the end means the last page. */
+    const goToPage = (n) => {
+      page = n < 1 ? 1 : Math.min(n, pageCount());
+      if (pageOpen) renderPage();
+    };
+
+    const closePage = () => {
+      if (!pageOpen) return;
+      pageOpen = false;
+      window.removeEventListener("keydown", onPageKey, true);
+      if (pageEl) pageEl.remove();
+      pageEl = undefined;
+      panel.style.display = "";
+      api.setSize(id, rec.data.w || PANEL.w, rec.data.h || PANEL.h);
+      api.setPos(id, rec.x, rec.y);
+    };
+
+    const onPageKey = (e) => {
+      if (e.key !== "Escape") return;
+      // This listens on the window in the capture phase, so it runs *before* a field
+      // inside the page sees the key: without this, escape while renaming a slot (or
+      // editing the page number) would close the page instead of cancelling the edit.
+      const active = document.activeElement;
+      if (active && active.tagName === "INPUT") return;
+      closePage();
+    };
+
+    const renderPage = () => {
+      if (!pageOpen || !pageEl) return;
+      const cards = pageEl.querySelector(".tr-cards");
+      const list = saves();
+      const start = (page - 1) * PAGE;
+      cards.innerHTML = "";
+      for (let i = 0; i < PAGE; i++) {
+        const entry = list[start + i];
+        const card = document.createElement("div");
+        card.className = `tr-card${entry ? "" : " empty"}`;
+        // A div, not a button: a <button> treats Enter and Space as its own activation
+        // keys, so a text field nested inside one can never receive a space (and fires
+        // the card's load instead) — reported as "enter or space while renaming loads".
+        const pick = document.createElement("div");
+        pick.className = "tr-pick";
+        pick.setAttribute("role", "button");
+        pick.tabIndex = 0;
+        if (entry && entry.thumb) {
+          const shot = document.createElement("img");
+          shot.className = "tr-thumb";
+          shot.src = entry.thumb;
+          shot.alt = "";
+          pick.append(shot);
+        } else {
+          const blank = document.createElement("span");
+          blank.className = "tr-thumb blank";
+          pick.append(blank);
+        }
+        const name = document.createElement("span");
+        name.className = "tr-card-name";
+        name.textContent = entry ? entry.name : "empty";
+        const meta = document.createElement("span");
+        meta.className = "tr-card-meta";
+        meta.textContent = entry ? `${plural(entry.paths.length, "trail")} · ${when(entry.at)}` : "\u00a0";
+        pick.append(name, meta);
+        // renaming happens on the card itself: the name becomes the input
+        const startRename = () => {
+          if (!name.isConnected || card.querySelector("input.tr-card-input")) return;
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "tr-input tr-card-input";
+          input.maxLength = 40;
+          input.value = entry.name;
+          let done = false;
+          const finish = async (keep) => {
+            if (done) return;
+            done = true;
+            const value = input.value.trim();
+            if (input.isConnected) input.replaceWith(name);
+            if (keep && value && value !== entry.name) {
+              entry.name = value;
+              name.textContent = value;
+              await api.record.save(rec);
+            }
+          };
+          input.addEventListener("keydown", (e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void finish(true);
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              void finish(false);
+            }
+          });
+          input.addEventListener("blur", () => void finish(true));
+          name.replaceWith(input);
+          input.focus();
+          input.select();
+        };
+        if (entry) {
+          pick.title = "Load this arrangement — the icons are worked out again";
+          const load = async () => {
+            const paths = clonePaths(entry.paths);
+            const label = entry.name;
+            closePage();
+            await loadSlot(paths, label);
+          };
+          pick.addEventListener("click", (e) => {
+            if (e.target.closest("input")) return; // a click in the rename field is not a click on the card
+            void load();
+          });
+          pick.addEventListener("keydown", (e) => {
+            if (e.target !== pick) return; // keys belong to the rename field while it is up
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            void load();
+          });
+        } else {
+          pick.setAttribute("aria-disabled", "true");
+        }
+        card.append(pick);
+        if (entry) {
+          const rename = document.createElement("button");
+          rename.type = "button";
+          rename.className = "tr-x tr-edit";
+          rename.textContent = "✎";
+          rename.title = "Rename this slot";
+          rename.addEventListener("click", (e) => {
+            e.stopPropagation();
+            startRename();
+          });
+          card.append(rename);
+          const forget = document.createElement("button");
+          forget.type = "button";
+          forget.className = "tr-x";
+          forget.textContent = "×";
+          forget.title = "Forget this slot";
+          forget.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            rec.data.saves = saves().filter((s) => s !== entry);
+            await api.record.save(rec);
+            if (page > pageCount()) page = pageCount();
+            renderPage();
+          });
+          card.append(forget);
+        }
+        cards.append(card);
+      }
+      pageEl.querySelector(".tr-page-num").value = String(page);
+      pageEl.querySelector(".tr-page-total").textContent = `/ ${pageCount()}`;
+    };
+
+    const openPage = async () => {
+      if (pageOpen || drawing) return;
+      pageOpen = true;
+      page = pageCount(); // a save screen opens at its newest page
+      const area = await api.monitorArea();
+      if (!pageOpen) return;
+      // The record is the truth about where the panel lives and it may have been dragged
+      // since this widget mounted. Without re-reading it, closing the page puts the panel
+      // back at its *mount-time* place — the page would move the widget, which is not a
+      // thing opening a save screen should do.
+      const fresh = await api.record.load(id);
+      if (fresh) {
+        rec.x = fresh.x;
+        rec.y = fresh.y;
+        rec.data = fresh.data || rec.data;
+      }
+      // transient: the slot is stretched to catch the mouse, not moved by the user
+      api.setPos(id, area.x, area.y, { transient: true });
+      api.setSize(id, area.w, area.h);
+      panel.style.display = "none";
+      pageEl = document.createElement("div");
+      pageEl.className = "tr-page";
+      const sheet = document.createElement("div");
+      sheet.className = "tr-sheet";
+      const bar = document.createElement("div");
+      bar.className = "tr-page-bar";
+      const label = document.createElement("span");
+      label.textContent = "saved trails";
+      const shut = document.createElement("button");
+      shut.type = "button";
+      shut.className = "tr-close";
+      shut.textContent = "×";
+      shut.title = "Close";
+      shut.addEventListener("click", closePage);
+      bar.append(label, shut);
+      const cards = document.createElement("div");
+      cards.className = "tr-cards";
+      const foot = document.createElement("div");
+      foot.className = "tr-page-foot";
+      const prev = button("‹", "compact", () => goToPage(page - 1));
+      const next = button("›", "compact", () => goToPage(page + 1));
+      const num = document.createElement("input");
+      num.type = "number";
+      num.min = "1";
+      num.className = "tr-page-num";
+      const total = document.createElement("span");
+      total.className = "tr-page-total";
+      const commit = () => {
+        const raw = parseInt(num.value, 10);
+        goToPage(Number.isFinite(raw) ? raw : 1);
+      };
+      num.addEventListener("change", commit);
+      num.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") commit();
+      });
+      const qs = button("quick save", "compact", quickSave);
+      const ql = button("quick load", "compact", quickLoad);
+      const gap = document.createElement("span");
+      gap.className = "tr-gap";
+      foot.append(prev, num, total, next, gap, qs, ql);
+      sheet.append(bar, cards, foot);
+      pageEl.append(sheet);
+      document.body.append(pageEl);
+      window.addEventListener("keydown", onPageKey, true);
+      renderPage();
+    };
 
     let drawing = false;
 
@@ -211,7 +650,11 @@ export default {
 
     // ---------- drawing mode ----------
 
-    async function openMode(mode) {
+    async function openMode(mode, opts = {}) {
+      // A silent open arranges along paths that are handed in (a slot being loaded) and
+      // shows no surface at all: the page you clicked stays the page you see, and the
+      // icons walk to their new places underneath it.
+      const silent = opts.silent === true;
       if (drawing) return;
       drawing = true;
       singleBtn.disabled = true;
@@ -229,30 +672,38 @@ export default {
       }
       const panelAt = { x: rec.x, y: rec.y };
       const panelSize = { w: rec.data.w || PANEL.w, h: rec.data.h || PANEL.h };
-      // What the desktop already has. In multiple mode it is the context a new path
-      // is drawn against — and it is about to be replaced. In single mode it is *not*
-      // shown at all: a single-mode session replaces the arrangement, so leaving the
-      // old paths painted makes the surface look like it has a second drawing on it,
-      // which is exactly what it looked like.
-      let context = mode === "multiple" ? trails() : [];
+      // What was drawn last time, in desktop coordinates: the paths of the arrangement
+      // already on the desktop. Both modes show it while the surface is idle, and both
+      // drop it the moment a new stroke starts — what is on the surface is what is being
+      // decided now, and a previous path under the new one is just noise.
+      let context = trails();
+      let droppedSaved = false;
       // the paths of this session, in canvas coordinates; the record keeps them in
       // desktop coordinates, where the icons live. Kept apart from `context` until
       // they are committed, so escape is a real cancel.
       let session = [];
       let busy = false;
       let queued = false;
+      // a silent open is handed its paths instead of drawing them: the session becomes
+      // those paths, in canvas coordinates
+      if (silent && Array.isArray(opts.paths)) {
+        session = opts.paths.map((t) => t.map((p) => ({ x: p.x - area.x, y: p.y - area.y })));
+      }
 
       // The panel becomes the desktop: this is what makes floaty report the mouse
       // to this widget at all, since the overlay is click-through outside the
       // widget's own rectangle.
-      api.setPos(id, area.x, area.y);
-      api.setSize(id, area.w, area.h);
-      // The surface is its own thing. The panel — header, hint, count, buttons — goes
-      // away for as long as a mode is open, so what you are looking at is a drawing
-      // surface and not this widget stretched over the desktop. The slot itself stays
-      // (it is what makes the desktop hand us the mouse); it is simply empty, and the
-      // panel comes back exactly as it was when the mode ends.
-      panel.style.display = "none";
+      if (!silent) {
+        // transient: the slot is stretched to catch the mouse, not moved by the user
+        api.setPos(id, area.x, area.y, { transient: true });
+        api.setSize(id, area.w, area.h);
+        // The surface is its own thing. The panel — header, hint, buttons — goes away for
+        // as long as a mode is open, so what you are looking at is a drawing surface and
+        // not this widget stretched over the desktop. The slot itself stays (it is what
+        // makes the desktop hand us the mouse); it is simply empty, and the panel comes
+        // back exactly as it was when the mode ends.
+        panel.style.display = "none";
+      }
 
       const canvas = document.createElement("canvas");
       const dpr = window.devicePixelRatio || 1;
@@ -280,7 +731,9 @@ export default {
       cancelBtn.className = "tr-btn ghost";
       cancelBtn.textContent = "esc";
       doneWrap.append(doneBtn, cancelBtn);
-      document.body.append(canvas, note, doneWrap);
+      // a silent open shows nothing: the nodes exist so the rest of the mode can talk to
+      // them, but they never reach the document
+      if (!silent) document.body.append(canvas, note, doneWrap);
 
       const points = [];
       let stroke = [];
@@ -323,14 +776,15 @@ export default {
         ctx.clearRect(0, 0, area.w, area.h);
         ctx.fillStyle = BACKDROP;
         ctx.fillRect(0, 0, area.w, area.h);
-        // in multiple mode, the paths already arranged are shown faintly: they are
-        // what the new ones replace, and worth drawing against
-        for (const t of context) {
-          strokePath(
-            t.map((p) => ({ x: p.x - area.x, y: p.y - area.y })),
-            "rgba(236,233,255,.2)",
-            false,
-          );
+        // the paths of the arrangement already on the desktop, until a new stroke starts
+        if (!droppedSaved) {
+          for (const t of context) {
+            strokePath(
+              t.map((p) => ({ x: p.x - area.x, y: p.y - area.y })),
+              "rgba(236,233,255,.45)",
+              false,
+            );
+          }
         }
         // and the session's own path dims while a new stroke is being drawn, so there
         // is only ever one drawing on the surface that looks like *the* drawing
@@ -364,6 +818,12 @@ export default {
         } catch {
           /* a pointer that is already gone is not a reason to lose the stroke */
         }
+        // A new drawing retires the last one: the previous path goes the moment this
+        // stroke starts, in either mode. In single mode the session *is* the previous
+        // path — one drawing replaces the arrangement — while in multiple the session is
+        // the work in progress and the earlier strokes stay as part of it.
+        droppedSaved = true;
+        if (mode === "single") session = [];
         paint();
       };
       const onMove = (e) => {
@@ -848,13 +1308,18 @@ export default {
         rec.data.trails = all;
         rec.data.ids = ids;
         await api.record.save(rec);
-        showCount();
         api.log(
           `trail ${id}: arranged ${ids.length} icon(s) along ${all.length} trail(s), longest ${Math.round(
             Math.max(...cumByTrail.map((c) => c[c.length - 1])),
           )}px`,
         );
       };
+
+      // A silent open has nothing left to do but the arranging: the paths came in with
+      // the call, and there is no surface to wait on. The icons are worked out from
+      // scratch, which is the point — a slot holds the paths, not the icons that were
+      // standing on them the day it was saved.
+      if (silent) void arrange({ closeAfter: true });
     }
   },
 

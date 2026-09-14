@@ -155,7 +155,7 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.record.load(id)` | The widget's record: `id`, `kind`, `x`, `y`, `data`. |
 | `api.record.save(rec)` | Persist it. `data` is yours. |
 | `api.enableDrag(el, rec, opts?)` | Make `el` drag the widget around (whole surface, or a title bar) **and keep the position saved**. A press only becomes a drag after ~4px of travel, so clicks still reach your own handlers, and buttons/inputs/the resize grip keep working. |
-| `api.setPos(id, x, y)` | Move the widget (keeps the desktop's hit rects in step). |
+| `api.setPos(id, x, y, {transient})` | Move the widget (keeps the desktop's hit rects in step). `transient: true` says the move is scaffolding — see below. |
 | `api.setSize(id, w, h)` | Resize the widget's slot. |
 | `api.addPinMenu(wrap, getRec, opts?)` | The standard right-click menu for this widget. `opts.rows(api)` adds the plugin's own rows above the standard ones — `row`, `run`, `divider`, `note`, `close`, and `swap` to draw a list in place of the commands (how the live2d model picker works). |
 | `api.addResizeHandle(wrap, rec, minW, minH)` | Bottom-right grip that resizes and saves the record. |
@@ -247,6 +247,47 @@ restart: the overlay's layout pass leaves any record that has a position exactly
 is — off the edge of the screen and overlapping a neighbour included, because the user put
 it there — and only gives a place of its own to a record the backend has never placed
 (one written at 0,0), which is how a freshly scanned icon still lands somewhere clean.
+
+**Save and load** work like a visual novel's save screen, because that is the shape people
+already know: `save` asks for a name, `load` opens a page of slots — nine to a grid page —
+with a page box you can type into and arrows either side (a page number of 0 or less is not
+a page, and anything past the end lands on the last page), and `quick save` / `quick load`
+keep one unnamed slot at each end of the same idea. Slots are never capped; pages go on for
+as long as there is something to put on them. Each card carries its own `✎` and `×` — rename
+in place on the card (Enter keeps it, escape drops it, clicking away keeps it), or forget the
+slot entirely — and the page's escape-to-close handler deliberately ignores the key while a
+field inside the page has focus, since it listens on the window in the capture phase and
+would otherwise close the page out from under a rename.
+
+A slot holds **the paths and nothing else** (`{name, at, paths, thumb}`), and a load works the
+icons out again by running the arrangement on those paths — the same code path the drawing
+modes use, entered "silently" (`openMode(mode, {silent: true, paths})`, which skips the
+surface, the slot resize and the panel hiding, and arranges straight away). That is what
+makes a slot meaningful later: one saved with twenty icons still means something when the
+desktop has eighteen, and one saved before an icon existed still picks that icon up.
+
+`thumb` is a small PNG of the paths, scaled to the monitor's shape and drawn onto a card
+above its name, so a slot is recognised rather than guessed at. A slot saved before
+thumbnails existed shows a hatched blank in its place.
+
+Nothing that stretches the widget's slot over the monitor to catch the mouse — a drawing
+mode, and the page too — may do it with a plain `api.setPos`: the desktop keeps a position
+watcher per widget, and a click inside the stretch ends in a `pointerup`, which is the
+watcher's cue to save the widget's place ~60ms later. It would save `(0,0)`, the top-left
+corner of the slot it was measuring, over the place the user put the panel. Pass
+`{transient: true}` for the stretch, and any later plain `setPos` — the one that puts the
+panel back — clears the flag.
+
+Anything that stretches the widget's slot over the monitor to catch the mouse — a drawing
+mode, and the page too — must **re-read the widget's own record first**, or closing it puts
+the panel back where it was when the plugin mounted instead of where the user left it. The
+page re-reads before it reserves the slot; a page that moves the widget is a page that
+should not have.
+
+The surface shows the previous drawing while it is idle, in **both** modes, and drops it
+the moment a new stroke starts — what is on the surface is what is being decided now. In
+single mode the session *is* the previous path, so it clears on `pointerdown`; in multiple
+the session is the work in progress and the earlier strokes stay part of it.
 
 ## Built-in plugins
 
