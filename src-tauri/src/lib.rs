@@ -356,7 +356,6 @@ fn default_sysmon_interval() -> f64 {
     1000.0
 }
 
-
 fn default_animated_ratio() -> f64 {
     100.0
 }
@@ -500,9 +499,23 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             }
         }
         for (label, win) in app.webview_windows() {
-            if label.starts_with("widget-") {
-                if let Ok(hwnd) = win.hwnd() {
+            // the overlays were handled above, and they are pinned through
+            // `apply_overlay_desktop_pin` (which is also what registers their
+            // click-through region)
+            if label == "desktop-overlay" || label == "top-overlay" {
+                continue;
+            }
+            if let Ok(hwnd) = win.hwnd() {
+                if is_desktop_layer_label(&label) {
                     desktop_pin::apply_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+                } else if desktop_pin::restore_ordinary_window(hwnd.0 as isize) {
+                    // settings, the manager: ordinary windows. A settings save is
+                    // frequent enough to repair one that an earlier pass pinned,
+                    // and saying so is what makes the repair visible in the log.
+                    log_line(
+                        &app,
+                        &format!("settings: {label} handed back to the shell as an ordinary window"),
+                    );
                 }
             }
         }
@@ -631,6 +644,7 @@ mod desktop_pin {
             uFlags: u32,
         ) -> isize;
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        pub fn IsWindowVisible(hWnd: isize) -> i32;
         pub fn SetWindowSubclass(
             hWnd: isize,
             pfnSubclass: unsafe extern "system" fn(
@@ -727,6 +741,86 @@ mod desktop_pin {
         }
     }
 
+    /// The inverse of `delete_taskbar_tab`: put the window's taskbar button back.
+    pub fn add_taskbar_tab(hwnd: isize) {
+        unsafe {
+            // CLSID_TaskbarList {56FDF342-FD6D-11d0-958A-006097C9A090}
+            let clsid: [u8; 16] = [
+                0x42, 0xF3, 0xFD, 0x56, 0x6D, 0xFD, 0xd0, 0x11, 0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9,
+                0xA0, 0x90,
+            ];
+            // IID_ITaskbarList {56FDF344-FD6D-11d0-958A-006097C9A090}
+            let iid: [u8; 16] = [
+                0x44, 0xF3, 0xFD, 0x56, 0x6D, 0xFD, 0xd0, 0x11, 0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9,
+                0xA0, 0x90,
+            ];
+            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            if CoCreateInstance(
+                clsid.as_ptr(),
+                std::ptr::null_mut(),
+                1,
+                iid.as_ptr(),
+                &mut ptr,
+            ) == 0
+                && !ptr.is_null()
+            {
+                let tbl = ptr as *mut ITaskbarList;
+                let vtbl = &*(*tbl).lpVtbl;
+                let _ = (vtbl.HrInit)(ptr);
+                let _ = (vtbl.AddTab)(ptr, hwnd);
+                let _ = (vtbl.Release)(ptr);
+            }
+        }
+    }
+
+    /// Hand a window back to the shell as an ordinary app window.
+    ///
+    /// `apply_desktop_pin` marks a window a tool window and deletes its taskbar
+    /// tab, which is what the overlays and the one-window-per-widget floaties
+    /// want, and exactly what breaks everything else the app opens: a tool
+    /// window with no tab cannot be minimized and come back, never joins
+    /// Alt-Tab, and — with the desktop shell as its owner — drags its own title
+    /// bar around behind every other window. The settings window is an ordinary
+    /// window, so any pass that walks *every* label has to give it back.
+    ///
+    /// Returns true when it actually changed something, so a caller can say so
+    /// in the log instead of repairing silently.
+    pub fn restore_ordinary_window(hwnd: isize) -> bool {
+        if hwnd == 0 {
+            return false;
+        }
+        unsafe {
+            let mut changed = false;
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let wanted = (ex_style & !WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW;
+            if wanted != ex_style {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
+                SetWindowPos(
+                    hwnd,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+                changed = true;
+            }
+            // no owner: an owned window follows its owner's z-order and cannot be
+            // activated on its own
+            if GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT) != 0 {
+                SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+                changed = true;
+            }
+            // the tab comes back only for a window that is on screen, so the
+            // hidden manager window never puts one up for nothing
+            if changed && IsWindowVisible(hwnd) != 0 {
+                add_taskbar_tab(hwnd);
+            }
+            changed
+        }
+    }
+
     pub fn to_wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
     }
@@ -773,16 +867,27 @@ mod desktop_pin {
         progman
     }
 
+    /// `ref_data` for windows the desktop-layer policy applies to. Ordinary
+    /// windows get `0` and the policy leaves them alone.
+    const DESKTOP_LAYER_REF: usize = 1;
+
     unsafe extern "system" fn widget_subclass_proc(
         hwnd: isize,
         msg: u32,
         wparam: usize,
         lparam: isize,
         _id_subclass: usize,
-        _ref_data: usize,
+        ref_data: usize,
     ) -> isize {
+        // The desktop-layer policy lives in this one procedure, and it is only
+        // meant for the windows that *are* the desktop. Applied to the settings
+        // window it is the "settings is broken" bug: the first drag step stripped
+        // its taskbar button (this runs on every WM_WINDOWPOSCHANGING, and a move
+        // is a stream of them) and the minimize button did nothing.
+        let desktop_layer = ref_data == DESKTOP_LAYER_REF;
+
         // Enforce WS_EX_TOOLWINDOW is preserved so taskbar never shows the window
-        if msg == WM_WINDOWPOSCHANGING {
+        if desktop_layer && msg == WM_WINDOWPOSCHANGING {
             let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             if (ex_style & WS_EX_TOOLWINDOW) == 0 || (ex_style & WS_EX_APPWINDOW) != 0 {
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW);
@@ -815,7 +920,7 @@ mod desktop_pin {
             }
         }
 
-        if STAY_ON_DESKTOP_ACTIVE.load(Ordering::Relaxed) {
+        if desktop_layer && STAY_ON_DESKTOP_ACTIVE.load(Ordering::Relaxed) {
             // Block SC_MINIMIZE syscommand
             if msg == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_MINIMIZE {
                 return 0;
@@ -861,10 +966,19 @@ mod desktop_pin {
     /// chain — and then the display-state notification is delivered into
     /// nothing. Installing it again once the window is up (the first heartbeat)
     /// is what makes the wake-up recovery reliable.
-    pub fn install_subclass(hwnd: isize) {
+    /// Arm the window procedure on a window. `desktop_layer` decides which
+    /// policy the procedure enforces for it: `true` keeps the tool-window style
+    /// on and swallows minimize (the overlays, the one-window-per-widget
+    /// floaties), `false` leaves an ordinary window alone.
+    pub fn install_subclass(hwnd: isize, desktop_layer: bool) {
         if hwnd != 0 {
             unsafe {
-                SetWindowSubclass(hwnd, widget_subclass_proc, SUBCLASS_ID, 0);
+                SetWindowSubclass(
+                    hwnd,
+                    widget_subclass_proc,
+                    SUBCLASS_ID,
+                    if desktop_layer { DESKTOP_LAYER_REF } else { 0 },
+                );
             }
         }
     }
@@ -876,7 +990,7 @@ mod desktop_pin {
             crate::watch_display_state(hwnd);
 
             // Register subclass (idempotent if already registered)
-            install_subclass(hwnd);
+            install_subclass(hwnd, true);
 
             if stay_on_desktop {
                 let desktop_hwnd = get_desktop_shell_hwnd();
@@ -1402,14 +1516,30 @@ fn recover_windows(reason: &str) {
                 desktop_pin::apply_overlay_desktop_pin(label, hwnd.0 as isize, false);
                 // a wake-up can leave it buried under other topmost windows
                 raise_top_layer(&app);
-            } else {
+            } else if is_desktop_layer_label(label) {
                 desktop_pin::apply_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+            } else if desktop_pin::restore_ordinary_window(hwnd.0 as isize) {
+                // The settings window is a normal window and has to stay one:
+                // this pass used to desktop-pin *every* label it did not
+                // recognise, which took the settings window's taskbar button
+                // away and gave it the desktop shell as its owner — after which
+                // minimizing it lost it and dragging it slid about behind the
+                // other windows. Give it back, and say so.
+                log_line(
+                    &app,
+                    &format!("power: {label} handed back to the shell as an ordinary window"),
+                );
             }
             // Raw Win32, on purpose: this is what wakes the compositor and makes
             // Chromium re-evaluate occlusion. Going through the webview's own API
             // queues behind the very renderer we are trying to wake — measured: a
-            // reload was accepted in 0.4s and executed 29s later.
-            nudge_bounds(hwnd.0 as isize);
+            // reload was accepted in 0.4s and executed 29s later. Only the
+            // desktop layer needs it: an ordinary window is not composited
+            // against the desktop, and a size change mid-drag would fight the
+            // user moving it.
+            if is_desktop_layer_label(label) {
+                nudge_bounds(hwnd.0 as isize);
+            }
         }
         // Decide per window and only touch the ones that look broken: a page that
         // reported in shortly before the wake-up and said it was visible survived
@@ -1607,10 +1737,13 @@ fn floaty_heartbeat(label: String, visibility: Option<String>, app: AppHandle) {
         );
         // The window is definitely finished being created by now: arm the resume
         // handling on every window and re-home the display-state notification if
-        // the window that held it is gone.
-        for (_, w) in app.webview_windows() {
+        // the window that held it is gone. The flag matters: the desktop-layer
+        // policy this arms is only for the windows that are the desktop —
+        // arming it on the settings window is what made its minimize button do
+        // nothing and stripped its taskbar button on the first drag.
+        for (label, w) in app.webview_windows() {
             if let Ok(hwnd) = w.hwnd() {
-                desktop_pin::install_subclass(hwnd.0 as isize);
+                desktop_pin::install_subclass(hwnd.0 as isize, is_desktop_layer_label(&label));
                 watch_display_state(hwnd.0 as isize);
             }
         }
@@ -1766,6 +1899,19 @@ fn is_overlay_running(app: &AppHandle) -> bool {
 
 fn widget_label(id: &str) -> String {
     format!("widget-{id}")
+}
+
+/// Which windows belong to the desktop layer: the two overlays, and floaties
+/// drawn as their own windows.
+///
+/// Those are the ones that lose their taskbar button on purpose — they *are*
+/// the desktop. Every other window the app opens (the settings window, the
+/// hidden manager) is an ordinary window: it keeps its decorations, its taskbar
+/// button and its minimize behaviour, and a pass that walks every label has to
+/// say so, or it turns the settings window into a taskbar-less tool window that
+/// cannot be minimized back or moved properly.
+fn is_desktop_layer_label(label: &str) -> bool {
+    label == "desktop-overlay" || label == "top-overlay" || label.starts_with("widget-")
 }
 
 /// Extensions the Windows shell launches directly. Anything else that is not a
@@ -2139,6 +2285,14 @@ fn show_settings(app: &AppHandle) -> tauri::Result<()> {
         log_line(app, "settings window exists, showing");
         w.show()?;
         w.set_focus()?;
+        // An earlier session's desktop-layer pass could have left it a taskbar-less
+        // tool window; opening it is the moment to hand it back.
+        #[cfg(windows)]
+        if let Ok(hwnd) = w.hwnd() {
+            if desktop_pin::restore_ordinary_window(hwnd.0 as isize) {
+                log_line(app, "settings: handed back to the shell as an ordinary window");
+            }
+        }
         return Ok(());
     }
     log_line(app, "creating settings window");
@@ -3044,9 +3198,10 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
 
     log_line(app, &format!("upgrade_low_res_icons: batch resolving {} icons", all_paths.len()));
 
-    let icon_map = tauri::async_runtime::spawn_blocking(move || {
-        resolve_icons_batch(&all_paths, true)
-    }).await.unwrap_or_default();
+    let icon_map =
+        tauri::async_runtime::spawn_blocking(move || resolve_icons_batch(&all_paths, true))
+            .await
+            .unwrap_or_default();
 
     let mut changed = false;
     {
@@ -3129,11 +3284,10 @@ async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Resul
         return Ok(());
     }
 
-    let icon_map = tauri::async_runtime::spawn_blocking(move || {
-        resolve_icons_batch(&needed, false)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let icon_map =
+        tauri::async_runtime::spawn_blocking(move || resolve_icons_batch(&needed, false))
+            .await
+            .map_err(|e| e.to_string())?;
 
     let changed = {
         let state = app.state::<AppState>();
@@ -3251,7 +3405,13 @@ fn apply_plugin_visibility(app: &AppHandle, kind: &str, enabled: bool) {
         .state::<AppState>()
         .0
         .lock()
-        .map(|g| g.widgets.values().filter(|r| r.kind == kind).map(|r| r.id.clone()).collect())
+        .map(|g| {
+            g.widgets
+                .values()
+                .filter(|r| r.kind == kind)
+                .map(|r| r.id.clone())
+                .collect()
+        })
         .unwrap_or_default();
     for wid in ids {
         if enabled {
@@ -5419,6 +5579,20 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The desktop-layer window policy — no taskbar button, swallowed minimize,
+    /// the tool-window style re-applied on every move — belongs to the windows
+    /// that *are* the desktop. Applying it to the settings window is the bug
+    /// this pins shut: its minimize button did nothing and the first drag step
+    /// stripped its taskbar button.
+    #[test]
+    fn the_desktop_layer_is_the_overlays_and_the_floatie_windows() {
+        assert!(is_desktop_layer_label("desktop-overlay"));
+        assert!(is_desktop_layer_label("top-overlay"));
+        assert!(is_desktop_layer_label("widget-app-1"));
+        assert!(!is_desktop_layer_label("settings"));
+        assert!(!is_desktop_layer_label("manager"));
+    }
 
     /// This decides whether a floatie may be taken off the desktop, so it has to
     /// be strict: an entry *of the root itself*, compared without case.
