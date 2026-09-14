@@ -576,14 +576,33 @@ export async function confirmRemoveDialog(what: string, kind: string): Promise<b
   }
 }
 
+/**
+ * Suffixes that say what a launcher *is*, not what it is called: the shortcut
+ * files Windows puts on the desktop. Explorer hides these, so a tile that reads
+ * "Zoom Workplace.lnk" is repeating an implementation detail — and since app
+ * icons became real shortcuts, every one of them carries one.
+ *
+ * Deliberately a whitelist rather than "strip any extension": a file icon keeps
+ * its suffix, because there it is the point (a .zip is not a .pdf).
+ */
+const LAUNCH_SUFFIX = /\.(lnk|url|exe|bat|cmd|com|msi|appref-ms|ps1|scr|jar)$/i;
+
+/** The caption under an icon — `Arc.lnk` reads as `Arc`. The stored name is
+ *  untouched: tooltips and the settings list still show the real file. */
+export function displayName(name: string): string {
+  const stripped = name.replace(LAUNCH_SUFFIX, "");
+  return stripped || name;
+}
+
 /** Short label for a record: its name plus the path it points at — through
  *  `pathOf`, so a widget that happens to store its own `target` (the countdown's
  *  date) is not described as if that were a file. */
 export function describeForConfirm(rec: WidgetRecord): string {
-  const name =
+  const raw =
     typeof rec.data["name"] === "string" && (rec.data["name"] as string)
       ? (rec.data["name"] as string)
       : rec.id;
+  const name = displayName(raw);
   const target = pathOf(rec);
   return target ? `${name}\n${target}` : name;
 }

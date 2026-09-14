@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, displayName, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -288,7 +288,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
         }
         const lab = document.createElement("span");
         lab.className = "flabel";
-        lab.textContent = it.name;
+        lab.textContent = displayName(it.name);
         b.append(lab);
         // drag an item out past the folder boundaries to unfloat it as its own icon
         b.addEventListener("pointerdown", (e) => {

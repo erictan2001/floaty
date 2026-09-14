@@ -8,6 +8,7 @@ import {
   applyFloatieAnimation,
   enforceDesktopLayer,
   currentSettings,
+  displayName,
   iconIsMissing,
   isOverlayMode,
   loadRecord,
@@ -199,7 +200,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       : "app";
     const ch = (nm.trim()[0] ?? "?").toUpperCase();
     letter.textContent = ch;
-    nameEl.textContent = nm;
+    nameEl.textContent = displayName(nm);
+    // the tooltip and the gradient keep the stored name: the colour of an
+    // existing icon must not shift, and the real file is one hover away
     nameEl.title = nm;
     const [g1, g2] = gradientFor(nm);
     // bubble toggle: colored gradient tile on, bare floating icon off.
