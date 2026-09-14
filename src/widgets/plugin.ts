@@ -22,7 +22,7 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import * as floaty from "./lib";
-import type { FloatSettings, MonitorArea, WidgetRecord } from "./lib";
+import type { FloatSettings, MonitorArea, PinMenuOptions, WidgetRecord } from "./lib";
 import { installedEntries, loadPluginManifest } from "./pluginManifest";
 import { notePlugin } from "./note";
 import { clockPlugin } from "./clock";
@@ -70,8 +70,13 @@ export interface WidgetApi {
   setPos: (id: string, x: number, y: number) => void;
   /** Resize the widget slot. */
   setSize: (id: string, w: number, h: number) => void;
-  /** Right-click menu with the standard floaty rows for this widget. */
-  addPinMenu: (wrap: HTMLElement, getRec: () => WidgetRecord | undefined) => void;
+  /** Right-click menu with the standard floaty rows for this widget. Pass
+   *  `options.rows` to add the plugin's own rows (see `PinMenuApi`). */
+  addPinMenu: (
+    wrap: HTMLElement,
+    getRec: () => WidgetRecord | undefined,
+    options?: PinMenuOptions,
+  ) => void;
   /** Bottom-right drag grip that resizes and persists the record. */
   addResizeHandle: (wrap: HTMLElement, rec: WidgetRecord, minW: number, minH: number) => void;
   /** Remove the widget (asks first when the user enabled confirmation). */

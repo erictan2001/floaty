@@ -66,21 +66,44 @@ export default {
       if (editing) return;
       ev.stopPropagation();
       editing = true;
+      const before = typeof rec.data.target === "string" ? rec.data.target : "";
       const input = document.createElement("input");
       input.type = "datetime-local";
       input.className = "cd-input";
-      if (rec.data.target) input.value = String(rec.data.target).slice(0, 16);
-      const commit = async () => {
+      if (before) input.value = before.slice(0, 16);
+
+      // A whole datetime, or nothing: while a segment is being edited Chromium
+      // reports the value with that segment blanked ("2026--20T10:00"), and an
+      // empty or half-typed value must never become the target.
+      const complete = (v) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(v);
+
+      // Editing applies the value but keeps the input open. Chromium fires
+      // `change` on the *first* segment edit when the field already held a
+      // complete value, so treating `change` as "done" removed the input under
+      // the first keystroke (and stored a blank target). The input is only torn
+      // down when the user leaves it: Enter, or clicking away (blur).
+      const apply = async () => {
+        if (!editing || !complete(input.value) || input.value === rec.data.target) return;
+        rec.data.target = input.value;
+        await api.record.save(rec);
+        render();
+      };
+      const finish = async (cancel) => {
+        if (!editing) return;
         editing = false;
-        rec.data.target = input.value || "";
+        if (cancel) rec.data.target = before;
+        else if (!input.value) rec.data.target = ""; // cleared on purpose
+        else if (complete(input.value)) rec.data.target = input.value;
         await api.record.save(rec);
         input.remove();
         render();
       };
-      input.addEventListener("change", commit);
-      input.addEventListener("blur", commit);
+      input.addEventListener("input", () => void apply());
+      input.addEventListener("change", () => void apply());
+      input.addEventListener("blur", () => void finish(false));
       input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") void commit();
+        if (e.key === "Enter") void finish(false);
+        if (e.key === "Escape") void finish(true);
       });
       wrap.append(input);
       input.focus();

@@ -57,6 +57,9 @@ const FALLBACK_SIZE: Size = { w: 100, h: 100 };
 
 const entries = new Map<string, PluginManifestEntry>();
 let pending: Promise<void> | undefined;
+/** True once the backend has answered `floaty_plugins`. The key guess in
+ *  `pathOf` is only for the milliseconds before this. */
+let arrived = false;
 
 function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -70,6 +73,7 @@ export function loadPluginManifest(): Promise<void> {
   pending ??= invoke<PluginManifestEntry[]>("floaty_plugins")
     .then((list) => {
       for (const entry of list) entries.set(entry.id, entry);
+      arrived = true;
     })
     .catch((err: unknown) => {
       // A missing manifest must not take the overlay down; the fallbacks below
@@ -115,14 +119,25 @@ export function isDesktopItem(kind: string): boolean {
 }
 
 /**
- * The on-disk path a floatie points at. Desktop items keep it under the key the
- * manifest names ("target" for one item, "path" for a folder); until the
- * manifest has arrived we still find it by looking at both keys, so a menu that
- * opens in the first milliseconds behaves.
+ * The on-disk path a floatie points at. A kind the manifest calls a desktop item
+ * keeps it under the key the manifest names ("target" for one item, "path" for a
+ * folder), and no other kind has one at all.
+ *
+ * The guess below runs only until the manifest has arrived, so a menu that opens
+ * in the first milliseconds still behaves. It must never run for a kind the
+ * manifest *has* answered about: the countdown example stores its date under
+ * `target`, and guessing turned that date into a path — the widget then got the
+ * file/folder menu (Open, Rename, Delete (Recycle Bin)) and its removal tried to
+ * recycle a datetime.
  */
 export function pathOf(rec: WidgetRecord): string {
-  const key = desktopItemFor(rec.kind)?.path_key;
-  const value = key ? rec.data[key] : rec.data["target"] ?? rec.data["path"];
+  const item = desktopItemFor(rec.kind);
+  if (item) {
+    const value = rec.data[item.path_key];
+    return typeof value === "string" ? value : "";
+  }
+  if (arrived) return "";
+  const value = rec.data["target"] ?? rec.data["path"];
   return typeof value === "string" ? value : "";
 }
 

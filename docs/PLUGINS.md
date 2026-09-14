@@ -140,7 +140,7 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.enableDrag(el, rec, opts?)` | Make `el` drag the widget around (whole surface, or a title bar) **and keep the position saved**. A press only becomes a drag after ~4px of travel, so clicks still reach your own handlers, and buttons/inputs/the resize grip keep working. |
 | `api.setPos(id, x, y)` | Move the widget (keeps the desktop's hit rects in step). |
 | `api.setSize(id, w, h)` | Resize the widget's slot. |
-| `api.addPinMenu(wrap, getRec)` | The standard right-click menu for this widget. |
+| `api.addPinMenu(wrap, getRec, opts?)` | The standard right-click menu for this widget. `opts.rows(api)` adds the plugin's own rows above the standard ones — `row`, `run`, `divider`, `note`, `close`, and `swap` to draw a list in place of the commands (how the live2d model picker works). |
 | `api.addResizeHandle(wrap, rec, minW, minH)` | Bottom-right grip that resizes and saves the record. |
 | `api.removeSelf(rec)` | Remove the widget, asking first when the user enabled confirmation. |
 | `api.settings()` | Current global settings (`gravity`, `bounce`, `pet_speed`, …). |

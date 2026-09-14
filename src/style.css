@@ -705,6 +705,11 @@ body {
 .pin-btn.danger:hover { background: rgba(244, 63, 94, 0.18); }
 .pin-sep { height: 1px; margin: 5px 6px; background: rgba(255, 255, 255, 0.14); }
 .pin-note { font-size: 11px; font-weight: 600; color: #a7f3d0; padding: 4px 10px 2px; }
+/* scrolling list inside the menu (the live2d model picker) */
+.pin-list { max-height: 320px; overflow: auto; overscroll-behavior: contain; }
+.pin-list .pin-row { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.pin-btn.current { color: #a7f3d0; }
+.pin-btn.current::after { content: " ✓"; }
 .pin-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; font-weight: 600; color: #f2f0ff; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 8px; padding: 6px 8px; outline: none; }
 .fminis {
   display: grid;

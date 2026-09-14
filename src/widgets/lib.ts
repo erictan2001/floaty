@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { desktopItemFor, isDesktopItem, pathOf } from "./pluginManifest";
+import { desktopItemFor, pathOf } from "./pluginManifest";
 import { listen } from "@tauri-apps/api/event";
 import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 
@@ -526,18 +526,15 @@ export async function confirmRemoveDialog(what: string, kind: string): Promise<b
   }
 }
 
-/** Short label for a record: its name plus the path it points at. */
+/** Short label for a record: its name plus the path it points at — through
+ *  `pathOf`, so a widget that happens to store its own `target` (the countdown's
+ *  date) is not described as if that were a file. */
 export function describeForConfirm(rec: WidgetRecord): string {
   const name =
     typeof rec.data["name"] === "string" && (rec.data["name"] as string)
       ? (rec.data["name"] as string)
       : rec.id;
-  const target =
-    typeof rec.data["target"] === "string"
-      ? (rec.data["target"] as string)
-      : typeof rec.data["path"] === "string"
-        ? (rec.data["path"] as string)
-        : "";
+  const target = pathOf(rec);
   return target ? `${name}\n${target}` : name;
 }
 
@@ -553,14 +550,24 @@ export async function removeSelf(rec: WidgetRecord): Promise<void> {
   }
   try {
     // Desktop items are deleted on disk (the backend sends them to the Recycle
-    // Bin); widgets that are not desktop items only stop floating. Which is
-    // which comes from the plugin manifest, not from a list kept here.
+    // Bin); widgets that are not desktop items — and desktop items whose record
+    // has no path yet, such as a folder just made by grouping — only stop
+    // floating. Which is which comes from the plugin manifest, not from a list
+    // kept here.
     if (hasDesktopPath(rec)) {
       await invoke<string>("floaty_delete", { id: rec.id });
     } else {
       await invoke("floaty_remove", { id: rec.id });
     }
-  } catch {
+  } catch (err) {
+    // A refusal from the backend must not take the window down: in the overlay
+    // that window *is* the desktop, so one pathless folder used to close every
+    // widget at once (the log said nothing, the desktop just went empty).
+    // Closing is only a way out for a window of this widget's own.
+    void invoke("floaty_log", {
+      msg: `[self] removing ${rec.id} (${rec.kind}) failed: ${String(err)}`,
+    }).catch(() => undefined);
+    if (isOverlayMode()) return;
     await appWin.close().catch(() => undefined);
   }
 }
@@ -836,9 +843,49 @@ export function addResizeHandle(
 
 // ---------- pin-on-top context menu ----------
 
+/**
+ * What a plugin can add to its own widget's right-click menu.
+ *
+ * The standard rows (file operations, pin on top, removal) are floaty's
+ * business; a plugin's own rows are the plugin's, and it is handed this in
+ * `addPinMenu`'s `rows` option.
+ */
+export interface PinMenuApi {
+  /** A row that runs `fn` and closes the menu. */
+  run: (label: string, fn: () => unknown) => void;
+  /** A bare row: the plugin attaches its own click handler, and decides whether
+   *  the menu closes. */
+  row: (label: string) => HTMLElement;
+  /** Rule between groups of rows. */
+  divider: () => void;
+  /** Short line at the top of the menu, e.g. "model changed". */
+  note: (msg: string) => void;
+  /** Remove the menu (and its hit rect). */
+  close: () => void;
+  /**
+   * Keep the menu mounted but draw something else in it.
+   *
+   * This is how a row that needs a list replaces the commands instead of
+   * stacking a second popup on top of them (Rename… swaps in an input, the
+   * live2d model picker a scrolling list). `fill` gets the menu to empty and
+   * `done` to remove it when the choice is made.
+   */
+  swap: (fill: (body: HTMLElement, done: () => void) => void) => void;
+}
+
+export interface PinMenuOptions {
+  /** Rows for this widget, drawn above the standard ones. */
+  rows?: (api: PinMenuApi) => void;
+}
+
 /** Right-click menu with a per-widget pin-on-top toggle. Applies instantly
- * and persists in the record; everything defaults to the desktop layer. */
-export function addPinMenu(wrap: HTMLElement, getRec: () => WidgetRecord | undefined): void {
+ * and persists in the record; everything defaults to the desktop layer.
+ * `options.rows` lets a plugin add its own rows to its widget's menu. */
+export function addPinMenu(
+  wrap: HTMLElement,
+  getRec: () => WidgetRecord | undefined,
+  options?: PinMenuOptions,
+): void {
   const cur = getRec();
   if (cur && cur.data["on_top"] === true) {
     void appWin.setAlwaysOnTop(true).catch(() => undefined);
@@ -890,6 +937,23 @@ export function addPinMenu(wrap: HTMLElement, getRec: () => WidgetRecord | undef
       hr.className = "pin-sep";
       menu.append(hr);
     };
+
+    // The plugin's own rows go above the standard ones: they are what the
+    // widget is about, and this is the only menu it has.
+    options?.rows?.({
+      run: (label, fn) => {
+        run(label, () => Promise.resolve(fn()));
+      },
+      row: (label) => addRow(label),
+      divider,
+      note,
+      close: closeMenu,
+      swap: (fill) => {
+        menu.textContent = "";
+        fill(menu, closeMenu);
+        scheduleHitRectsUpdate();
+      },
+    });
 
     // Files, folders and shortcut floaties get the desktop's own operations;
     // which kinds those are is the manifest's business, not this file's.
@@ -957,13 +1021,18 @@ export function addPinMenu(wrap: HTMLElement, getRec: () => WidgetRecord | undef
 }
 
 /**
- * True when the floatie stands for something on disk, so removing it should
+ * True when this record points at something on disk, so removing it should
  * delete for real (through the Recycle Bin) instead of only un-floating it.
- * The manifest answers for the kind; if it has not arrived yet, a record that
- * carries a path still counts, so removal never turns into a silent no-op.
+ *
+ * `pathOf` answers both halves: it is "" for a kind the manifest does not call a
+ * desktop item, and "" for a record of such a kind that carries no path. Asking
+ * about the *kind* alone (which is what this used to do) sent a folder made
+ * in-app by grouping — a folder with no path until it is filled — to
+ * `floaty_delete`, and the backend's "this folder has no path" is what the
+ * removal path below then treated as a failure.
  */
 function hasDesktopPath(rec: WidgetRecord): boolean {
-  return isDesktopItem(rec.kind) || pathOf(rec) !== "";
+  return pathOf(rec) !== "";
 }
 
 /** Inline rename, replacing the menu with an input pre-filled with the name. */

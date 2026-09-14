@@ -4,6 +4,9 @@ import * as PIXI from "pixi.js";
 import "@pixi/unsafe-eval";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
 import { BASE_H, BASE_W, boxFor, fitInside, maxScaleFor, scaleForBox } from "./live2dBounds";
+// live2dPlugin imports this module lazily, so this is not a cycle in practice:
+// by the time a widget mounts, the plugin module is fully evaluated.
+import { addModelMenuRow } from "./live2dPlugin";
 
 // Expose PIXI and register ticker so pixi-live2d-display can resolve classes
 Live2DModel.registerTicker(PIXI.Ticker);
@@ -455,7 +458,11 @@ export function mountLive2D(root: HTMLElement, id: string): void {
     window.addEventListener("beforeunload", () => {
       if (trackingTimer) window.clearInterval(trackingTimer);
     });
-    addPinMenu(wrap, () => rec);
+    addPinMenu(wrap, () => liveRec, {
+      // the model picker belongs to the widget: switching a model should not
+      // need a trip through the settings window
+      rows: (api) => addModelMenuRow(api, () => liveRec),
+    });
     trackPosition(rec);
 
     try {

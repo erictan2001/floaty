@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ensureLive2DCore } from "./lib";
+import {
+  currentSettings,
+  ensureLive2DCore,
+  refreshSettings,
+  scheduleHitRectsUpdate,
+  type PinMenuApi,
+  type WidgetRecord,
+} from "./lib";
 import type { FloatyPlugin, PluginRecord, PluginSettingsContext, WidgetControlContext } from "./plugin";
 
 export interface Live2dModelEntry {
@@ -35,6 +42,91 @@ export async function scanModels(root: string): Promise<Live2dModelEntry[]> {
   }
   scanListeners.forEach((l) => l());
   return cachedModels;
+}
+
+/** The models to offer in the menu: the ones this window has already scanned,
+ *  or a scan of the settings folder if it has not scanned yet. */
+async function menuModels(): Promise<Live2dModelEntry[]> {
+  if (cachedModels.length > 0) return cachedModels;
+  try {
+    await refreshSettings();
+    const root = currentSettings().live2d_root;
+    return root ? await scanModels(root) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Adds the live2d plugin's own row to its widget's right-click menu: the model
+ * picker, so a model can be swapped without a trip through settings.
+ *
+ * The choice goes through `floaty_set_widget_model` — the same command the
+ * settings dropdown calls — so the record is written once and the widget
+ * reloads from the `floaty-live2d-changed` event it already listens for.
+ * The list replaces the menu's commands in place (`PinMenuApi.swap`) instead of
+ * opening a second popup: there can be hundreds of models.
+ */
+export function addModelMenuRow(api: PinMenuApi, getRec: () => WidgetRecord | undefined): void {
+  const row = api.row("Change model…");
+  row.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const rec = getRec();
+    if (!rec) return;
+    const current = typeof rec.data["model"] === "string" ? (rec.data["model"] as string) : "";
+
+    api.swap((body, done) => {
+      const pick = (models: Live2dModelEntry[]): void => {
+        if (models.length === 0) {
+          const none = document.createElement("div");
+          none.className = "pin-row";
+          none.textContent = "no models found — set a folder in settings";
+          body.append(none);
+          return;
+        }
+        const list = document.createElement("div");
+        list.className = "pin-list";
+        for (const m of models) {
+          const opt = document.createElement("div");
+          opt.className = m.path === current ? "pin-row pin-btn current" : "pin-row pin-btn";
+          opt.textContent = m.name;
+          opt.title = m.path;
+          opt.addEventListener("click", (e2) => {
+            e2.stopPropagation();
+            done();
+            if (m.path === current) return;
+            // keep the widget's own copy in step: `getRec()` reads this record
+            // the next time the menu opens, and it marks the current model
+            rec.data["model"] = m.path;
+            void invoke("floaty_set_widget_model", { id: rec.id, model: m.path }).catch(
+              (err: unknown) => {
+                void invoke("floaty_log", {
+                  msg: `[live2d menu] ${rec.id}: set model failed: ${String(err)}`,
+                }).catch(() => undefined);
+              },
+            );
+          });
+          list.append(opt);
+        }
+        body.append(list);
+        // the list arrived after the menu was built, so the hit rect moved
+        scheduleHitRectsUpdate();
+      };
+
+      if (cachedModels.length > 0) {
+        pick(cachedModels);
+        return;
+      }
+      const loading = document.createElement("div");
+      loading.className = "pin-row";
+      loading.textContent = "scanning models…";
+      body.append(loading);
+      void menuModels().then((models) => {
+        loading.remove();
+        pick(models);
+      });
+    });
+  });
 }
 
 export const live2dPlugin: FloatyPlugin = {
