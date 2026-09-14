@@ -17,8 +17,11 @@ clickable; a per-widget window path still exists (`index.html#/<kind>/<id>`).
 - **Group folders** — drag one app icon onto another to group them (or drop
   icons onto a folder). Click a folder to expand it into a launch grid;
   click again to collapse. Remove via the × like any widget.
-- **Desktop files & folders** — point Floaty to any root directory. Files and
-  subdirectories become interactive floaties. Dragging a file or directory out of
+- **Desktop files & folders** — point Floaty to any root directory and the
+  desktop becomes a view of it: files and subdirectories appear as floaties,
+  and the folder is watched, so a file added, renamed or deleted on disk (here
+  or in Explorer, while the app runs) appears, moves or goes — no sync button
+  needed. Dragging a file or directory out of
   a folder moves it on disk into the desktop parent directory and spawns it as a new
   desktop floatie. Dragging files/folders onto folder floaties moves them into the folder on disk.
 - **Live2D companion** — interactive desktop companion (pixi + Cubism 2/3/4

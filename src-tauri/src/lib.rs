@@ -7,9 +7,10 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 mod audio;
+mod fs_watch;
+mod plugins;
 mod shell_ops;
 mod sysmon;
-mod plugins;
 use plugins::PluginInfo;
 
 // ---------- logging ----------
@@ -449,7 +450,8 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
     // icon_pipeline is the backend's own bookkeeping (it decides whether stored
     // icons need re-resolving); the settings UI does not know about it, so keep
     // whatever is already on disk instead of letting a save reset it to 0.
-    let stored_pipeline = load_settings(&app).icon_pipeline;
+    let stored = load_settings(&app);
+    let stored_pipeline = stored.icon_pipeline;
     let s = FloatSettings {
         pet_speed: settings.pet_speed.clamp(0.0, 3.0),
         gravity: settings.gravity.clamp(0.0, 8000.0),
@@ -507,6 +509,14 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
     }
     app.emit("floaty-settings-changed", &s).ok();
     log_line(&app, "settings updated");
+
+    // A new root is a new folder to follow: mirror it once and point the watcher
+    // at it (the sync does that itself, including stopping the watcher when the
+    // root was cleared), so the desktop shows the folder straight away rather
+    // than at the next launch.
+    if stored.files_root.trim() != s.files_root.trim() {
+        let _ = floaty_sync_files(None, app.clone());
+    }
     s
 }
 
@@ -1429,6 +1439,24 @@ fn recover_windows(reason: &str) {
     // widget is still watching (they are ref-counted, so this never double-counts)
     sysmon::ensure_running(&app, Some(s.sysmon_interval as u32));
     audio::ensure_running(&app, Some(s.viz_fps as u32));
+
+    // The pointed folder had a sleep too: a change can be lost while the machine
+    // is away, a drive can come back, and the watch can be sitting on a
+    // notification queue that never fired. Re-mirror it and make sure it is
+    // still being followed (`retarget` no-ops when the watcher is healthy).
+    if s.files_root.trim().is_empty() {
+        fs_watch::retarget(None, app.clone());
+    } else {
+        fs_watch::retarget(Some(s.files_root.clone()), app.clone());
+        let _ = floaty_sync_files(None, app.clone());
+        log_line(
+            &app,
+            &format!(
+                "power: mirror re-checked (+{}ms)",
+                started.elapsed().as_millis()
+            ),
+        );
+    }
 
     log_line(
         &app,
@@ -3265,7 +3293,7 @@ fn floaty_add_launcher(name: String, path: String, app: AppHandle) -> Result<Wid
 
 // ---------- folders ----------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct FolderItem {
     name: String,
     target: String,
@@ -4121,10 +4149,23 @@ pub struct FilesSyncResult {
     pub files: usize,
     pub dirs: usize,
     pub total: usize,
+    /// Whether this reconcile actually moved anything. The watcher fires it on
+    /// any name change, and most of those turn out to be nothing.
+    #[serde(default)]
+    pub changed: bool,
 }
 
 #[tauri::command]
 fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncResult, String> {
+    sync_root(root, app, false)
+}
+
+/// Mirror the pointed root: bring the desktop in step with what the folder
+/// actually holds — add what is new, refresh what moved, and (the half that
+/// makes this a mirror rather than an importer) take off the desktop what is no
+/// longer there. `quiet` keeps the watcher's no-op passes out of the log.
+fn sync_root(root: Option<String>, app: AppHandle, quiet: bool) -> Result<FilesSyncResult, String> {
+    let started = std::time::Instant::now();
     let target_root = match root {
         Some(r) if !r.trim().is_empty() => {
             let mut s = load_settings(&app);
@@ -4138,7 +4179,14 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
     };
 
     if target_root.trim().is_empty() {
-        return Ok(FilesSyncResult { files: 0, dirs: 0, total: 0 });
+        // Nothing is pointed at: nothing to follow, mirror or watch.
+        fs_watch::retarget(None, app.clone());
+        return Ok(FilesSyncResult {
+            files: 0,
+            dirs: 0,
+            total: 0,
+            changed: false,
+        });
     }
 
     let base_path = std::path::PathBuf::from(&target_root);
@@ -4199,9 +4247,22 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
 
     let mut updated_folders: Vec<(String, Vec<FolderItem>)> = Vec::new();
     let mut new_records: Vec<WidgetRecord> = Vec::new();
+    // What the folder holds right now, lowercased: Windows compares paths
+    // without case, so a record's stored path has to be matched the same way to
+    // decide whether the thing it mirrors is still there.
+    let mut on_disk: HashSet<String> = HashSet::new();
+    // Only a listing that ran to the end can be read as "this is the folder":
+    // a directory we could not open must never look like a directory that is not
+    // there, or one permission problem would take every floatie off the desktop.
+    let mut listing_complete = false;
 
     if let Ok(entries) = std::fs::read_dir(&base_path) {
-        for entry in entries.flatten() {
+        let mut unreadable = false;
+        for entry in entries {
+            let Ok(entry) = entry else {
+                unreadable = true;
+                continue;
+            };
             let path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
             if file_name.starts_with('.')
@@ -4211,35 +4272,48 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
                 continue;
             }
             let path_str = path.to_string_lossy().to_string();
+            on_disk.insert(path_str.to_ascii_lowercase());
             if path.is_dir() {
                 let mut items = scan_folder_items(&path);
-                if let Some((fid, kind)) = existing_map.get(&path_str) {
-                    if kind == "folder" {
+                match existing_map.get(&path_str) {
+                    Some((fid, kind)) if kind == "folder" => {
+                        let mut refreshed = true;
                         if let Ok(guard) = app.state::<AppState>().0.lock() {
                             if let Some(w) = guard.widgets.get(fid) {
                                 let old_items = folder_items(w);
                                 carry_icons_by_target(&old_items, &mut items);
+                                // an external rename moved every target at once:
+                                // the items are the same files under new paths
+                                carry_icons_by_name(&old_items, &mut items);
+                                // An idle folder must not look changed: the write
+                                // below is what the store persist hangs on.
+                                refreshed = old_items != items;
                             }
                         }
-                        updated_folders.push((fid.clone(), items));
+                        if refreshed {
+                            updated_folders.push((fid.clone(), items));
+                        }
                     }
-                } else {
-                    let (px, py) = next_pos(&mut occupied_positions);
-                    next_id += 1;
-                    let id = format!("folder-{}", next_id);
-                    let data = serde_json::json!({
-                        "name": file_name,
-                        "path": path_str,
-                        "items": items,
-                        "pinned": true,
-                    });
-                    new_records.push(WidgetRecord {
-                        id,
-                        kind: "folder".to_string(),
-                        x: px,
-                        y: py,
-                        data,
-                    });
+                    // already represented by a record of another kind: leave it
+                    Some(_) => {}
+                    None => {
+                        let (px, py) = next_pos(&mut occupied_positions);
+                        next_id += 1;
+                        let id = format!("folder-{}", next_id);
+                        let data = serde_json::json!({
+                            "name": file_name,
+                            "path": path_str,
+                            "items": items,
+                            "pinned": true,
+                        });
+                        new_records.push(WidgetRecord {
+                            id,
+                            kind: "folder".to_string(),
+                            x: px,
+                            y: py,
+                            data,
+                        });
+                    }
                 }
                 dirs_count += 1;
             } else {
@@ -4266,8 +4340,37 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
                 files_count += 1;
             }
         }
+        listing_complete = !unreadable;
     }
 
+    // The other half of the mirror: a record for something that is no longer in
+    // the folder comes off the desktop. Only records the folder owns are
+    // eligible — a floatie pointing outside the root (an app floated from
+    // Program Files, a file carried in from elsewhere) is not something this
+    // folder's listing can answer for — and only when the listing itself is
+    // trustworthy, because a half-read folder must not read as "gone".
+    let mut vanished: Vec<String> = Vec::new();
+    if !listing_complete {
+        log_line(
+            &app,
+            &format!("synced files root '{}': listing incomplete — keeping every floatie it could not account for", target_root),
+        );
+    } else {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        for (id, w) in &guard.widgets {
+            let Some(path) = record_path(w) else { continue };
+            if !mirrors_root_entry(&target_root, &path) {
+                continue;
+            }
+            if on_disk.contains(&path.to_ascii_lowercase()) {
+                continue;
+            }
+            vanished.push(id.clone());
+        }
+    }
+
+    let mut changed = false;
     {
         let state = app.state::<AppState>();
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -4275,16 +4378,33 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
         for (fid, items) in &updated_folders {
             if let Some(w) = guard.widgets.get_mut(fid) {
                 set_folder_items(w, items);
+                changed = true;
             }
         }
         for rec in &new_records {
             guard.widgets.insert(rec.id.clone(), rec.clone());
+            changed = true;
+        }
+        for id in &vanished {
+            if guard.widgets.remove(id).is_some() {
+                changed = true;
+            }
         }
     }
-    persist(&app);
 
-    for (fid, _) in updated_folders {
-        app.emit("floaty-folder-changed", &fid).ok();
+    // A reconcile that found nothing must not rewrite the store: it is megabytes
+    // with every icon inlined, and the watcher calls this on any name change —
+    // including ones that turn out to be nothing, or a folder that is simply
+    // idle while OneDrive touches its metadata.
+    if changed {
+        persist(&app);
+    }
+
+    for (fid, _) in &updated_folders {
+        app.emit("floaty-folder-changed", fid).ok();
+    }
+    for id in &vanished {
+        hide_widget(&app, id);
     }
 
     if !new_records.is_empty() {
@@ -4308,17 +4428,147 @@ fn floaty_sync_files(root: Option<String>, app: AppHandle) -> Result<FilesSyncRe
         }
     }
 
-    let bg_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        upgrade_low_res_icons(&bg_app).await;
-    });
+    if changed {
+        let bg_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            upgrade_low_res_icons(&bg_app).await;
+        });
+        // The settings window lists the same floaties; tell it they moved.
+        app.emit("floaty-widgets-changed", ()).ok();
+    }
 
-    log_line(&app, &format!("synced files root '{}': {} files, {} dirs ({} new floaties)", target_root, files_count, dirs_count, new_records.len()));
+    // From here on the folder is followed rather than read once: the watcher
+    // re-runs this reconcile whenever it changes. `retarget` no-ops when this is
+    // already the watched root, so every sync can call it.
+    fs_watch::retarget(Some(target_root.clone()), app.clone());
+
+    // A watcher-driven pass that found nothing is not worth a line; a manual
+    // sync always reports, since someone is waiting to read it.
+    if !quiet || changed {
+        log_line(
+            &app,
+            &format!(
+                "synced files root '{}': {} files, {} dirs ({} new, {} gone, {} folders refreshed) in {}ms",
+                target_root,
+                files_count,
+                dirs_count,
+                new_records.len(),
+                vanished.len(),
+                updated_folders.len(),
+                started.elapsed().as_millis()
+            ),
+        );
+    }
     Ok(FilesSyncResult {
         files: files_count,
         dirs: dirs_count,
         total: files_count + dirs_count,
+        changed,
     })
+}
+
+/// The path a record mirrors, when its kind stands for something on disk.
+fn record_path(rec: &WidgetRecord) -> Option<String> {
+    let key = plugins::path_key(&rec.kind)?;
+    rec.data
+        .get(key.as_str())
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Whether a record mirrors one of the *root's own entries* — a file or folder
+/// the scan would list.
+///
+/// Deliberately not "anywhere under the root": the reconcile only lists the
+/// root's top level, so a floatie pointing at something deeper (a file ungrouped
+/// out of a folder that lives inside the root) is not something that listing can
+/// account for, and reading its absence as "gone" would take it off the desktop.
+/// Windows compares paths without case, and a stored path can disagree with the
+/// root about it (a shortcut written by Explorer, a root typed by hand), so the
+/// comparison folds case.
+fn mirrors_root_entry(root: &str, path: &str) -> bool {
+    let root = root.trim_end_matches(['\\', '/']).to_ascii_lowercase();
+    if root.is_empty() {
+        return false;
+    }
+    let path = path.to_ascii_lowercase();
+    match path.rfind(['\\', '/']) {
+        Some(cut) => path[..cut] == root,
+        None => false,
+    }
+}
+
+/// Move floaties with their files.
+///
+/// An external rename arrives as a pair, and applying it here — rather than
+/// letting the reconcile drop the old record and add a new one — is what keeps
+/// the tile where the user put it, with its icon: the desktop follows the file
+/// instead of shuffling around it.
+fn apply_root_renames(app: &AppHandle, renames: &[(String, String)]) -> usize {
+    if renames.is_empty() {
+        return 0;
+    }
+    let mut moved: Vec<WidgetRecord> = Vec::new();
+    {
+        let state = app.state::<AppState>();
+        let Ok(mut guard) = state.0.lock() else {
+            return 0;
+        };
+        for (old, new) in renames {
+            let from = old.to_ascii_lowercase();
+            let hit = guard
+                .widgets
+                .iter()
+                .find(|(_, w)| record_path(w).is_some_and(|p| p.to_ascii_lowercase() == from))
+                .map(|(id, w)| (id.clone(), plugins::path_key(&w.kind).unwrap_or_default()));
+            let Some((id, key)) = hit else { continue };
+            let label = std::path::Path::new(new)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let Some(w) = guard.widgets.get_mut(&id) else {
+                continue;
+            };
+            if let Some(obj) = w.data.as_object_mut() {
+                obj.insert(key, serde_json::Value::String(new.clone()));
+                // the label follows the file it points at
+                if !label.is_empty() && obj.contains_key("name") {
+                    obj.insert("name".to_string(), serde_json::Value::String(label));
+                }
+            }
+            moved.push(w.clone());
+        }
+    }
+    if moved.is_empty() {
+        return 0;
+    }
+    persist(app);
+    for rec in &moved {
+        // the event `floaty_rename` sends: the overlay remounts that slot
+        app.emit("floaty-widget-updated", rec).ok();
+    }
+    log_line(
+        app,
+        &format!("watch: {} floatie(s) followed a rename", moved.len()),
+    );
+    moved.len()
+}
+
+/// The pointed root changed on disk: bring the desktop back in step.
+///
+/// Runs on the watcher thread, so it does the cheap thing and lets the reconcile
+/// decide what actually changed: move the floaties whose files were renamed,
+/// then re-run the mirror — which is idempotent, so a redundant call costs one
+/// `read_dir` and nothing else.
+fn root_changed(app: &AppHandle, renames: &[(String, String)]) {
+    apply_root_renames(app, renames);
+    // The reconcile reports for itself when it moved something, and
+    // `apply_root_renames` reports the renames; what needs saying here is only
+    // when the mirror could not run at all (a root gone read-only, a drive out).
+    if let Err(err) = sync_root(None, app.clone(), true) {
+        log_line(app, &format!("watch: mirror failed: {err}"));
+    }
 }
 
 // ---------- live2d model library ----------
@@ -5163,6 +5413,75 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This decides whether a floatie may be taken off the desktop, so it has to
+    /// be strict: an entry *of the root itself*, compared without case.
+    #[test]
+    fn only_a_roots_own_entry_counts_as_mirrored() {
+        let root = "C:\\Users\\eric\\Desktop";
+        assert!(mirrors_root_entry(root, "C:\\Users\\eric\\Desktop\\a.txt"));
+        assert!(mirrors_root_entry(root, "c:\\users\\eric\\desktop\\Sub"));
+        assert!(mirrors_root_entry(
+            "C:\\Users\\eric\\Desktop\\",
+            "C:\\Users\\eric\\Desktop\\a.txt"
+        ));
+        // deeper than the root: the root's listing cannot account for it
+        assert!(!mirrors_root_entry(
+            root,
+            "C:\\Users\\eric\\Desktop\\sub\\b.txt"
+        ));
+        // a sibling whose name merely starts with the root's
+        assert!(!mirrors_root_entry(
+            root,
+            "C:\\Users\\eric\\Desktop2\\a.txt"
+        ));
+        assert!(!mirrors_root_entry(root, "D:\\elsewhere\\a.txt"));
+        assert!(!mirrors_root_entry(root, "C:\\Users\\eric\\Desktop"));
+        assert!(!mirrors_root_entry(root, "a.txt"));
+        assert!(!mirrors_root_entry("", "C:\\a.txt"));
+    }
+
+    /// Only a kind that stands for something on disk answers, and only when the
+    /// record actually points somewhere: a folder made by grouping has no
+    /// directory, so the mirror must never treat it as one.
+    #[test]
+    fn record_path_only_answers_for_path_kinds() {
+        let app = WidgetRecord {
+            id: "app-1".into(),
+            kind: "app".into(),
+            x: 0,
+            y: 0,
+            data: serde_json::json!({ "name": "Chrome", "target": "C:\\x\\Chrome.lnk" }),
+        };
+        assert_eq!(record_path(&app).as_deref(), Some("C:\\x\\Chrome.lnk"));
+
+        let folder = WidgetRecord {
+            id: "folder-2".into(),
+            kind: "folder".into(),
+            x: 0,
+            y: 0,
+            data: serde_json::json!({ "name": "Projects", "path": "C:\\x\\Projects", "items": [] }),
+        };
+        assert_eq!(record_path(&folder).as_deref(), Some("C:\\x\\Projects"));
+
+        let grouped = WidgetRecord {
+            id: "folder-3".into(),
+            kind: "folder".into(),
+            x: 0,
+            y: 0,
+            data: serde_json::json!({ "name": "Group", "items": [] }),
+        };
+        assert_eq!(record_path(&grouped), None);
+
+        let note = WidgetRecord {
+            id: "note-4".into(),
+            kind: "note".into(),
+            x: 0,
+            y: 0,
+            data: serde_json::json!({ "text": "hi" }),
+        };
+        assert_eq!(record_path(&note), None);
+    }
 
     #[test]
     fn test_kind_for_path() {

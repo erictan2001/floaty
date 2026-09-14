@@ -119,6 +119,11 @@ try {
     void reloadPlugins();
     void reloadWidgets();
   }).catch(() => undefined);
+  // The pointed folder is watched, so the floatie list moves on its own: a file
+  // added, renamed or deleted on disk shows up here without pressing sync.
+  listen("floaty-widgets-changed", () => {
+    void reloadWidgets();
+  }).catch(() => undefined);
   void boot();
 } catch (err) {
   showError(`settings failed to start: ${err instanceof Error ? err.message : String(err)}`);
