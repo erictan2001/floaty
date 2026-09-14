@@ -26,6 +26,7 @@ import {
   type WidgetRecord,
 } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
+import { isDesktopItem } from "./pluginManifest";
 
 const WIN_W = 92;
 const WIN_H = 112;
@@ -131,7 +132,12 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         if (isOverlayMode()) {
           const items: LayoutItem[] = [];
           for (const slot of overlaySlots.values()) {
-            if (slot.id !== id && (slot.kind === "app" || slot.kind === "folder")) {
+            // Everything the desktop is made of is solid — and the manifest is
+            // what says so. A hand-written "app or folder" pair left *file*
+            // icons out of the physics entirely, so an icon falling in from the
+            // top (every unpinned one does, on arrival) dropped straight through
+            // them, and through any stack of them, to the desktop below.
+            if (slot.id !== id && isDesktopItem(slot.kind)) {
               items.push({ id: slot.id, x: slot.x, y: slot.y, w: slot.w, h: slot.h });
             }
           }

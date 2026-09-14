@@ -4832,7 +4832,13 @@ fn floaty_layout(app: AppHandle) -> Vec<LayoutItem> {
     guard
         .widgets
         .values()
-        .filter(|r| is_path_kind(&r.kind))
+        // What the desktop is made of is what an icon can land on: every
+        // desktop item, folders included. This is the one-window-per-widget
+        // half of the same list the overlay builds from its own slots, and
+        // `is_path_kind` here (which excludes folders, and is about a record
+        // carrying its own path) left both folders and files out of the
+        // physics, so icons dropped from above fell straight through them.
+        .filter(|r| plugins::is_desktop_item(&r.kind))
         .map(|r| {
             let (w, h) = plugins::size(&r.kind, &r.data);
             LayoutItem {
