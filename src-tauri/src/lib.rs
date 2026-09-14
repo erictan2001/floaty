@@ -2970,6 +2970,10 @@ fn floaty_add_launcher(name: String, path: String, app: AppHandle) -> Result<Wid
     if path.trim().is_empty() {
         return Err("empty path".into());
     }
+    // App icons live in the pointed root like everything else: the launcher gets
+    // a shortcut file there (a copy when the app is already floated through one,
+    // which keeps its arguments and icon) and the record points at that file.
+    let (name, path) = app_into_root(&app, &name, &path);
     let data = serde_json::json!({ "name": name, "target": path.clone() });
     // spawn near the top so it falls with gravity on arrival
     create_record_with(&app, kind_for_path(std::path::Path::new(&path), false), data, Some((200, 40)))
@@ -3066,6 +3070,251 @@ fn unique_dest_path(dest_dir: &std::path::Path, file_name: &std::ffi::OsStr) -> 
         }
     }
     original
+}
+
+// ---------- putting dragged items on disk ----------
+
+/// The name Windows itself gives a folder made by hand: the shell takes the
+/// first free one, so a second folder is "New folder (2)".
+const NEW_FOLDER_BASE: &str = "New folder";
+
+/// The next free "New folder (n)" in `dir`, without creating it.
+fn new_folder_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let first = dir.join(NEW_FOLDER_BASE);
+    if !first.exists() {
+        return first;
+    }
+    for i in 2..1000 {
+        let candidate = dir.join(format!("{NEW_FOLDER_BASE} ({i})"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
+}
+
+/// Create the next free "New folder (n)". The create is what reserves the name:
+/// a name Explorer (or a second drag) takes in between is retried rather than
+/// written over.
+fn create_new_folder(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if !dir.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+    for _ in 0..64 {
+        let candidate = new_folder_path(dir);
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("could not create a new folder".into())
+}
+
+/// The pointed root: the directory the floaties mirror. `None` when nothing is
+/// pointed at (or the pointer went stale), which is the callers' cue to keep
+/// their no-directory behaviour instead of inventing a location.
+fn files_root_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let root = load_settings(app).files_root;
+    let p = std::path::PathBuf::from(root.trim());
+    if p.is_dir() {
+        Some(p)
+    } else {
+        None
+    }
+}
+
+/// A dragged item may only be *moved* into a folder when the root owns it.
+/// Anything from outside — an app icon pointing into Program Files or at a Start
+/// Menu shortcut — is carried in as a shortcut file instead: a plain move there
+/// would take the program out of its install directory.
+fn can_move_into_folder(root: Option<&std::path::Path>, src: &std::path::Path) -> bool {
+    match root {
+        Some(r) => src.starts_with(r),
+        None => false,
+    }
+}
+
+/// A usable file name for the shortcut built from an item's label.
+fn shortcut_file_name(name: &str) -> String {
+    let stem: String = name
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        })
+        .collect();
+    let stem = stem.trim().trim_end_matches('.').trim();
+    let stem = if stem.is_empty() { "Shortcut" } else { stem };
+    if stem.to_ascii_lowercase().ends_with(".lnk") {
+        stem.to_string()
+    } else {
+        format!("{stem}.lnk")
+    }
+}
+
+/// Whether a path already *is* a shortcut, in which case the file can simply be
+/// copied: that keeps its arguments, working directory and icon exactly.
+fn is_lnk_path(p: &std::path::Path) -> bool {
+    p.extension().map(|e| e.eq_ignore_ascii_case("lnk")).unwrap_or(false)
+}
+
+/// Write a Windows shortcut with the shell's own COM interface — the only
+/// supported way to author a .lnk; hand-rolled byte layouts come back broken.
+fn create_lnk(lnk: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const NO_WINDOW: u32 = 0x08000000;
+        // single-quoted PowerShell literals; an inner quote doubles
+        let q = |s: String| s.replace('\'', "''");
+        let script = format!(
+            "$sh = New-Object -ComObject WScript.Shell; $sc = $sh.CreateShortcut('{}'); $sc.TargetPath = '{}'; $sc.Save()",
+            q(lnk.to_string_lossy().to_string()),
+            q(target.to_string_lossy().to_string()),
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        if !lnk.exists() {
+            return Err("the shortcut was not created".into());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (lnk, target);
+        Err("shortcuts are windows-only".into())
+    }
+}
+
+/// Put a dragged item inside `dest_dir` on disk: the file itself when the root
+/// owns it, otherwise a shortcut file. Returns the item rewritten to its new
+/// home plus the line to log, or the reason it stayed put.
+///
+/// No app handle: the disk effect is the whole contract, and this is what the
+/// tests drive.
+fn place_item_in_dir(
+    dest_dir: &std::path::Path,
+    item: &FolderItem,
+    root: Option<&std::path::Path>,
+) -> Result<(FolderItem, String), String> {
+    let src = std::path::PathBuf::from(&item.target);
+    if !src.exists() {
+        return Err(format!("{} is gone; left alone", src.display()));
+    }
+    let mut out = item.clone();
+
+    if can_move_into_folder(root, &src) {
+        let file_name = src
+            .file_name()
+            .ok_or_else(|| format!("{} has no file name", src.display()))?
+            .to_os_string();
+        let dest = unique_dest_path(dest_dir, &file_name);
+        if dest != src {
+            fs::rename(&src, &dest).map_err(|e| format!("move {} FAILED: {e}", src.display()))?;
+        }
+        out.target = dest.to_string_lossy().to_string();
+        out.name = dest
+            .file_name()
+            .unwrap_or(&file_name)
+            .to_string_lossy()
+            .to_string();
+        out.is_dir = dest.is_dir();
+        return Ok((
+            out,
+            format!("moved into folder: {} -> {}", src.display(), dest.display()),
+        ));
+    }
+
+    // outside the root: the original stays where it is, a shortcut moves in
+    let file_name = if is_lnk_path(&src) {
+        src.file_name()
+            .ok_or_else(|| format!("{} has no file name", src.display()))?
+            .to_os_string()
+    } else {
+        std::ffi::OsString::from(shortcut_file_name(&item.name))
+    };
+    let dest = unique_dest_path(dest_dir, &file_name);
+    let made: Result<(), String> = if is_lnk_path(&src) {
+        fs::copy(&src, &dest).map(|_| ()).map_err(|e| e.to_string())
+    } else {
+        create_lnk(&dest, &src)
+    };
+    made.map_err(|e| format!("shortcut for {} FAILED: {e}", src.display()))?;
+    out.target = dest.to_string_lossy().to_string();
+    out.name = dest
+        .file_name()
+        .unwrap_or(&file_name)
+        .to_string_lossy()
+        .to_string();
+    out.is_dir = false;
+    Ok((
+        out,
+        format!("shortcut in folder: {} -> {}", src.display(), dest.display()),
+    ))
+}
+
+/// Write the app's shortcut into the root: a copy when the app is already
+/// floated through one (that keeps its arguments, working directory and icon),
+/// otherwise a fresh .lnk pointing at the program. Returns the launcher's new
+/// name and path plus the line to log.
+fn shortcut_into_root(
+    root: &std::path::Path,
+    name: &str,
+    path: &str,
+) -> Result<(String, String, String), String> {
+    let src = std::path::Path::new(path);
+    let file_name = src
+        .file_name()
+        .ok_or_else(|| format!("{path} has no file name"))?;
+    let file_name = if is_lnk_path(src) {
+        file_name.to_os_string()
+    } else {
+        std::ffi::OsString::from(shortcut_file_name(name))
+    };
+    let dest = unique_dest_path(root, &file_name);
+    let made: Result<(), String> = if is_lnk_path(src) {
+        fs::copy(src, &dest).map(|_| ()).map_err(|e| e.to_string())
+    } else {
+        create_lnk(&dest, src)
+    };
+    made.map_err(|e| format!("app shortcut for {} FAILED: {e}", src.display()))?;
+    let nm = dest
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_string());
+    let log = format!("app shortcut in root: {} -> {}", src.display(), dest.display());
+    Ok((nm, dest.to_string_lossy().to_string(), log))
+}
+
+/// Materialise an app launcher as a shortcut file in the pointed root, so app
+/// icons are files there like everything else (and grouping can move them).
+/// Falls back to pointing straight at the app when there is no root.
+fn app_into_root(app: &AppHandle, name: &str, path: &str) -> (String, String) {
+    let unchanged = || (name.to_string(), path.to_string());
+    let Some(root) = files_root_dir(app) else {
+        return unchanged();
+    };
+    let src = std::path::Path::new(path);
+    if src.starts_with(&root) || !src.exists() {
+        return unchanged();
+    }
+    match shortcut_into_root(&root, name, path) {
+        Ok((nm, dest, log)) => {
+            log_line(app, &log);
+            (nm, dest)
+        }
+        Err(msg) => {
+            log_line(app, &msg);
+            unchanged()
+        }
+    }
 }
 
 /// Keep the icons already resolved for the same paths. A rescan returns items
@@ -3282,6 +3531,9 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
     persist(&app);
     close_widget_async(&app, &id);
 
+    // the pointed root, read once — outside the widget lock (it comes from disk)
+    let root = files_root_dir(&app);
+
     if target_kind == "folder" {
         {
             let state = app.state::<AppState>();
@@ -3289,21 +3541,27 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             let rec = guard.widgets.get_mut(&target_id)?;
             let folder_path = rec.data.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-            // If the folder is backed by a directory on disk, move the item into that directory on disk
+            // A folder backed by a directory on disk takes the item into that
+            // directory: the file itself when the root owns it, a shortcut file
+            // for anything from outside (an app in Program Files, say — moving
+            // that one would take the program out of its install directory).
             if let Some(ref fpath) = folder_path {
                 let dest_dir = std::path::Path::new(fpath);
-                let src = std::path::PathBuf::from(&dragged.target);
-                if dest_dir.is_dir() && src.exists() {
-                    dragged.is_dir = src.is_dir();
-                    if let Some(file_name) = src.file_name().map(|f| f.to_os_string()) {
-                        let dest_path = unique_dest_path(dest_dir, &file_name);
-                        if dest_path != src {
-                            if let Ok(_) = std::fs::rename(&src, &dest_path) {
-                                log_line(&app, &format!("moved into folder on disk: {} -> {}", src.display(), dest_path.display()));
-                                dragged.target = dest_path.to_string_lossy().to_string();
-                                dragged.name = dest_path.file_name().unwrap_or(&file_name).to_string_lossy().to_string();
-                            }
+                if dest_dir.is_dir() {
+                    // bound to a local first: the borrow of `dragged` must end
+                    // before it is rebound
+                    let placed = match place_item_in_dir(dest_dir, &dragged, root.as_deref()) {
+                        Ok((item, log)) => {
+                            log_line(&app, &log);
+                            Some(item)
                         }
+                        Err(log) => {
+                            log_line(&app, &log);
+                            None
+                        }
+                    };
+                    if let Some(placed) = placed {
+                        dragged = placed;
                     }
                 }
             }
@@ -3323,13 +3581,83 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
         return Some(target_id);
     }
 
-    // target is an app icon: fold both into a new folder at its spot
+    // target is an app icon: the two land in a *new folder in the pointed root*,
+    // named the way Windows names one. The dragged files move into it; an app
+    // icon, whose program lives outside the root, is carried in as a shortcut
+    // file instead of being moved out of its install directory.
     let titem = {
         let state = app.state::<AppState>();
         let guard = state.0.lock().ok()?;
         let trec = guard.widgets.get(&target_id)?;
         widget_as_folder_item(trec)?
     };
+
+    if let Some(dir) = root.as_deref().and_then(|r| match create_new_folder(r) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            log_line(&app, &format!("new folder FAILED in {}: {e}", r.display()));
+            None
+        }
+    }) {
+        let mut placed: Vec<FolderItem> = Vec::new();
+        for it in [&titem, &dragged] {
+            match place_item_in_dir(&dir, it, root.as_deref()) {
+                Ok((item, log)) => {
+                    log_line(&app, &log);
+                    placed.push(item);
+                }
+                Err(log) => log_line(&app, &log),
+            }
+        }
+        if !placed.is_empty() {
+            let (tx, ty) = {
+                let state = app.state::<AppState>();
+                let mut guard = state.0.lock().ok()?;
+                let trec = guard.widgets.remove(&target_id)?;
+                guard.dead.insert(target_id.clone());
+                (trec.x, trec.y)
+            };
+            persist(&app);
+            close_widget_async(&app, &target_id);
+
+            // rescan the directory: items are files again (the shortcuts are new
+            // on disk), so carry over the icons already resolved for them
+            let mut items = scan_folder_items(&dir);
+            carry_icons_by_name(&placed, &mut items);
+            let name = dir
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Folder".to_string());
+            let mut data = serde_json::json!({
+                "name": name,
+                "path": dir.to_string_lossy(),
+                "items": items,
+            });
+            data["pinned"] = serde_json::Value::Bool(true);
+            return match create_record_with(&app, "folder", data, Some((tx, ty))) {
+                Ok(rec) => {
+                    log_line(
+                        &app,
+                        &format!(
+                            "grouped {id} + {target_id} into {} ({})",
+                            rec.id,
+                            dir.display()
+                        ),
+                    );
+                    Some(rec.id)
+                }
+                Err(e) => {
+                    log_line(&app, &format!("folder create FAILED: {e}"));
+                    None
+                }
+            };
+        }
+        // nothing landed: don't leave an empty folder behind
+        fs::remove_dir(&dir).ok();
+    }
+
+    // no pointed root (or the folder could not be made): fold both into an
+    // in-app folder at the target's spot, as before
     let mut items = vec![titem, dragged];
     for it in items.iter_mut() {
         if it.icon.is_empty() && !it.is_dir {
@@ -3355,6 +3683,28 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             log_line(&app, &format!("folder create FAILED: {e}"));
             None
         }
+    }
+}
+
+/// Where an item goes when it is pulled out of a folder.
+///
+/// Two shapes. A folder backed by a directory on disk holds its items *inside*
+/// that directory, so an item comes out beside it (`<folder>/..`). A folder made
+/// in-app by grouping has no directory at all — its record carries no `path` and
+/// its items were never moved anywhere — so they stay exactly where they are,
+/// which is what returning the item's own directory means to the caller (it skips
+/// the move when the destination is not different).
+///
+/// That second case used to step two levels up from the item; for a desktop item
+/// that is the parent of the *Desktop*, so ungrouping a folder of desktop icons
+/// moved them out of the Desktop (two of the user's landed in the OneDrive root).
+fn ungroup_dest_dir(
+    folder_path: Option<&str>,
+    src: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    match folder_path {
+        Some(fp) => std::path::Path::new(fp).parent().map(|p| p.to_path_buf()),
+        None => src.parent().map(|p| p.to_path_buf()),
     }
 }
 
@@ -3387,19 +3737,7 @@ fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandl
     // Move file/directory out on disk to the parent directory
     let src_path = std::path::PathBuf::from(&item.target);
     if src_path.exists() {
-        let dest_dir: Option<std::path::PathBuf> = if let Some(ref fp) = folder_path {
-            let p = std::path::Path::new(fp);
-            p.parent().map(|parent| parent.to_path_buf())
-        } else if let Some(parent) = src_path.parent().and_then(|p| p.parent()) {
-            Some(parent.to_path_buf())
-        } else {
-            let s = load_settings(&app);
-            if !s.files_root.is_empty() {
-                Some(std::path::PathBuf::from(s.files_root))
-            } else {
-                None
-            }
-        };
+        let dest_dir = ungroup_dest_dir(folder_path.as_deref(), &src_path);
 
         if let Some(dest_dir_path) = dest_dir {
             if dest_dir_path.is_dir() && dest_dir_path != src_path.parent().unwrap_or(&src_path) {
@@ -4556,6 +4894,230 @@ mod tests {
         }
         assert!(is_path_kind("app") && is_path_kind("file"));
         assert!(!is_path_kind("folder") && !is_path_kind("note"));
+    }
+
+    #[test]
+    fn ungroup_keeps_an_item_where_it_is_when_the_folder_has_no_directory() {
+        use std::path::Path;
+        // an in-app folder (made by grouping): its items were never moved into a
+        // directory, so the destination is the item's own directory and the
+        // caller's "is it different?" test skips the move. The bug moved them two
+        // levels up — out of the Desktop, into the parent of the Desktop.
+        let src = Path::new(r"C:\Users\e\Desktop\CrystalDiskInfo.lnk");
+        assert_eq!(
+            ungroup_dest_dir(None, src).as_deref(),
+            Some(Path::new(r"C:\Users\e\Desktop"))
+        );
+    }
+
+    #[test]
+    fn ungroup_moves_an_item_beside_a_folder_that_lives_on_disk() {
+        use std::path::Path;
+        let src = Path::new(r"C:\Users\e\Desktop\Stuff\thing.lnk");
+        assert_eq!(
+            ungroup_dest_dir(Some(r"C:\Users\e\Desktop\Stuff"), src).as_deref(),
+            Some(Path::new(r"C:\Users\e\Desktop"))
+        );
+    }
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "floaty_{tag}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// What the shell says a .lnk points at — the same COM object Explorer uses,
+    /// so a shortcut that does not resolve here would not work for the user
+    /// either.
+    #[cfg(windows)]
+    fn shortcut_target(lnk: &std::path::Path) -> std::path::PathBuf {
+        use std::os::windows::process::CommandExt;
+        const NO_WINDOW: u32 = 0x08000000;
+        let script = format!(
+            "(New-Object -ComObject WScript.Shell).CreateShortcut('{}').TargetPath",
+            lnk.to_string_lossy().replace('\'', "''")
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .expect("powershell should run");
+        let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert!(
+            out.status.success() && !raw.is_empty(),
+            "could not read {} back: {}",
+            lnk.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::path::PathBuf::from(raw)
+    }
+
+    fn folder_item(name: &str, target: &std::path::Path) -> FolderItem {
+        FolderItem {
+            name: name.to_string(),
+            target: target.to_string_lossy().to_string(),
+            icon: String::new(),
+            is_dir: target.is_dir(),
+        }
+    }
+
+    /// Dragging two icons together makes a folder named the way Explorer names
+    /// one, counting only past the names that are taken.
+    #[test]
+    fn a_new_folder_is_named_the_way_windows_names_one() {
+        let dir = scratch_dir("newfolder");
+        assert_eq!(new_folder_path(&dir), dir.join("New folder"));
+
+        let first = create_new_folder(&dir).unwrap();
+        assert_eq!(first, dir.join("New folder"));
+        assert_eq!(create_new_folder(&dir).unwrap(), dir.join("New folder (2)"));
+        assert_eq!(create_new_folder(&dir).unwrap(), dir.join("New folder (3)"));
+
+        // the first free name in the sequence wins, exactly like the shell: with
+        // "New folder" deleted again, that is the one it hands out next
+        std::fs::remove_dir(&first).unwrap();
+        assert_eq!(create_new_folder(&dir).unwrap(), dir.join("New folder"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shortcut_names_are_usable_file_names() {
+        assert_eq!(shortcut_file_name("Visual Studio Code"), "Visual Studio Code.lnk");
+        // characters Windows refuses in a name are dropped, not escaped
+        assert_eq!(shortcut_file_name("a/b\\c:d*e?f\"g<h>i|j"), "abcdefghij.lnk");
+        // a label that is punctuation only still gets a usable name
+        assert_eq!(shortcut_file_name("  ..  "), "Shortcut.lnk");
+        // an app already named with its extension is not double-suffixed
+        assert_eq!(shortcut_file_name("Steam.lnk"), "Steam.lnk");
+    }
+
+    /// Grouping may only carry the real file into the new folder when the root
+    /// owns it; an app icon points at the program itself, and moving *that* would
+    /// take the app out of its install directory.
+    #[test]
+    fn only_what_the_root_owns_is_moved_into_a_folder() {
+        use std::path::Path;
+        let root = Path::new(r"C:\Users\e\Desktop\floaty-root");
+        assert!(can_move_into_folder(
+            Some(root),
+            Path::new(r"C:\Users\e\Desktop\floaty-root\notes.txt")
+        ));
+        assert!(!can_move_into_folder(
+            Some(root),
+            Path::new(r"C:\Program Files\App\app.exe")
+        ));
+        assert!(!can_move_into_folder(
+            Some(root),
+            Path::new(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\App.lnk")
+        ));
+        // nothing pointed at: nothing may be moved behind the user's back
+        assert!(!can_move_into_folder(
+            None,
+            Path::new(r"C:\Users\e\Desktop\notes.txt")
+        ));
+    }
+
+    /// The grouping itself, on disk: the dragged file is *in* the new folder
+    /// afterwards, and its floatie points at the new path.
+    #[test]
+    fn grouping_moves_the_real_file_into_the_new_folder() {
+        let root = scratch_dir("group_move");
+        let src = root.join("notes.txt");
+        std::fs::write(&src, "hello").unwrap();
+
+        let dir = create_new_folder(&root).unwrap();
+        let (item, log) =
+            place_item_in_dir(&dir, &folder_item("notes.txt", &src), Some(&root)).unwrap();
+
+        assert!(!src.exists(), "the original should have moved");
+        assert_eq!(std::path::PathBuf::from(&item.target), dir.join("notes.txt"));
+        assert!(log.starts_with("moved into folder"), "{log}");
+        // the new folder scans back with the moved file in it
+        let items = scan_folder_items(&dir);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "notes.txt");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An app icon points at the program itself, and the program must stay put:
+    /// the folder gets a shortcut file, which the shell resolves back to it.
+    #[cfg(windows)]
+    #[test]
+    fn grouping_an_app_writes_a_shortcut_instead_of_moving_the_program() {
+        let root = scratch_dir("group_app");
+        let program_dir = scratch_dir("group_app_prog");
+        let exe = program_dir.join("Some App.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+
+        let dir = create_new_folder(&root).unwrap();
+        let (item, log) = place_item_in_dir(&dir, &folder_item("Some App", &exe), Some(&root)).unwrap();
+
+        assert!(exe.exists(), "the program must not be moved");
+        let made = std::path::PathBuf::from(&item.target);
+        assert_eq!(made, dir.join("Some App.lnk"));
+        assert_eq!(shortcut_target(&made), exe, "the shortcut must point at the app");
+        assert!(log.starts_with("shortcut in folder"), "{log}");
+        assert!(!item.is_dir && item.name == "Some App.lnk");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&program_dir);
+    }
+
+    /// Floating an app from the picker leaves a shortcut in the pointed root, so
+    /// the app icon is a file there like the file and folder ones — and a second
+    /// float of the same app makes a second file instead of overwriting.
+    #[cfg(windows)]
+    #[test]
+    fn floating_an_app_puts_its_shortcut_in_the_root() {
+        let root = scratch_dir("app_root");
+        let program_dir = scratch_dir("app_root_prog");
+        let exe = program_dir.join("Thing.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+
+        let (name, path, _) = shortcut_into_root(&root, "Thing", &exe.to_string_lossy()).unwrap();
+        assert_eq!(name, "Thing.lnk");
+        let made = std::path::PathBuf::from(&path);
+        assert_eq!(made, root.join("Thing.lnk"));
+        assert_eq!(shortcut_target(&made), exe);
+        assert!(exe.exists(), "the program is only pointed at, never moved");
+
+        let (_, second, _) = shortcut_into_root(&root, "Thing", &exe.to_string_lossy()).unwrap();
+        // file collisions count from 1 here (the helper the folder moves share),
+        // unlike Explorer's folder numbering that starts at 2
+        assert_eq!(std::path::PathBuf::from(second), root.join("Thing (1).lnk"));
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&program_dir);
+    }
+
+    /// A floatie that already *is* a shortcut is copied, not rewritten, so its
+    /// arguments, working directory and icon come along untouched.
+    #[test]
+    fn a_shortcut_source_is_copied_rather_than_rewritten() {
+        let root = scratch_dir("shortcut_copy");
+        let owned = scratch_dir("shortcut_copy_src");
+        let lnk_src = owned.join("App.lnk");
+        std::fs::write(&lnk_src, b"shell-authored shortcut bytes").unwrap();
+
+        let dir = create_new_folder(&root).unwrap();
+        let (item, log) = place_item_in_dir(&dir, &folder_item("App", &lnk_src), Some(&root)).unwrap();
+
+        assert!(lnk_src.exists(), "the original shortcut stays where it was");
+        let made = std::path::PathBuf::from(&item.target);
+        assert_eq!(made, dir.join("App.lnk"));
+        assert_eq!(std::fs::read(&made).unwrap(), b"shell-authored shortcut bytes");
+        assert!(log.starts_with("shortcut in folder"), "{log}");
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&owned);
     }
 
     #[test]
