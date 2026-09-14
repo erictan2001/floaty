@@ -939,20 +939,28 @@ mod desktop_pin {
             }
         }
 
-        // Suppress non-client frame rendering & background erase.
-        // This prevents Windows from drawing a default white title bar / caption strip
-        // along the top edge of shaped window regions.
-        if msg == WM_NCCALCSIZE {
-            return 0;
-        }
-        if msg == WM_NCPAINT {
-            return 0;
-        }
-        if msg == WM_NCACTIVATE {
-            return 1;
-        }
-        if msg == WM_ERASEBKGND {
-            return 1;
+        // Suppress non-client frame rendering & background erase. This prevents
+        // Windows from drawing a default white title bar / caption strip along
+        // the top edge of shaped window regions — but only for the windows that
+        // have no frame to draw in the first place. Swallowing these on an
+        // ordinary window is what made the settings window lose its title bar
+        // the first time it was maximized: the frame is painted through
+        // WM_NCPAINT, and nothing repaints it once the message is answered with
+        // "nothing to do" (the initial frame is only visible because it was
+        // painted at creation, before this procedure was armed).
+        if desktop_layer {
+            if msg == WM_NCCALCSIZE {
+                return 0;
+            }
+            if msg == WM_NCPAINT {
+                return 0;
+            }
+            if msg == WM_NCACTIVATE {
+                return 1;
+            }
+            if msg == WM_ERASEBKGND {
+                return 1;
+            }
         }
 
         DefSubclassProc(hwnd, msg, wparam, lparam)

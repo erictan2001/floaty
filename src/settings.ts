@@ -11,18 +11,16 @@
  */
 
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { allPlugins, loadPlugins } from "./widgets/plugin";
 import { crossCheckPlugins, manifestEntries } from "./widgets/pluginManifest";
 import { startHeartbeat, watchSettings } from "./widgets/lib";
-import { log, mountErrorBar, safe, showError } from "./settings/api";
+import { log, mountErrorBar, showError } from "./settings/api";
 import { el } from "./settings/dom";
 import { PANES } from "./settings/panes";
 import { changes, loadSettings, reloadPlugins, reloadWidgets } from "./settings/store";
 import "./style.css";
 
 const root = document.getElementById("settings");
-const appWin = getCurrentWindow();
 const tabs = new Map<string, HTMLButtonElement>();
 let bodyHost: HTMLDivElement | undefined;
 let active = "";
@@ -68,12 +66,10 @@ function buildShell(): void {
 
   const brand = el("div", "set-brand");
   brand.append(el("h1", "", "floaty"), el("p", "", "widgets living on your desktop"));
-  const close = el("button", "set-close", "×");
-  close.type = "button";
-  close.title = "hide settings";
-  close.addEventListener("click", () => void safe("hide settings", () => appWin.hide()));
+  // No close button of our own: the window keeps its default Windows frame, so
+  // the title bar already has one and a second × under it is just a duplicate.
   const head = el("header", "set-head");
-  head.append(brand, close);
+  head.append(brand);
 
   const nav = el("nav", "set-tabs");
   for (const pane of PANES) {

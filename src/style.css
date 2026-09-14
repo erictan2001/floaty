@@ -1043,21 +1043,6 @@ body.settings-page {
   color: transparent;
 }
 .set-brand p { margin: 2px 0 0; color: var(--panel-ink-soft); font-size: 11.5px; }
-.set-close {
-  margin-left: auto;
-  flex: 0 0 auto;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--panel-ink-soft);
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.set-close:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
 .set-tabs {
   display: flex;
   flex-wrap: wrap;
