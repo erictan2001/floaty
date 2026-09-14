@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragging, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -479,6 +479,9 @@ export function mountFolder(root: HTMLElement, id: string): void {
     e.stopPropagation();
     dragging = true;
     notifyDragging(true);
+    // same held state the app tile uses: it is what lets the merge preview
+    // shrink the dragged folder as it hovers another tile
+    wrap.classList.add("held");
     void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
     // capture lazily on first real movement (see pet.ts: eager capture eats taps)
     let captured = false;
@@ -512,6 +515,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
         }
       }
       setWidgetPos(id, px, py, scale);
+      notifyDragMove(id, px, py);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -522,6 +526,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       } catch {
         /* ignore */
       }
+      wrap.classList.remove("held");
       if (moved) {
         void (async () => {
           try {

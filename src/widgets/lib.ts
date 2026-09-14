@@ -136,6 +136,23 @@ export function notifyDragging(dragging: boolean): void {
       scheduleHitRectsUpdate();
     }
   }
+  if (!dragging) {
+    // the end of a drag is what takes the merge preview off the target tile
+    window.dispatchEvent(new CustomEvent("floaty-drag-end"));
+  }
+}
+
+/**
+ * Where a dragged tile is right now, so the overlay can show what dropping it
+ * there would do.
+ *
+ * Only the overlay page keeps several widgets in one document, so it is the one
+ * page that can preview a merge; in per-window mode nothing listens and this
+ * costs a CustomEvent. `x`/`y` are the tile's own desktop coordinates, the same
+ * ones `floaty_dropped` is given on release.
+ */
+export function notifyDragMove(id: string, x: number, y: number): void {
+  window.dispatchEvent(new CustomEvent("floaty-drag-move", { detail: { id, x, y } }));
 }
 
 export function setWidgetPos(id: string, x: number, y: number, scale = 1): void {

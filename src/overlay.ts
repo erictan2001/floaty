@@ -9,6 +9,7 @@ import {
   startHeartbeat,
   appWin,
   monitorArea,
+  overlaySlots,
   preventOverlap,
   registerOverlaySlot,
   saveRecord,
@@ -16,10 +17,11 @@ import {
   unregisterOverlaySlot,
   watchSettings,
   type MonitorArea,
+  type OverlaySlot,
   type WidgetRecord,
 } from "./widgets/lib";
 import { loadPlugins, pluginFor, pluginKinds, widgetApi } from "./widgets/plugin";
-import { crossCheckPlugins, layoutPriorityFor, pluginSize } from "./widgets/pluginManifest";
+import { crossCheckPlugins, isDesktopItem, layoutPriorityFor, pluginSize } from "./widgets/pluginManifest";
 
 /**
  * Resolves initial desktop layout to prevent icons and folders from overlapping.
@@ -133,6 +135,151 @@ export function mountOverlay(root: HTMLElement): void {
 
   const mountedSlots = new Set<string>();
 
+  /* ---------- merge preview: the folder a drop would make ---------- */
+
+  /**
+   * Dragging one icon onto another is a real action — the backend folds the two
+   * into a new folder in the pointed root, or puts the dragged item *inside* a
+   * folder it lands on — and until now nothing said so until it had already
+   * happened. Android's answer is the one people already know: the tile under
+   * the finger becomes the folder it is about to be, its own icon shrinking into
+   * one corner while the dragged one arrives in the other.
+   *
+   * The hit rule is copied from `floaty_dropped` on purpose (the dragged tile's
+   * *centre* against every other desktop item's slot, each inflated by 12px), and
+   * so is the tie-break, because a preview that disagrees with the drop would be
+   * worse than none.
+   */
+  const MERGE_SLOP = 12;
+  let mergeArmed: { target: string; dragged: string } | null = null;
+
+  /** The tile a drop at this point would merge into, if any. */
+  function mergeTargetAt(cx: number, cy: number, draggedId: string): OverlaySlot | null {
+    // the backend walks its widget map, which serde keeps sorted by key, so two
+    // pads covering the same centre resolve the same way here
+    const candidates = [...overlaySlots.values()]
+      .filter((s) => s.id !== draggedId && isDesktopItem(s.kind))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const s of candidates) {
+      const left = s.x - MERGE_SLOP;
+      const top = s.y - MERGE_SLOP;
+      const within =
+        cx >= left &&
+        cx < left + s.w + MERGE_SLOP * 2 &&
+        cy >= top &&
+        cy < top + s.h + MERGE_SLOP * 2;
+      if (within) return s;
+    }
+    return null;
+  }
+
+  /**
+   * Whatever the dragged tile is drawing — an app's icon, its letter, a folder's
+   * glyph or first mini — cloned, so the preview shows the thing in hand rather
+   * than a re-derived approximation of it.
+   */
+  function mergeGhostArt(dragged: OverlaySlot): Node | null {
+    const pick = (sel: string): Element | null => dragged.element.querySelector(sel);
+    const art =
+      dragged.kind === "folder"
+        ? (pick(".fminis img") ?? pick(".fminis .ffolder") ?? pick(".ffolder"))
+        : (pick("img.tile-icon") ?? pick(".tile > span"));
+    return art ? art.cloneNode(true) : null;
+  }
+
+  function disarmMerge(): void {
+    if (!mergeArmed) return;
+    const target = overlaySlots.get(mergeArmed.target);
+    const dragged = overlaySlots.get(mergeArmed.dragged);
+    const tile = target?.element.querySelector<HTMLElement>(".tile, .ftile");
+    target?.element.classList.remove("merge-armed", "merge-two");
+    target?.element.querySelector(".merge-ghost")?.remove();
+    target?.element.querySelector(".merge-ring")?.remove();
+    // the tile's own look comes back as it was: a letter tile paints a gradient
+    // *inline*, which no stylesheet rule can override
+    if (tile && tile.dataset.mergeBg !== undefined) {
+      tile.style.background = tile.dataset.mergeBg;
+      delete tile.dataset.mergeBg;
+    }
+    dragged?.element.querySelector(".launcher, .folder")?.classList.remove("merge-pulling");
+    mergeArmed = null;
+  }
+
+  function armMerge(target: OverlaySlot, dragged: OverlaySlot): void {
+    const tile = target.element.querySelector<HTMLElement>(".tile, .ftile");
+    if (!tile) return;
+    dragged.element.querySelector(".launcher, .folder")?.classList.add("merge-pulling");
+
+    // the folder plate has to be the plate, not the icon's own gradient: appicon
+    // paints letter tiles with an inline background, which beats the stylesheet
+    if (tile.dataset.mergeBg === undefined) {
+      tile.dataset.mergeBg = tile.style.background ?? "";
+    }
+    tile.style.background = "rgba(255, 255, 255, 0.3)";
+
+    const ring = document.createElement("div");
+    ring.className = "merge-ring";
+    tile.appendChild(ring);
+
+    const ghost = document.createElement("div");
+    ghost.className = "merge-ghost";
+    const art = mergeGhostArt(dragged);
+    if (art) ghost.appendChild(art);
+
+    // the incoming icon starts where the dragged tile is, so the eye follows it
+    // into the folder instead of watching it appear
+    const dx = dragged.x + dragged.w / 2 - (target.x + target.w / 2);
+    const dy = dragged.y + dragged.h / 2 - (target.y + target.h / 2);
+    ghost.style.setProperty("--from-x", `${Math.round(dx)}px`);
+    ghost.style.setProperty("--from-y", `${Math.round(dy)}px`);
+
+    if (target.kind === "folder") {
+      // into the free cell of the folder's own 2x2 preview
+      const used = tile.querySelectorAll(
+        ".fminis img, .fminis .ffolder, .fminis .fmini-letter",
+      ).length;
+      ghost.classList.add(`slot-${used % 4}`);
+    } else {
+      // the tile itself becomes the two-icon folder preview, in the same
+      // row-major order a folder's own mini grid uses (first icon top-left,
+      // second top-right), so the plate matches the folder it is about to be
+      target.element.classList.add("merge-two");
+      ghost.classList.add("slot-1");
+    }
+    tile.appendChild(ghost);
+
+    mergeArmed = { target: target.id, dragged: dragged.id };
+    // arm on the next frame: inserted already-armed, the ghost would have no
+    // starting position to animate from
+    requestAnimationFrame(() => {
+      if (mergeArmed?.target === target.id) target.element.classList.add("merge-armed");
+    });
+  }
+
+  function refreshMerge(draggedId: string): void {
+    const dragged = overlaySlots.get(draggedId);
+    if (!dragged || !mountedSlots.has(draggedId)) {
+      disarmMerge();
+      return;
+    }
+    const target = mergeTargetAt(dragged.x + dragged.w / 2, dragged.y + dragged.h / 2, draggedId);
+    if (!target) {
+      disarmMerge();
+      return;
+    }
+    if (mergeArmed && mergeArmed.target === target.id && mergeArmed.dragged === draggedId) return;
+    disarmMerge();
+    armMerge(target, dragged);
+  }
+
+  window.addEventListener("floaty-drag-move", (e) => {
+    const detail = (e as CustomEvent<{ id?: string }>).detail;
+    if (!detail?.id) return;
+    refreshMerge(detail.id);
+  });
+  window.addEventListener("floaty-drag-end", () => disarmMerge());
+
+
   const mountWidget = (rec: WidgetRecord) => {
     if (mountedSlots.has(rec.id)) return;
     // Each layer draws only its own widgets: the desktop layer everything that
@@ -188,6 +335,8 @@ export function mountOverlay(root: HTMLElement): void {
 
   const unmountWidget = (id: string) => {
     if (!mountedSlots.has(id)) return;
+    // a widget on its way out cannot be half of a preview
+    if (mergeArmed && (mergeArmed.target === id || mergeArmed.dragged === id)) disarmMerge();
     mountedSlots.delete(id);
     unregisterOverlaySlot(id);
     const slot = document.getElementById(`slot-${id}`);

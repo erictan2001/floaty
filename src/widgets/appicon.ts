@@ -13,6 +13,7 @@ import {
   loadRecord,
   logicalPos,
   monitorArea,
+  notifyDragMove,
   notifyDragging,
   overlaySlots,
   removeSelf,
@@ -347,6 +348,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         }
       }
       setWidgetPos(id, x, y, scale);
+      // tell the overlay where we are, so it can show the merge this hover
+      // would run (nothing listens in one-window-per-widget mode)
+      notifyDragMove(id, x, y);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
