@@ -591,11 +591,14 @@ export async function removeSelf(rec: WidgetRecord): Promise<void> {
     // A refusal from the backend must not take the window down: in the overlay
     // that window *is* the desktop, so one pathless folder used to close every
     // widget at once (the log said nothing, the desktop just went empty).
-    // Closing is only a way out for a window of this widget's own.
+    // Closing is only a way out for a window that holds this widget and nothing
+    // else: in the overlay the window *is* the desktop, and in the settings
+    // window it is the settings window, so neither may be closed over one
+    // refusal.
     void invoke("floaty_log", {
       msg: `[self] removing ${rec.id} (${rec.kind}) failed: ${String(err)}`,
     }).catch(() => undefined);
-    if (isOverlayMode()) return;
+    if (!appWin.label.startsWith("widget-")) return;
     await appWin.close().catch(() => undefined);
   }
 }
@@ -661,7 +664,7 @@ export interface FloatSettings {
   sysmon_interval: number;
 }
 
-const DEFAULT_SETTINGS: FloatSettings = {
+export const DEFAULT_SETTINGS: FloatSettings = {
   pet_speed: 1,
   gravity: 2600,
   bounce: 0.45,

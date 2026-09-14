@@ -24,7 +24,7 @@ import {
   type MonitorArea,
   type WidgetRecord,
 } from "./lib";
-import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin";
+import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 const WIN_W = 92;
 const WIN_H = 112;
@@ -557,23 +557,10 @@ export const appPlugin: FloatyPlugin = {
     const n = rec.data["name"];
     return typeof n === "string" && n ? n : undefined;
   },
-  renderSettings: (card: HTMLElement, ctx: PluginSettingsContext) => {
-    for (const k of [
-      "gravity",
-      "bounce",
-      "floatiness",
-      "float_amplitude",
-      "float_period",
-      "float_spread",
-      "animated_ratio",
-      "animation_mode",
-      "single_click",
-      "double_click",
-    ]) {
-      const r = ctx.getSharedRow(k);
-      if (r) card.append(r);
-    }
-  },
+  // No settings of its own: how an icon falls, floats and answers a click is
+  // the same for every desktop item, so it lives in the Motion tab (see
+  // `settings/params.ts` for the rows). App icons cannot be added from a
+  // button either — they are floated from the Apps tab or dragged in.
 };
 
 /**

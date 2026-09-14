@@ -113,18 +113,27 @@ export default {
     return "a short summary";
   },
 
-  // extra controls in the widget's card in "On your desktop" (optional)
-  renderControls(card, rec, ctx, deleteBtn) {
+  // extra controls in the widget's card in the settings window's Desktop tab
+  // (optional — the delete button is passed so you can slot yours in front of it)
+  renderWidgetControls(card, rec, ctx, deleteBtn) {
     // ctx.safe("label", () => api.invoke(...)), ctx.refreshWidgets(), ctx.showError(msg)
   },
 
-  // extra rows under the plugin's card in the plugin list (optional)
+  // extra rows under the plugin's card in the settings window's Plugins tab
   renderSettings(card, ctx) {
-    // ctx.getSettings(), ctx.getSharedRow("gravity"), ctx.updateSettings(patch),
+    // ctx.getSettings(), ctx.getSharedRow("pet_speed"), ctx.updateSettings(patch),
     // ctx.safe(...), ctx.showError(...), ctx.refreshWidgets()
   },
 };
 ```
+
+Settings live in one of two places, and a plugin's own card is for settings only
+*it* has (a pet's speed, a visualizer's gain, the folder it scans). A setting that
+applies to every desktop item — gravity, bounce, the float parameters, click
+behaviour — belongs in the **Motion tab**, which is where the built-ins keep
+theirs. `ctx.getSharedRow(name)` still hands you a row bound to one of those
+names (`gravity`, `pet_speed`, …) if you want it in your own card too; it returns
+a fresh row each call, and `undefined` for a name this build does not have.
 
 ### The `api` object
 

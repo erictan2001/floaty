@@ -100,7 +100,16 @@ export interface WidgetControlContext {
 export interface PluginSettingsContext {
   /** Get current global floating settings */
   getSettings: () => FloatSettings;
-  /** Retrieve a shared parameter row element (e.g. 'pet_speed', 'gravity', etc.) */
+  /**
+   * A fresh row bound to a shared setting — `gravity`, `pet_speed`, one of the
+   * names in `settings/params.ts` — to drop into the plugin's card. Returns
+   * `undefined` for a name this build does not have, so a plugin asking for a
+   * setting that has been renamed draws nothing instead of an empty row.
+   *
+   * Rows that apply to every desktop item (motion, click behaviour) also have a
+   * home in the Motion tab; ask for one here only when the plugin's own card is
+   * the better place for it.
+   */
   getSharedRow: (name: string) => HTMLElement | undefined;
   /** Safely run an asynchronous backend invocation with error reporting */
   safe: <T>(label: string, fn: () => Promise<T>) => Promise<T | undefined>;
@@ -130,7 +139,7 @@ export interface FloatyPlugin {
     ctx: WidgetControlContext,
     deleteBtn: HTMLElement,
   ) => void | Promise<void>;
-  /** Optional custom rows or controls appended to the plugin's card in the "Plugins" list */
+  /** Optional custom rows or controls appended to the plugin's card in the Plugins tab */
   renderSettings?: (card: HTMLElement, ctx: PluginSettingsContext) => void | Promise<void>;
 }
 

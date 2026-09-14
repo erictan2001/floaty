@@ -883,23 +883,28 @@ body {
 .sysmon-wrap:hover .resize-handle { opacity: 0.9; }
 
 /* ---------- settings page ---------- */
+/* A tabbed shell: a fixed header, a row of tabs, and one pane at a time in the
+   body below — only the body scrolls. The rows that plugin settings code draws
+   for itself (`.slider-row`, `.select`, `.count`, `.folder-path`) keep the
+   styles they always had, so a plugin's own controls look the same as the ones
+   the app draws around them. */
 body.settings-page {
   background: linear-gradient(160deg, #1e1b32 0%, #2d2660 55%, #134e4a 130%);
   background-attachment: fixed;
   height: 100vh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   user-select: auto;
   -webkit-user-select: auto;
 }
-.settings {
-  max-width: 460px;
-  margin: 0 auto;
-  padding: 24px 18px 34px;
+.set-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
   color: #f2f0ff;
 }
-.settings h1 {
-  font-size: 26px;
+.set-head { display: flex; align-items: center; gap: 10px; padding: 16px 16px 8px; }
+.set-brand h1 {
+  font-size: 21px;
   margin: 0;
   font-weight: 800;
   letter-spacing: -0.01em;
@@ -908,19 +913,145 @@ body.settings-page {
   background-clip: text;
   color: transparent;
 }
-.settings p.sub { margin: 2px 0 18px; color: #a49fd0; font-size: 13px; }
-.sec-title {
-  font-size: 12px;
+.set-brand p { margin: 2px 0 0; color: #a49fd0; font-size: 11.5px; }
+.set-close {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #cfc9f0;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.set-close:hover { background: rgba(255, 255, 255, 0.22); color: #fff; }
+.set-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 16px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.set-tab {
+  border: none;
+  border-radius: 999px;
+  padding: 6px 13px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #b9b3dd;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.set-tab:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.set-tab.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(108, 92, 231, 0.35);
+}
+.set-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 28px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.set-body::-webkit-scrollbar { width: 10px; }
+.set-body::-webkit-scrollbar-track { background: transparent; }
+.set-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+.set-body::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); background-clip: padding-box; }
+.set-pane { max-width: 540px; margin: 0 auto; }
+.set-pane-head { margin-bottom: 16px; }
+.set-pane-title { margin: 0; font-size: 16.5px; font-weight: 800; }
+.set-pane-hint { margin: 5px 0 0; font-size: 12.5px; color: #a49fd0; line-height: 1.5; }
+/* one titled section: label, an optional line about it, then cards */
+.set-group { margin-bottom: 22px; }
+.set-group-title {
+  font-size: 11.5px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.16em;
   color: #8f88c7;
-  margin: 20px 0 10px;
+  margin: 0 0 8px;
 }
-.hint { font-size: 12.5px; color: #a49fd0; margin: 0 0 10px; line-height: 1.5; }
-.add-row { display: flex; gap: 8px; }
-.add-row .pill { flex: 1; padding: 10px 0; }
-.scan-row { display: flex; gap: 8px; }
+.set-group-note { margin: -2px 0 10px; font-size: 12px; color: #a49fd0; line-height: 1.5; }
+.set-group-body { display: flex; flex-direction: column; gap: 8px; }
+.set-item {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.set-item.stack { flex-direction: column; align-items: stretch; gap: 8px; }
+.set-item .slider-row { margin-bottom: 0; }
+.set-row { display: flex; align-items: center; gap: 10px; }
+.set-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.set-label { font-size: 12.5px; font-weight: 700; color: #ded9f7; }
+.set-sub { margin: 0; font-size: 12px; color: #a49fd0; line-height: 1.5; }
+.set-name { flex: 1; min-width: 0; font-size: 12px; color: #c9c4ec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.set-actions .pill { flex: 1 1 auto; min-width: 100px; padding: 9px 12px; }
+.set-actions .search { flex: 1 1 180px; }
+/* quick-add buttons: actions, not navigation — the filled pill is the tab bar's.
+   A grid rather than a wrap, so the buttons in every row share a width and the
+   columns line up (auto-fit keeps them from clipping when the window is narrow). */
+.set-add { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+.set-add .pill {
+  min-width: 0;
+  background: rgba(108, 92, 231, 0.22);
+  color: #d5cffb;
+  box-shadow: none;
+}
+.set-add .pill:hover { background: rgba(108, 92, 231, 0.36); color: #fff; box-shadow: none; }
+/* a list of cards with no section label of its own */
+.set-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 22px; }
+/* a list that scrolls inside its pane instead of pushing the page down */
+.set-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 44vh;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.set-scroll::-webkit-scrollbar { width: 8px; }
+.set-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
+.set-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }
+/* on/off switch */
+.set-switch { position: relative; flex: 0 0 auto; width: 40px; height: 22px; cursor: pointer; }
+.set-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.set-switch-track { position: absolute; inset: 0; border-radius: 999px; background: rgba(255, 255, 255, 0.16); transition: background 0.15s; }
+.set-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.set-switch input:checked + .set-switch-track { background: linear-gradient(135deg, var(--accent), #00b894); }
+.set-switch input:checked + .set-switch-track::after { transform: translateX(18px); }
+.set-switch input:focus-visible + .set-switch-track { outline: 2px solid #5eead4; outline-offset: 2px; }
+.set-switch input:disabled { cursor: default; }
 .search {
   flex: 1;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -935,17 +1066,9 @@ body.settings-page {
 .search::placeholder { color: #8f88c7; }
 .search:focus { border-color: var(--accent); background: rgba(255, 255, 255, 0.12); }
 .count { font-size: 11.5px; color: #8f88c7; margin: 8px 2px; font-weight: 600; }
-.card {
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 14px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.card .kind {
+/* kind chip: the plugin id, in the plugin's own hue but quiet enough that the
+   plugin's *name* stays the loudest thing in the row */
+.kind {
   font-size: 10.5px;
   font-weight: 800;
   text-transform: uppercase;
@@ -953,26 +1076,23 @@ body.settings-page {
   border-radius: 7px;
   padding: 4px 9px;
   flex: 0 0 auto;
+  /* one width for every chip a kind name fits in, so the names beside them
+     start in a column rather than following each badge's own length */
+  min-width: 88px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.12);
+  color: #d8d3f5;
 }
-.k-note { background: #fef3c7; color: #92400e; }
-.k-clock { background: #dbeafe; color: #1d4ed8; }
-.k-pet { background: #dcfce7; color: #15803d; }
-.k-app { background: #ede9fe; color: #6d28d9; }
-.k-file { background: #e0f2fe; color: #0369a1; }
-.k-visualizer { background: #ccfbf1; color: #0f766e; }
-.k-sysmon { background: #e0e7ff; color: #4338ca; }
-.k-folder { background: #fef3c7; color: #92400e; }
-.k-live2d { background: #fce7f3; color: #be185d; }
-.card .id {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  color: #c9c4ec;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.card .danger {
+.k-note { background: rgba(252, 211, 77, 0.16); color: #fcd34d; }
+.k-clock { background: rgba(147, 197, 253, 0.15); color: #93c5fd; }
+.k-pet { background: rgba(110, 231, 183, 0.15); color: #6ee7b7; }
+.k-app { background: rgba(196, 181, 253, 0.17); color: #c4b5fd; }
+.k-file { background: rgba(125, 211, 252, 0.15); color: #7dd3fc; }
+.k-visualizer { background: rgba(94, 234, 212, 0.15); color: #5eead4; }
+.k-sysmon { background: rgba(165, 180, 252, 0.16); color: #a5b4fc; }
+.k-folder { background: rgba(252, 211, 77, 0.16); color: #fcd34d; }
+.k-live2d { background: rgba(249, 168, 212, 0.15); color: #f9a8d4; }
+.danger {
   border: none;
   background: rgba(244, 63, 94, 0.16);
   color: #fda4af;
@@ -983,7 +1103,8 @@ body.settings-page {
   font-size: 12px;
   flex: 0 0 auto;
 }
-.card .danger:hover { background: rgba(244, 63, 94, 0.32); }
+.danger:hover { background: rgba(244, 63, 94, 0.32); }
+.danger:disabled { opacity: 0.5; cursor: default; }
 .app-dot {
   width: 30px;
   height: 30px;
@@ -1003,9 +1124,11 @@ body.settings-page {
 .slider-label { flex: 0 0 92px; font-size: 12px; font-weight: 700; color: #c9c4ec; text-transform: capitalize; }
 .slider-row input[type="range"] { flex: 1; accent-color: #6c5ce7; cursor: pointer; }
 .slider-val { flex: 0 0 44px; text-align: right; font-size: 12px; font-weight: 700; color: #5eead4; font-variant-numeric: tabular-nums; }
+/* A row whose control is a dropdown has no value column, so the padding stands
+   in for one: the dropdown's right edge lines up with the slider tracks above. */
+.slider-row:has(.select) { padding-right: 54px; }
 .select { flex: 1; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.16); border-radius: 10px; padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer; }
 .select option { background: #2d2660; }
-.card .select,
 .select.mini {
   flex: 0 0 160px;
   width: 160px;
@@ -1017,32 +1140,15 @@ body.settings-page {
   white-space: nowrap;
 }
 .folder-path { flex: 1; min-width: 0; font-size: 12px; color: #c9c4ec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* plugin manager cards */
-.plugin-card { flex-direction: column; align-items: stretch; gap: 4px; }
-.plugin-head { display: flex; align-items: center; gap: 10px; }
-.plugin-head .id { flex: 1; }
-.plugin-toggle { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; color: #8f88c7; cursor: pointer; flex: 0 0 auto; }
-.plugin-toggle input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
-.plugin-card .hint { margin: 0; }
-.plugin-card .slider-row:last-child { margin-bottom: 2px; }
-/* themed scrollbar */
-body.settings-page { scrollbar-width: thin; scrollbar-color: #6c5ce7 transparent; }
-body.settings-page::-webkit-scrollbar { width: 10px; }
-body.settings-page::-webkit-scrollbar-track { background: transparent; }
-body.settings-page::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #6c5ce7, #00b894); border-radius: 8px; border: 2px solid #221d3f; }
 .note-area { scrollbar-width: thin; scrollbar-color: #6c5ce7 transparent; }
 .note-area::-webkit-scrollbar { width: 8px; }
 .note-area::-webkit-scrollbar-thumb { background: rgba(108,92,231,.45); border-radius: 8px; }
 /* resize grip (notes + clocks) */
 .resize-handle { position: absolute; right: 5px; bottom: 5px; width: 16px; height: 16px; cursor: nwse-resize; opacity: 0; transition: opacity 0.15s; background: linear-gradient(135deg, transparent 50%, rgba(108,92,231,.8) 50%); border-radius: 0 0 20px 0; z-index: 5; }
 .bubble:hover .resize-handle { opacity: 1; }
-.foot-row { display: flex; gap: 8px; margin-top: 20px; }
-.foot-row .pill { flex: 1; padding: 10px 0; }
 .error-bar {
   display: none;
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  flex: 0 0 auto;
   background: #7f1d2e;
   color: #ffe4e6;
   font-size: 12.5px;
