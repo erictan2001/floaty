@@ -5,6 +5,20 @@
   --accent-deep: #4a3fb5;
   --mint: #34d399;
   --danger: #e11d63;
+  /* The desktop-panel recipe, shared by every widget that draws a card — the
+     system monitor, the visualizer, the countdown example, and the note and
+     clock. A widget floats on the wallpaper, so it is a dark translucent panel
+     with a hairline border and a soft shadow; anything that reads as text sits
+     on --panel-ink, and hierarchy comes from opacity, not from another colour. */
+  --panel-bg: linear-gradient(160deg, rgba(20, 18, 38, 0.84), rgba(28, 24, 52, 0.74));
+  --panel-border: rgba(255, 255, 255, 0.13);
+  --panel-radius: 16px;
+  --panel-hairline: rgba(255, 255, 255, 0.08);
+  --panel-ink: #ece9ff;
+  --panel-ink-soft: rgba(236, 233, 255, 0.55);
+  --panel-ink-faint: rgba(236, 233, 255, 0.42);
+  --panel-track: rgba(255, 255, 255, 0.11);
+  --panel-inset: rgba(255, 255, 255, 0.035);
   /* Widget chrome sits on the wallpaper, not on a card: a wide dark halo around
      every tile read as heavy, so keep the depth and drop the spread. */
   --card-shadow: 0 5px 16px rgba(20, 16, 40, 0.2), 0 1px 3px rgba(20, 16, 40, 0.14);
@@ -31,14 +45,18 @@ body {
   height: 100vh;
 }
 
-/* ---------- shared bubble ---------- */
+/* ---------- shared panel (note, clock) ---------- */
+/* Same recipe as the system monitor and the countdown example: a dark
+   translucent card, a hairline border, a caption in letterspaced caps. */
 .bubble {
   width: 100%;
   height: 100vh;
-  background: linear-gradient(165deg, #ffffff 0%, #f4f1ff 55%, #e9f4ff 100%);
-  border: 1px solid rgba(255, 255, 255, 0.95);
-  border-radius: 22px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
   box-shadow: var(--card-shadow);
+  color: var(--panel-ink);
+  font-variant-numeric: tabular-nums;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -48,44 +66,39 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 12px;
+  padding: 8px 10px 7px;
   cursor: grab;
-  background: linear-gradient(120deg, #6c5ce7, #00b894 130%);
+  border-bottom: 1px solid var(--panel-hairline);
   flex: 0 0 auto;
 }
 .bar:active { cursor: grabbing; }
 
-.dots {
-  width: 26px;
-  height: 10px;
-  border-radius: 6px;
-  background: radial-gradient(circle at 5px 5px, rgba(255,255,255,.95) 2.4px, transparent 2.6px),
-    radial-gradient(circle at 13px 5px, rgba(255,255,255,.7) 2.4px, transparent 2.6px),
-    radial-gradient(circle at 21px 5px, rgba(255,255,255,.45) 2.4px, transparent 2.6px);
-}
-
 .bar-title {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
   flex: 1;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--panel-ink-soft);
 }
 
 .icon-btn {
   border: none;
-  background: rgba(255, 255, 255, 0.28);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--panel-ink);
   width: 22px;
   height: 22px;
   border-radius: 50%;
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  transition: background 0.15s, transform 0.15s;
+  /* quiet until the widget is under the cursor, like the monitor's × — but not
+     invisible: on the note and the clock this is the way the widget goes away */
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s, transform 0.15s;
 }
-.icon-btn:hover { background: rgba(255, 255, 255, 0.55); transform: scale(1.08); }
+.bubble:hover .icon-btn { opacity: 1; }
+.icon-btn:hover { background: rgba(255, 255, 255, 0.26); transform: scale(1.08); }
 
 /* ---------- note ---------- */
 .note-area {
@@ -94,68 +107,70 @@ body {
   outline: none;
   resize: none;
   background: transparent;
-  padding: 14px 16px;
-  font-size: 14.5px;
+  padding: 12px 14px;
+  font-size: 13.5px;
   line-height: 1.6;
-  color: var(--ink);
+  color: var(--panel-ink);
   font-family: "Cascadia Code", "Segoe UI", system-ui, sans-serif;
   user-select: text;
   -webkit-user-select: text;
 }
-.note-area::placeholder { color: #b6b0cf; font-style: italic; }
+.note-area::placeholder { color: rgba(236, 233, 255, 0.3); font-style: italic; }
 
 /* ---------- clock ---------- */
 .bubble.clock { text-align: center; }
 .clock-time {
-  font-size: 42px;
-  font-weight: 800;
-  margin-top: 8px;
+  font-size: 40px;
+  font-weight: 700;
+  margin-top: 10px;
   letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
-  color: var(--ink);
+  color: var(--panel-ink);
 }
 .clock-date {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--ink-soft);
-  margin-bottom: 4px;
+  color: var(--panel-ink-soft);
+  margin-bottom: 6px;
 }
 .pomo { padding: 2px 12px 12px; }
 .pomo-mode {
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.22em;
-  color: var(--accent);
+  color: #a79bff;
 }
-.bubble[data-phase="break"] .pomo-mode { color: #059669; }
+.bubble[data-phase="break"] .pomo-mode { color: #5eead4; }
 .pomo-ring {
   --pct: 0%;
   width: 106px;
   height: 106px;
-  margin: 8px auto;
+  margin: 10px auto;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: conic-gradient(var(--accent) var(--pct), #e4e0fb var(--pct));
-  box-shadow: 0 6px 18px rgba(108, 92, 231, 0.3);
+  background: conic-gradient(var(--accent) var(--pct), var(--panel-track) var(--pct));
+  box-shadow: 0 0 16px rgba(108, 92, 231, 0.28);
   transition: background 0.4s;
 }
 .bubble[data-phase="break"] .pomo-ring {
-  background: conic-gradient(#10b981 var(--pct), #d3f5e6 var(--pct));
-  box-shadow: 0 6px 18px rgba(16, 185, 129, 0.3);
+  background: conic-gradient(#5eead4 var(--pct), var(--panel-track) var(--pct));
+  box-shadow: 0 0 16px rgba(94, 234, 212, 0.22);
 }
 .pomo-time {
   width: 84px;
   height: 84px;
   border-radius: 50%;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  color: var(--panel-ink);
   display: grid;
   place-items: center;
   font-size: 21px;
-  font-weight: 800;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 .pomo-row { display: flex; gap: 8px; justify-content: center; }
@@ -172,13 +187,17 @@ body {
   transition: transform 0.12s, box-shadow 0.12s;
 }
 .pill:hover { transform: translateY(-1px); box-shadow: 0 7px 16px rgba(108, 92, 231, 0.4); }
-.pill.ghost { background: #ece9fb; color: #5a5478; box-shadow: none; }
+/* a panel is dark in every window that uses it, so the quiet pill is a
+   translucent one rather than a light chip — with a hairline, or it reads as a
+   label rather than a button */
+.pill.ghost { background: rgba(255, 255, 255, 0.1); border: 1px solid var(--panel-border); color: var(--panel-ink); box-shadow: none; }
+.pill.ghost:hover { background: rgba(255, 255, 255, 0.2); box-shadow: none; }
 .pill.small { padding: 6px 12px; font-size: 12px; }
 .pill.danger-btn { background: linear-gradient(135deg, #f43f5e, #be123c); box-shadow: 0 4px 12px rgba(244, 63, 94, 0.35); }
-.pomo-cycles { font-size: 11px; color: var(--ink-soft); margin-top: 6px; font-weight: 600; }
+.pomo-cycles { font-size: 10px; letter-spacing: 0.06em; color: var(--panel-ink-soft); margin-top: 8px; font-weight: 600; }
 .pomo-time { cursor: pointer; }
 .pomo-edit { display: flex; gap: 6px; justify-content: center; align-items: center; margin-top: 2px; }
-.pomo-num { width: 52px; border: 1px solid #d9d4f5; background: #fff; color: var(--ink); border-radius: 10px; padding: 6px 4px; font-size: 13px; font-weight: 700; text-align: center; outline: none; font-family: inherit; }
+.pomo-num { width: 52px; border: 1px solid rgba(255, 255, 255, 0.2); background: rgba(255, 255, 255, 0.08); color: var(--panel-ink); border-radius: 8px; padding: 5px 4px; font-size: 12.5px; font-weight: 600; text-align: center; outline: none; font-family: inherit; }
 .pomo-num:focus { border-color: var(--accent); }
 
 /* ---------- pet ---------- */
@@ -311,7 +330,7 @@ body {
   text-shadow: 0 1px 2px rgba(0,0,0,.4);
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.22);
 }
-.pet-tag .icon-btn { background: rgba(255,255,255,.2); width: 18px; height: 18px; font-size: 12px; }
+.pet-tag .icon-btn { background: rgba(255,255,255,.2); width: 18px; height: 18px; font-size: 12px; opacity: 1; }
 
 /* ---------- gravity app launchers ---------- */
 .launcher {
@@ -760,12 +779,13 @@ body {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  border-radius: 18px;
+  border-radius: var(--panel-radius);
   overflow: hidden;
-  background: linear-gradient(160deg, rgba(22, 18, 42, 0.82), rgba(30, 24, 60, 0.72));
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
   box-shadow: var(--card-shadow),
     0 0 calc(6px + var(--viz-level) * 26px) rgba(108, 92, 231, calc(0.15 + var(--viz-level) * 0.45));
+  color: var(--panel-ink);
   cursor: pointer;
   transition: box-shadow 0.12s linear;
 }
@@ -805,12 +825,12 @@ body {
   flex-direction: column;
   gap: 5px;
   padding: 9px 11px 7px;
-  border-radius: 16px;
+  border-radius: var(--panel-radius);
   overflow: hidden;
-  background: linear-gradient(160deg, rgba(20, 18, 38, 0.84), rgba(28, 24, 52, 0.74));
-  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
   box-shadow: var(--card-shadow);
-  color: #ece9ff;
+  color: var(--panel-ink);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
@@ -823,7 +843,7 @@ body {
   font-size: 9.5px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(236, 233, 255, 0.5);
+  color: var(--panel-ink-soft);
 }
 .sysmon-x { position: relative; margin: -4px -5px 0 0; opacity: 0; z-index: 3; }
 .sysmon-wrap:hover .sysmon-x { opacity: 1; }
@@ -844,7 +864,7 @@ body {
   font-size: 9.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: rgba(236, 233, 255, 0.55);
+  color: var(--panel-ink-soft);
 }
 .sysmon-val {
   font-size: 11.5px;
@@ -854,7 +874,7 @@ body {
 .sysmon-track {
   height: 3px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.11);
+  background: var(--panel-track);
   overflow: hidden;
 }
 .sysmon-track i {
@@ -869,15 +889,14 @@ body {
   min-height: 16px;
   width: 100%;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--panel-inset);
 }
 .sysmon-foot {
   font-size: 9px;
   letter-spacing: 0.05em;
-  color: rgba(236, 233, 255, 0.42);
+  color: var(--panel-ink-faint);
 }
 .sysmon-wrap .resize-handle {
-  background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%);
   opacity: 0;
 }
 .sysmon-wrap:hover .resize-handle { opacity: 0.9; }
@@ -889,7 +908,9 @@ body {
    styles they always had, so a plugin's own controls look the same as the ones
    the app draws around them. */
 body.settings-page {
-  background: linear-gradient(160deg, #1e1b32 0%, #2d2660 55%, #134e4a 130%);
+  /* the window is the same family as the panels it configures: dark, with the
+     accent only in the elements that are interactive */
+  background: linear-gradient(160deg, #14122a 0%, #1b1832 55%, #101a20 130%);
   background-attachment: fixed;
   height: 100vh;
   overflow: hidden;
@@ -913,7 +934,7 @@ body.settings-page {
   background-clip: text;
   color: transparent;
 }
-.set-brand p { margin: 2px 0 0; color: #a49fd0; font-size: 11.5px; }
+.set-brand p { margin: 2px 0 0; color: var(--panel-ink-soft); font-size: 11.5px; }
 .set-close {
   margin-left: auto;
   flex: 0 0 auto;
@@ -922,7 +943,7 @@ body.settings-page {
   border: none;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.1);
-  color: #cfc9f0;
+  color: var(--panel-ink-soft);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
@@ -934,14 +955,14 @@ body.settings-page {
   flex-wrap: wrap;
   gap: 6px;
   padding: 4px 16px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--panel-hairline);
 }
 .set-tab {
   border: none;
   border-radius: 999px;
   padding: 6px 13px;
   background: rgba(255, 255, 255, 0.07);
-  color: #b9b3dd;
+  color: var(--panel-ink-soft);
   font: inherit;
   font-size: 12.5px;
   font-weight: 700;
@@ -973,24 +994,25 @@ body.settings-page {
 .set-body::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); background-clip: padding-box; }
 .set-pane { max-width: 540px; margin: 0 auto; }
 .set-pane-head { margin-bottom: 16px; }
-.set-pane-title { margin: 0; font-size: 16.5px; font-weight: 800; }
-.set-pane-hint { margin: 5px 0 0; font-size: 12.5px; color: #a49fd0; line-height: 1.5; }
-/* one titled section: label, an optional line about it, then cards */
+.set-pane-title { margin: 0; font-size: 16.5px; font-weight: 800; color: var(--panel-ink); }
+.set-pane-hint { margin: 5px 0 0; font-size: 12.5px; color: var(--panel-ink-soft); line-height: 1.5; }
+/* one titled section: label, an optional line about it, then cards. The label
+   is the monitor's caption: 10px caps, wide tracking, dim ink. */
 .set-group { margin-bottom: 22px; }
 .set-group-title {
-  font-size: 11.5px;
-  font-weight: 800;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: #8f88c7;
+  letter-spacing: 0.14em;
+  color: var(--panel-ink-soft);
   margin: 0 0 8px;
 }
-.set-group-note { margin: -2px 0 10px; font-size: 12px; color: #a49fd0; line-height: 1.5; }
+.set-group-note { margin: -2px 0 10px; font-size: 12px; color: var(--panel-ink-faint); line-height: 1.5; }
 .set-group-body { display: flex; flex-direction: column; gap: 8px; }
 .set-item {
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 14px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
   padding: 10px 12px;
   display: flex;
   align-items: center;
@@ -1000,9 +1022,9 @@ body.settings-page {
 .set-item .slider-row { margin-bottom: 0; }
 .set-row { display: flex; align-items: center; gap: 10px; }
 .set-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.set-label { font-size: 12.5px; font-weight: 700; color: #ded9f7; }
-.set-sub { margin: 0; font-size: 12px; color: #a49fd0; line-height: 1.5; }
-.set-name { flex: 1; min-width: 0; font-size: 12px; color: #c9c4ec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-label { font-size: 12.5px; font-weight: 700; color: var(--panel-ink); }
+.set-sub { margin: 0; font-size: 12px; color: var(--panel-ink-soft); line-height: 1.5; }
+.set-name { flex: 1; min-width: 0; font-size: 12px; color: var(--panel-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .set-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .set-actions .pill { flex: 1 1 auto; min-width: 100px; padding: 9px 12px; }
 .set-actions .search { flex: 1 1 180px; }
@@ -1036,7 +1058,7 @@ body.settings-page {
 /* on/off switch */
 .set-switch { position: relative; flex: 0 0 auto; width: 40px; height: 22px; cursor: pointer; }
 .set-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.set-switch-track { position: absolute; inset: 0; border-radius: 999px; background: rgba(255, 255, 255, 0.16); transition: background 0.15s; }
+.set-switch-track { position: absolute; inset: 0; border-radius: 999px; background: var(--panel-track); transition: background 0.15s; }
 .set-switch-track::after {
   content: "";
   position: absolute;
@@ -1054,18 +1076,18 @@ body.settings-page {
 .set-switch input:disabled { cursor: default; }
 .search {
   flex: 1;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  color: var(--panel-ink);
   border-radius: 999px;
   padding: 9px 16px;
   font-size: 13px;
   outline: none;
   font-family: inherit;
 }
-.search::placeholder { color: #8f88c7; }
+.search::placeholder { color: var(--panel-ink-faint); }
 .search:focus { border-color: var(--accent); background: rgba(255, 255, 255, 0.12); }
-.count { font-size: 11.5px; color: #8f88c7; margin: 8px 2px; font-weight: 600; }
+.count { font-size: 11.5px; color: var(--panel-ink-faint); margin: 8px 2px; font-weight: 600; }
 /* kind chip: the plugin id, in the plugin's own hue but quiet enough that the
    plugin's *name* stays the loudest thing in the row */
 .kind {
@@ -1118,17 +1140,18 @@ body.settings-page {
   place-items: center;
   text-shadow: 0 1px 3px rgba(0,0,0,.3);
 }
-.empty { color: #8f88c7; font-size: 13px; text-align: center; padding: 16px 0; }
-/* sliders + selects */
+.empty { color: var(--panel-ink-faint); font-size: 13px; text-align: center; padding: 16px 0; }
+/* sliders + selects — same row shape as the monitor's metrics: a small caps
+   caption, the control, a tabular value in panel ink */
 .slider-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.slider-label { flex: 0 0 92px; font-size: 12px; font-weight: 700; color: #c9c4ec; text-transform: capitalize; }
-.slider-row input[type="range"] { flex: 1; accent-color: #6c5ce7; cursor: pointer; }
-.slider-val { flex: 0 0 44px; text-align: right; font-size: 12px; font-weight: 700; color: #5eead4; font-variant-numeric: tabular-nums; }
+.slider-label { flex: 0 0 108px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--panel-ink-soft); }
+.slider-row input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+.slider-val { flex: 0 0 44px; text-align: right; font-size: 11.5px; font-weight: 600; color: var(--panel-ink); font-variant-numeric: tabular-nums; }
 /* A row whose control is a dropdown has no value column, so the padding stands
    in for one: the dropdown's right edge lines up with the slider tracks above. */
 .slider-row:has(.select) { padding-right: 54px; }
-.select { flex: 1; background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.16); border-radius: 10px; padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer; }
-.select option { background: #2d2660; }
+.select { flex: 1; background: rgba(255,255,255,.08); color: var(--panel-ink); border: 1px solid rgba(255,255,255,.2); border-radius: 10px; padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; cursor: pointer; }
+.select option { background: #1b1830; }
 .select.mini {
   flex: 0 0 160px;
   width: 160px;
@@ -1139,13 +1162,14 @@ body.settings-page {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.folder-path { flex: 1; min-width: 0; font-size: 12px; color: #c9c4ec; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.note-area { scrollbar-width: thin; scrollbar-color: #6c5ce7 transparent; }
+.folder-path { flex: 1; min-width: 0; font-size: 12px; color: var(--panel-ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-area { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.2) transparent; }
 .note-area::-webkit-scrollbar { width: 8px; }
-.note-area::-webkit-scrollbar-thumb { background: rgba(108,92,231,.45); border-radius: 8px; }
-/* resize grip (notes + clocks) */
-.resize-handle { position: absolute; right: 5px; bottom: 5px; width: 16px; height: 16px; cursor: nwse-resize; opacity: 0; transition: opacity 0.15s; background: linear-gradient(135deg, transparent 50%, rgba(108,92,231,.8) 50%); border-radius: 0 0 20px 0; z-index: 5; }
-.bubble:hover .resize-handle { opacity: 1; }
+.note-area::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
+.note-area::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }
+/* resize grip (every panel: notes, clocks, monitor, visualizer) */
+.resize-handle { position: absolute; right: 5px; bottom: 5px; width: 16px; height: 16px; cursor: nwse-resize; opacity: 0; transition: opacity 0.15s; background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%); border-radius: 0 0 20px 0; z-index: 5; }
+.bubble:hover .resize-handle { opacity: 0.9; }
 .error-bar {
   display: none;
   flex: 0 0 auto;

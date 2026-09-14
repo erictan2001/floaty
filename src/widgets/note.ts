@@ -14,7 +14,7 @@ export function mountNote(root: HTMLElement, id: string): void {
   void (async () => {
     const rec = await loadRecord(id);
     if (!rec) return;
-    wrap.prepend(makeBar("floaty note", () => void removeSelf(rec), id));
+    wrap.prepend(makeBar("note", () => void removeSelf(rec), id));
     addPinMenu(wrap, () => rec);
     // restore saved size
     const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 0;

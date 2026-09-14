@@ -186,7 +186,7 @@ export function mountClock(root: HTMLElement, id: string): void {
   void (async () => {
     const rec = await loadRecord(id);
     if (!rec) return;
-    wrap.prepend(makeBar("floaty clock", () => void removeSelf(rec), id));
+    wrap.prepend(makeBar("clock", () => void removeSelf(rec), id));
     addPinMenu(wrap, () => rec);
     recRef = rec;
     // restore saved timer lengths (seconds, clamped to 1m..3h)

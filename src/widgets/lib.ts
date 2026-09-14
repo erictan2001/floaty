@@ -503,12 +503,17 @@ export function enableOverlayDrag(
   );
 }
 
-/** Title bar that native-drags the window. Buttons inside must stopPropagation. */
+/**
+ * Title row for the widgets that have one — the note and the clock.
+ *
+ * It reads like the system monitor's header: a small letterspaced caption and a
+ * close button that stays quiet until the widget is under the cursor. No dots,
+ * no coloured strip: a panel floats on the wallpaper and the chrome stays part
+ * of the panel (`--panel-*` in style.css).
+ */
 export function makeBar(title: string, onClose: () => void, id?: string): HTMLElement {
   const bar = document.createElement("div");
   bar.className = "bar";
-  const dots = document.createElement("span");
-  dots.className = "dots";
   const label = document.createElement("span");
   label.className = "bar-title";
   label.textContent = title;
@@ -521,7 +526,7 @@ export function makeBar(title: string, onClose: () => void, id?: string): HTMLEl
     e.stopPropagation();
     onClose();
   });
-  bar.append(dots, label, close);
+  bar.append(label, close);
   enableOverlayDrag(bar, id);
   return bar;
 }

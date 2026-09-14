@@ -157,8 +157,14 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.monitorArea()` | The desktop area the widget may use: `{ x, y, w, h }`. |
 
 Style the widget yourself: size the container to `100%` and inject a `<style>`
-element from your module. Theme variables such as `--card-shadow` are available
-on `:root`.
+element from your module. To look like the built-in panels, build your card from
+the values the panels use — `linear-gradient(160deg, rgba(20,18,38,.84),
+rgba(28,24,52,.74))`, `1px solid rgba(255,255,255,.13)`, `16px` radius,
+`var(--card-shadow)` for the elevation, `#ece9ff` text with `tabular-nums`, small
+caps captions at 55% opacity — or use the `--panel-bg` / `--panel-border` /
+`--panel-radius` / `--panel-ink*` variables on `:root` (a built-in does; an
+installed plugin should inline the values, since floaty's stylesheet is not part
+of the plugin contract).
 
 ### Debugging
 
