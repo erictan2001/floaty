@@ -93,6 +93,27 @@ the build when the plugin listed in the backend registry and the one registered 
 the frontend disagree, which is the one mistake that is easy to make and invisible
 at runtime.
 
+## Releasing
+
+A tag is the release. Write the version down once, tag it, push:
+
+```powershell
+node scripts/set-version.mjs 0.2.0   # tauri.conf.json, Cargo.toml, package.json
+git commit -am "release 0.2.0"
+git tag v0.2.0
+git push origin main --tags
+```
+
+`.github/workflows/release.yml` then checks the tree (`check-plugins`, `tsc`,
+`cargo test` — a tag whose tests fail gets no release), builds on `windows-latest`
+and attaches the NSIS installer, the MSI and the bare `Floaty.exe` to the GitHub
+release for that tag. The version in the bundles is taken from the tag, so the
+release page and the file you download cannot disagree about which release they
+are. The same workflow can be run by hand against a tag that already exists; set
+`releaseDraft: true` in it if you would rather review a release before it goes
+public, and see [Signing](#signing) for what a signed build needs (the thumbprint
+is per-machine, so it belongs in a repository secret).
+
 ## The desktop is a folder
 
 `files_root` is the single source of truth. Every desktop item is a mirror of an
@@ -274,6 +295,8 @@ src-tauri/src/
 docs/PLUGINS.md                 plugin authoring reference
 examples/plugins/countdown      worked example plugin
 scripts/check-plugins.mjs       backend/frontend plugin id agreement
+scripts/set-version.mjs         write the version into every file that carries one
+.github/workflows/release.yml   tagged build → checked, published GitHub release
 ```
 
 ## Notes for anyone working on it

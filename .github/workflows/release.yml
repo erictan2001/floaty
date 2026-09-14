@@ -1,0 +1,129 @@
+name: release
+
+# A tag is the release. Push v0.2.0 and this checks the tree, builds the Windows
+# bundles with the version taken from that tag, and attaches them to the tag's
+# GitHub release. It is the same path a manual run takes, except that a manual run
+# must name a tag that already exists instead of creating one.
+#
+# Nothing here is signed: SmartScreen warns on first run until a certificate is
+# wired in (see "Signing" in the README — the thumbprint is per-machine, so it
+# belongs in a secret, not in this file).
+#
+# To review a release before it goes public, set releaseDraft to true below.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.2.0)"
+        required: true
+        type: string
+
+# Creating the release and uploading the installers to it needs write access; the
+# default token has none.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    # Windows only, matching the app: shell verbs, the Recycle Bin, WASAPI loopback
+    # and the desktop-layer window policy are all Win32.
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: check out the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: the tag has to exist
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          if ! git rev-parse --verify --quiet "refs/tags/${{ github.event.inputs.tag }}"; then
+            echo "::error::no tag named ${{ github.event.inputs.tag }}"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # the crate lives in src-tauri, so that is the workspace to cache
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      - name: take the version from the tag
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::warning::$TAG does not look like a version — the build keeps the version in the files"
+            exit 0
+          fi
+          node scripts/set-version.mjs "$version"
+          echo "version: \`$version\` (from $TAG)" >> "$GITHUB_STEP_SUMMARY"
+
+      # The same guards the build runs, plus the tests: a tag whose tree does not
+      # pass them does not get a release.
+      - name: check plugins and types
+        run: |
+          npm run check:plugins
+          npx tsc --noEmit
+
+      - name: rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: build and publish the release
+        id: build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: Floaty ${{ github.event.inputs.tag || github.ref_name }}
+          releaseBody: |
+            Desktop widgets for Windows, built from `${{ github.event.inputs.tag || github.ref_name }}`.
+
+            **Install:** `Floaty_*_x64-setup.exe` is the NSIS installer; the `.msi` is there for anyone who wants one. Both are unsigned, so SmartScreen will warn — *More info* → *Run anyway*. Needs Windows 10/11 with the WebView2 runtime (Windows 11 ships it).
+
+            `Floaty.exe` on its own is the unpacked application, if you would rather not install anything.
+          releaseDraft: false
+          prerelease: false
+          # No updater plugin in this project, so there is no updater feed to write
+          uploadUpdaterJson: false
+          # also attach the bare Floaty.exe: nothing to install, and it is what the
+          # release body points at for people who would rather not run a setup
+          uploadPlainBinary: true
+          retryAttempts: 2
+
+      - name: list what was built
+        shell: bash
+        env:
+          PATHS: ${{ steps.build.outputs.artifactPaths }}
+        run: |
+          {
+            echo "### bundled files"
+            echo
+            echo '```'
+            echo "$PATHS" | tr ',' '\n'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
