@@ -213,10 +213,40 @@ plugins folder as a starting point.
 [`examples/plugins/trail`](../examples/plugins/trail) is the other half of the
 picture, for a plugin that acts on the desktop instead of sitting on it: it resizes
 its own slot to the monitor area to take the mouse (the overlay is click-through
-outside a widget's own rectangle), captures a stroke on a canvas, then moves the
+outside a widget's own rectangle), captures strokes on a canvas, then moves the
 *other* floaties with `floaty_list`, `api.setPos` and `api.record.save` — and calls
 `floaty_refresh` so the ones already on screen re-read their records instead of
-carrying on falling.
+carrying on falling. Its two modes are the interesting part: **single** treats each
+stroke as an instruction and arranges at once, staying open so the next stroke moves
+them again; **multiple** accumulates paths and arranges only when the user presses
+done. Enter leaves either mode (in multiple it arranges first), and escape does the
+same without a word about cancelling. A mode's surface is its own thing, not the widget
+stretched over the desktop: the panel hands its slot the monitor area so the mouse
+reaches the drawing, hides itself (header, hint, count, buttons) for as long as the mode
+is open, and comes back exactly as it was. Four things it shows that are worth copying:
+hang the canvas off `document.body`, or a slot can clip it; clear the canvas before
+filling it, or a see-through fill composites over the opaque one from the last paint
+and stays opaque; keep a mode's own state (`session`) apart from the saved state until
+the user confirms it, so escape really is a cancel; and space a run of icons by **one gap
+for every pair** — an even split of the path — rather than giving each pair exactly the
+room its local direction demands. The latter is defensible pair by pair and looks wrong:
+a path that steepens then flattens comes out bunched where it steepened and sparse where
+it flattened. A run also has the two end margins of slack to slide in, and sliding it
+whole keeps every gap identical, so pick the phase that clashes least with trails already
+arranged before moving any single icon; that, and nudging only icons that land on
+*another* trail, is what keeps a crossing from deforming an otherwise even run. The
+icons are then shared between the trails **by length, not by count** — a short trail
+given as many icons as a long one is cramped while the long one is sparse, and the
+spacing either side of a crossing stops matching; what is wanted is the same gap on every
+trail, and that gap is (total length)/(icons), so each trail's share of the icons is its
+share of the length. Largest-remainder rounding, a floor of one icon per trail while
+there are icons to spare, and membership decided by which trail an icon is nearest to
+(so nothing crosses the desktop to reach its place). Each icon it places is marked
+`arranged` and `pinned` on its own record, which is what makes an arrangement survive a
+restart: the overlay's layout pass leaves any record that has a position exactly where it
+is — off the edge of the screen and overlapping a neighbour included, because the user put
+it there — and only gives a place of its own to a record the backend has never placed
+(one written at 0,0), which is how a freshly scanned icon still lands somewhere clean.
 
 ## Built-in plugins
 

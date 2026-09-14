@@ -51,26 +51,27 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea, top
     // which is the one they are drawn in.
     if (isPinned(rec) !== top) continue;
     const { w, h } = pluginSize(rec);
-    const hasPos = rec.x > 10 || rec.y > 10;
-    const inBounds =
-      rec.x >= 16 &&
-      rec.y >= 16 &&
-      rec.x + w <= screenW - 16 &&
-      rec.y + h <= screenH - 16;
 
-    let collides = false;
-    if (hasPos && inBounds) {
-      for (const p of placed) {
-        const ox = Math.min(rec.x + w, p.x + p.w) - Math.max(rec.x, p.x);
-        const oy = Math.min(rec.y + h, p.y + p.h) - Math.max(rec.y, p.y);
-        if (ox > 40 && oy > 40) {
-          collides = true;
-          break;
-        }
-      }
+    // A record a widget placed on purpose is left exactly where it is. The trail widget
+    // marks the icons it arranged (`data.arranged`), because the collision test below
+    // allows only 40px of overlap — and the even spacing of a trail reads as a pile of
+    // collisions on a curvy path, where icons a gap apart overlap vertically by more
+    // than that. Without this the whole run was relocated to the icon grid on the next
+    // launch, so an arrangement lasted exactly until the app was restarted.
+    if (rec.data["arranged"] === true) {
+      placed.push({ id: rec.id, x: rec.x, y: rec.y, w, h });
+      continue;
     }
 
-    if (hasPos && inBounds && !collides) {
+    // A saved position is the truth. The pass above only needs to give a place to a
+    // record that does not have one — the backend writes a fresh widget at (0, 0) — so
+    // anything past that is left exactly as it is, even a little off the screen or
+    // overlapping a neighbour, because the user is the one who put it there. Testing
+    // `inBounds` first was how a widget dragged 3px past the edge "lost" its position:
+    // it failed the bounds test, was tidied onto the grid, and the tidy-up was saved
+    // over what the user had chosen.
+    const hasPos = rec.x > 10 || rec.y > 10;
+    if (hasPos) {
       placed.push({ id: rec.id, x: rec.x, y: rec.y, w, h });
     } else {
       needsRelocation.push(rec);
@@ -405,7 +406,11 @@ export function mountOverlay(root: HTMLElement): void {
   listen<WidgetRecord>("floaty-widget-added", (e) => {
     if (e.payload) {
       const rec = e.payload;
-      if (rec.data["pinned"] !== true) {
+      // Only a record the backend has never placed is tidied: a widget with a saved
+      // position — one the user dragged, or one a widget arranged — keeps it, even off
+      // the edge of the screen.
+      const hasPos = rec.x > 10 || rec.y > 10;
+      if (rec.data["pinned"] !== true && !hasPos) {
         const { w, h } = pluginSize(rec);
         const safe = preventOverlap(rec.id, rec.x, rec.y, w, h);
         if (safe.x !== rec.x || safe.y !== rec.y) {

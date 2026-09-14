@@ -237,9 +237,11 @@ Built in (`src-tauri/src/plugins.rs` is the manifest):
 | `sysmon` | CPU, 3D GPU and RAM load with a scrolling graph |
 
 `countdown` and `trail`, in [`examples/plugins`](examples/plugins), are complete
-plugins written the third-party way — `countdown` is a widget that keeps to itself,
-`trail` draws a path on the desktop and arranges the icons along it — and both are
-good references.
+plugins written the third-party way — `countdown` is a widget that keeps to itself;
+`trail` draws paths on the desktop and lines the desktop items up along them, in
+`single` mode where every stroke rearranges the icons at once or `multiple` mode where
+the paths pile up until you press done, with enter or escape to leave the surface — and
+both are good references.
 
 ## Plugins
 
