@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragging, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragging, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -457,7 +457,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
   void (async () => {
     await reload();
     // belt and braces with the builder flag: folders live under real apps
-    void appWin.setAlwaysOnTop(false).catch(() => undefined);
+    enforceDesktopLayer();
     window.addEventListener("beforeunload", () => void savePos());
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) void savePos();

@@ -3,8 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import {
   currentSettings,
   isOverlayMode,
+  isPinned,
+  isTopLayer,
   beatNow,
   startHeartbeat,
+  appWin,
   monitorArea,
   preventOverlap,
   registerOverlaySlot,
@@ -23,7 +26,7 @@ import { crossCheckPlugins, layoutPriorityFor, pluginSize } from "./widgets/plug
  * Existing valid in-bounds positions are preserved; any widgets at (0, 0), offscreen,
  * or colliding with earlier widgets are assigned clean, staggered desktop grid coordinates.
  */
-export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea): void {
+export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea, top: boolean): void {
   const screenW = mon.w > 0 ? mon.w : (window.innerWidth || 1920);
   const screenH = mon.h > 0 ? mon.h : (window.innerHeight || 1080);
 
@@ -42,6 +45,9 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea): vo
   );
 
   for (const rec of sorted) {
+    // Only this layer's widgets: the other layer's are laid out by its own page,
+    // which is the one they are drawn in.
+    if (isPinned(rec) !== top) continue;
     const { w, h } = pluginSize(rec);
     const hasPos = rec.x > 10 || rec.y > 10;
     const inBounds =
@@ -116,7 +122,8 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea): vo
 
 export function mountOverlay(root: HTMLElement): void {
   watchSettings();
-  startHeartbeat("desktop-overlay");
+  const top = isTopLayer();
+  startHeartbeat(appWin.label);
   root.innerHTML = "";
 
   const canvas = document.createElement("div");
@@ -128,6 +135,12 @@ export function mountOverlay(root: HTMLElement): void {
 
   const mountWidget = (rec: WidgetRecord) => {
     if (mountedSlots.has(rec.id)) return;
+    // Each layer draws only its own widgets: the desktop layer everything that
+    // is not pinned, the always-on-top layer the ones that are. A widget is
+    // mounted by exactly one of them (the backend tells both to reconcile when
+    // the pin is toggled), which is what keeps a pinned widget from appearing in
+    // the desktop layer as well.
+    if (isPinned(rec) !== top) return;
     const s = currentSettings();
     if (s.disabled && s.disabled.includes(rec.kind)) return;
 
@@ -193,23 +206,24 @@ export function mountOverlay(root: HTMLElement): void {
       const tList = performance.now();
       const mon = await monitorArea();
       const tMonitor = performance.now();
+      const mine = list.filter((rec) => isPinned(rec) === top);
       invoke("floaty_log", {
-        msg: `[overlay] init: plugins ${Math.round(tPlugins - t0)}ms, list(${list.length}) ${Math.round(
+        msg: `[overlay${top ? ":top" : ""}] init: plugins ${Math.round(tPlugins - t0)}ms, list(${list.length}) ${Math.round(
           tList - tPlugins,
-        )}ms, monitor ${Math.round(tMonitor - tList)}ms, from page start ${Math.round(tMonitor)}ms`,
+        )}ms, mine(${mine.length}) monitor ${Math.round(tMonitor - tList)}ms, from page start ${Math.round(tMonitor)}ms`,
       }).catch(() => undefined);
-      resolveOverlayLayout(list, mon);
+      resolveOverlayLayout(list, mon, top);
       // Time each mount per kind: a reload's cost is dominated by whatever this
       // says, and the mount loop is synchronous, so the sum is the page's stall.
       const mountCost = new Map<string, number>();
-      for (const rec of list) {
+      for (const rec of mine) {
         const t0 = performance.now();
         mountWidget(rec);
         mountCost.set(rec.kind, (mountCost.get(rec.kind) ?? 0) + (performance.now() - t0));
       }
       invoke("floaty_log", {
         msg:
-          "[overlay] mount cost: " +
+          `[overlay${top ? ":top" : ""}] mount cost: ` +
           Array.from(mountCost)
             .sort((a, b) => b[1] - a[1])
             .map(([k, ms]) => `${k} ${Math.round(ms)}ms`)
@@ -220,14 +234,14 @@ export function mountOverlay(root: HTMLElement): void {
       // sizes came from. If the manifest did not arrive, every kind would be
       // missing here and the slots would be the 100x100 fallback.
       const summary = new Map<string, { n: number; size: string }>();
-      for (const rec of list) {
+      for (const rec of mine) {
         const { w, h } = pluginSize(rec);
         const slot = summary.get(rec.kind) ?? { n: 0, size: `${w}x${h}` };
         slot.n += 1;
         summary.set(rec.kind, slot);
       }
       invoke("floaty_log", {
-        msg: `[overlay] mounted ${mountedSlots.size}/${list.length} floaties — ${Array.from(summary)
+        msg: `[overlay${top ? ":top" : ""}] mounted ${mountedSlots.size}/${mine.length} floaties — ${Array.from(summary)
           .map(([kind, s]) => `${kind} ${s.n}x${s.size}`)
           .join(", ")}`,
       }).catch(() => undefined);
@@ -325,8 +339,8 @@ export function mountOverlay(root: HTMLElement): void {
       // Tell the backend now: it knows whether the display is actually on, and a
       // hidden page while the display is on means Chromium's occlusion verdict is
       // stale and this page's timers are about to be throttled.
-      beatNow("desktop-overlay");
-      invoke("floaty_log", { msg: "[overlay] hidden" }).catch(() => undefined);
+      beatNow(appWin.label);
+      invoke("floaty_log", { msg: `[overlay${top ? ":top" : ""}] hidden` }).catch(() => undefined);
       return;
     }
     const gap = hiddenSince ? Date.now() - hiddenSince : 0;
@@ -337,9 +351,9 @@ export function mountOverlay(root: HTMLElement): void {
     // bands. Detaching the canvas for one frame makes Chromium repaint the whole
     // surface instead of only the damage it knows about.
     forceRepaint();
-    beatNow("desktop-overlay");
+    beatNow(appWin.label);
     invoke("floaty_log", {
-      msg: `[overlay] visible again after ${Math.round(gap / 1000)}s`,
+      msg: `[overlay${top ? ":top" : ""}] visible again after ${Math.round(gap / 1000)}s`,
     }).catch(() => undefined);
   });
 

@@ -488,7 +488,13 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
     {
         if let Some(win) = app.get_webview_window("desktop-overlay") {
             if let Ok(hwnd) = win.hwnd() {
-                desktop_pin::apply_overlay_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+                desktop_pin::apply_overlay_desktop_pin("desktop-overlay", hwnd.0 as isize, s.stay_on_desktop);
+            }
+        }
+        if let Some(win) = app.get_webview_window("top-overlay") {
+            // the always-on-top layer is never parented into the desktop
+            if let Ok(hwnd) = win.hwnd() {
+                desktop_pin::apply_overlay_desktop_pin("top-overlay", hwnd.0 as isize, false);
             }
         }
         for (label, win) in app.webview_windows() {
@@ -540,6 +546,7 @@ mod desktop_pin {
     const SWP_NOACTIVATE: u32 = 0x0010;
     const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_HIDEWINDOW: u32 = 0x0080;
+    const HWND_TOPMOST: isize = -1;
 
     const WM_SYSCOMMAND: u32 = 0x0112;
     const SC_MINIMIZE: usize = 0xF020;
@@ -893,9 +900,47 @@ mod desktop_pin {
     const RGN_OR: i32 = 2;
     const WS_EX_TRANSPARENT: isize = 0x00000020;
 
-    static OVERLAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-    static OVERLAY_IS_DRAGGING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    static OVERLAY_HIT_RECTS: std::sync::RwLock<Vec<HitRect>> = std::sync::RwLock::new(Vec::new());
+    /// The overlay windows and their click-through regions, keyed by window
+    /// label: `desktop-overlay` is the desktop layer, `top-overlay` holds the
+    /// widgets pinned above other windows. Each window keeps its own region — a
+    /// region applied to the wrong window is either a window that swallows every
+    /// click on the screen or one that cannot be clicked at all.
+    static OVERLAY_HWNDS: std::sync::RwLock<Vec<(String, isize)>> = std::sync::RwLock::new(Vec::new());
+    static OVERLAY_HIT_RECTS: std::sync::RwLock<Vec<(String, Vec<HitRect>)>> =
+        std::sync::RwLock::new(Vec::new());
+    static OVERLAY_IS_DRAGGING: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+    fn remember_hwnd(label: &str, hwnd: isize) {
+        if let Ok(mut guard) = OVERLAY_HWNDS.write() {
+            match guard.iter_mut().find(|(l, _)| l == label) {
+                Some(slot) => slot.1 = hwnd,
+                None => guard.push((label.to_string(), hwnd)),
+            }
+        }
+    }
+
+    fn hwnd_for(label: &str) -> isize {
+        OVERLAY_HWNDS
+            .read()
+            .ok()
+            .and_then(|g| g.iter().find(|(l, _)| l == label).map(|(_, h)| *h))
+            .unwrap_or(0)
+    }
+
+    fn rects_for(label: &str) -> Vec<HitRect> {
+        OVERLAY_HIT_RECTS
+            .read()
+            .ok()
+            .and_then(|g| g.iter().find(|(l, _)| l == label).map(|(_, r)| r.clone()))
+            .unwrap_or_default()
+    }
+
+    fn is_dragging(label: &str) -> bool {
+        OVERLAY_IS_DRAGGING
+            .read()
+            .map(|g| g.iter().any(|l| l == label))
+            .unwrap_or(false)
+    }
 
     pub fn apply_hit_regions(hwnd: isize, rects: &[HitRect]) {
         if hwnd == 0 {
@@ -930,27 +975,39 @@ mod desktop_pin {
         }
     }
 
-    pub fn set_hit_rects(rects: Vec<HitRect>) {
-        let hwnd = OVERLAY_HWND.load(Ordering::Relaxed);
-        let is_dragging = OVERLAY_IS_DRAGGING.load(Ordering::Relaxed);
+    pub fn set_hit_rects(label: String, rects: Vec<HitRect>) {
         let changed = if let Ok(mut guard) = OVERLAY_HIT_RECTS.write() {
-            if *guard == rects {
-                false
-            } else {
-                *guard = rects.clone();
-                true
+            match guard.iter_mut().find(|(l, _)| *l == label) {
+                Some(slot) => {
+                    if slot.1 == rects {
+                        false
+                    } else {
+                        slot.1 = rects.clone();
+                        true
+                    }
+                }
+                None => {
+                    guard.push((label.clone(), rects.clone()));
+                    true
+                }
             }
         } else {
             false
         };
-        if changed && !is_dragging && hwnd != 0 {
+        let hwnd = hwnd_for(&label);
+        if changed && !is_dragging(&label) && hwnd != 0 {
             apply_hit_regions(hwnd, &rects);
         }
     }
 
-    pub fn set_dragging(dragging: bool) {
-        OVERLAY_IS_DRAGGING.store(dragging, Ordering::Relaxed);
-        let hwnd = OVERLAY_HWND.load(Ordering::Relaxed);
+    pub fn set_dragging(label: String, dragging: bool) {
+        if let Ok(mut guard) = OVERLAY_IS_DRAGGING.write() {
+            guard.retain(|l| *l != label);
+            if dragging {
+                guard.push(label.clone());
+            }
+        }
+        let hwnd = hwnd_for(&label);
         if hwnd != 0 {
             if dragging {
                 // Clear the window region during dragging so the entire desktop can receive drag events
@@ -958,18 +1015,46 @@ mod desktop_pin {
                     SetWindowRgn(hwnd, 0, 0);
                 }
             } else {
-                if let Ok(guard) = OVERLAY_HIT_RECTS.read() {
-                    apply_hit_regions(hwnd, &guard);
-                }
+                apply_hit_regions(hwnd, &rects_for(&label));
             }
         }
     }
 
     pub fn cleanup_hook() {}
 
-    pub fn apply_overlay_desktop_pin(hwnd: isize, stay_on_desktop: bool) {
+    /// Put a window in front of *everything*, other topmost windows included.
+    ///
+    /// `WS_EX_TOPMOST` is not exclusive: every topmost window keeps the flag, and
+    /// the band is ordered by whoever raised (or was activated) last. A remote
+    /// desktop window that puts itself on top therefore covers a window that is
+    /// also topmost — measured: RustDesk's session window one slot above the
+    /// pinned layer. Re-asserting the position is what "always on top" means in
+    /// practice, and it is what desktop "keep on top" utilities do.
+    ///
+    /// `SWP_NOACTIVATE` is the point of the flags: the z-order changes, the
+    /// focus does not — the user keeps typing where they were typing.
+    pub fn raise_above_everything(hwnd: isize) {
+        if hwnd == 0 {
+            return;
+        }
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    /// Style an overlay window and remember it under its label, so the regions
+    /// its page sends land on the right window.
+    pub fn apply_overlay_desktop_pin(label: &str, hwnd: isize, stay_on_desktop: bool) {
         apply_desktop_pin(hwnd, stay_on_desktop);
-        OVERLAY_HWND.store(hwnd, Ordering::SeqCst);
+        remember_hwnd(label, hwnd);
         unsafe {
             // Remove WS_EX_TRANSPARENT so the shaped regions receive clicks normally
             let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -999,7 +1084,9 @@ mod desktop_pin {
             );
         }
         if let Ok(guard) = OVERLAY_HIT_RECTS.read() {
-            apply_hit_regions(hwnd, &guard);
+            if let Some((_, rects)) = guard.iter().find(|(l, _)| l == label) {
+                apply_hit_regions(hwnd, rects);
+            }
         }
     }
 }
@@ -1179,6 +1266,36 @@ fn shared_app() -> Option<AppHandle> {
     SHARED_APP.get().cloned()
 }
 
+/// Put the pinned layer back in front of everything else.
+#[cfg(windows)]
+fn raise_top_layer(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(TOP_LAYER) else { return };
+    if let Ok(hwnd) = w.hwnd() {
+        desktop_pin::raise_above_everything(hwnd.0 as isize);
+    }
+}
+
+#[cfg(not(windows))]
+fn raise_top_layer(_app: &AppHandle) {}
+
+/// Keep the pinned layer above other *topmost* windows.
+///
+/// Being topmost is not enough on its own: Windows keeps every topmost window in
+/// one band and orders that band by whoever raised last, so a remote-desktop
+/// window that puts itself on top covers the pinned widgets (measured: RustDesk's
+/// session window directly above `top-overlay`). Two assertions a second is what
+/// "stay on top" costs — a `SetWindowPos` that does not move, resize or activate
+/// anything — and the work only happens while the layer exists, which is only
+/// while some widget is pinned.
+fn start_top_layer_watchdog() {
+    const INTERVAL_MS: u64 = 500;
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(INTERVAL_MS));
+        let Some(app) = shared_app() else { continue };
+        raise_top_layer(&app);
+    });
+}
+
 /// Hands the display-state notification to the first window that asks: Modern
 /// Standby never sends a resume message, only this setting change, so without it
 /// nothing knows the screen came back.
@@ -1240,7 +1357,10 @@ fn recover_windows(reason: &str) {
         // is not watched (it is still the window that holds the display-state
         // notification, which is what matters about it).
         .filter(|(label, _)| {
-            label == "desktop-overlay" || label == "settings" || label.starts_with("widget-")
+            label == DESKTOP_LAYER
+                || label == TOP_LAYER
+                || label == "settings"
+                || label.starts_with("widget-")
         })
         .collect();
     let started = std::time::Instant::now();
@@ -1267,7 +1387,11 @@ fn recover_windows(reason: &str) {
     for (label, w) in &windows {
         if let Ok(hwnd) = w.hwnd() {
             if label == "desktop-overlay" {
-                desktop_pin::apply_overlay_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+                desktop_pin::apply_overlay_desktop_pin(label, hwnd.0 as isize, s.stay_on_desktop);
+            } else if label == "top-overlay" {
+                desktop_pin::apply_overlay_desktop_pin(label, hwnd.0 as isize, false);
+                // a wake-up can leave it buried under other topmost windows
+                raise_top_layer(&app);
             } else {
                 desktop_pin::apply_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
             }
@@ -1537,7 +1661,7 @@ fn floaty_heartbeat(label: String, visibility: Option<String>, app: AppHandle) {
 /// Replace a wedged window: nothing the page or the webview API does can be
 /// trusted by this point, so close it for real and build it again.
 fn recreate_window(app: &AppHandle, label: &str) {
-    if label == "desktop-overlay" {
+    if label == DESKTOP_LAYER || label == TOP_LAYER {
         if let Some(w) = app.get_webview_window(label) {
             let _ = w.destroy();
         }
@@ -1550,18 +1674,26 @@ fn recreate_window(app: &AppHandle, label: &str) {
             if app.get_webview_window(label).is_some() {
                 continue;
             }
-            match spawn_overlay_window(app) {
+            let again = if label == TOP_LAYER {
+                // only if something is still pinned: nothing pinned means the
+                // layer is meant to be gone
+                sync_top_overlay(app);
+                Ok(())
+            } else {
+                spawn_overlay_window(app).map(|_| ())
+            };
+            match again {
                 Ok(()) => {
                     let waited = attempt as f64 * 0.25;
-                    log_line(app, &format!("power: overlay re-created after {waited:.1}s"));
+                    log_line(app, &format!("power: {label} re-created after {waited:.1}s"));
                     return;
                 }
-                Err(e) => log_line(app, &format!("power: overlay re-create failed: {e}")),
+                Err(e) => log_line(app, &format!("power: {label} re-create failed: {e}")),
             }
         }
         log_line(
             app,
-            "power: the old overlay window never came down — leaving it alone",
+            &format!("power: the old {label} window never came down — leaving it alone"),
         );
         return;
     }
@@ -1580,6 +1712,26 @@ fn record_for_window(app: &AppHandle, label: &str) -> Option<WidgetRecord> {
         .values()
         .find(|r| widget_label(&r.id) == label)
         .cloned()
+}
+
+/// Whether this widget asked to sit above other windows.
+///
+/// Everything else floats in the desktop layer, and that layer is *one* window in
+/// the overlay mode: a window-level "on top" set on it lifts every widget at once
+/// (which is what "Pin on top" used to do). Widgets that want to be above other
+/// applications are drawn in a second overlay that is always on top instead — see
+/// `spawn_top_overlay` — and only that layer carries the flag.
+fn wants_on_top(rec: &WidgetRecord) -> bool {
+    rec.data.get("on_top").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// The desktop layer's window, and the layer a pinned widget is drawn in.
+const DESKTOP_LAYER: &str = "desktop-overlay";
+const TOP_LAYER: &str = "top-overlay";
+
+/// Whether the overlay mode is running (as opposed to one window per widget).
+fn is_overlay_running(app: &AppHandle) -> bool {
+    app.get_webview_window(DESKTOP_LAYER).is_some()
 }
 
 // ---------- windows ----------
@@ -1642,7 +1794,15 @@ fn overlay_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
 /// machine is asleep (a dock, a projector, a different scaling), which leaves the
 /// overlay the wrong size and the widgets outside it looking stuck.
 fn fit_overlay_to_monitor(app: &AppHandle) {
-    let Some(w) = app.get_webview_window("desktop-overlay") else { return };
+    // both layers are the size of the monitor: the desktop layer and the layer
+    // holding the widgets pinned above other windows
+    for label in [DESKTOP_LAYER, TOP_LAYER] {
+        fit_layer_to_monitor(app, label);
+    }
+}
+
+fn fit_layer_to_monitor(app: &AppHandle, label: &str) {
+    let Some(w) = app.get_webview_window(label) else { return };
     let (x, y, ww, hh) = overlay_rect(app);
     if ww < 100.0 || hh < 100.0 {
         return;
@@ -1656,7 +1816,7 @@ fn fit_overlay_to_monitor(app: &AppHandle) {
             return;
         }
     }
-    log_line(app, &format!("overlay: refitting to {x},{y} {ww}x{hh}"));
+    log_line(app, &format!("{label}: refitting to {x},{y} {ww}x{hh}"));
     let _ = w.set_position(LogicalPosition::new(x, y));
     let _ = w.set_size(LogicalSize::new(ww, hh));
 }
@@ -1689,21 +1849,141 @@ fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
     {
         let stay = load_settings(app).stay_on_desktop;
         if let Ok(hwnd) = win.hwnd() {
-            desktop_pin::apply_overlay_desktop_pin(hwnd.0 as isize, stay);
+            desktop_pin::apply_overlay_desktop_pin("desktop-overlay", hwnd.0 as isize, stay);
         }
     }
 
     Ok(())
 }
 
+/// The layer for the widgets that were pinned above other windows.
+///
+/// A pinned widget cannot be drawn in the desktop overlay (the whole window is
+/// in the desktop layer, so the flag there lifts every widget at once), and it
+/// cannot have a window of its own either: an icon is 92x112, and its right-click
+/// menu is taller than that — a menu drawn in a window that size is clipped to
+/// the window. So pinned widgets get a second, full-screen overlay that *is*
+/// always on top, built while at least one widget is pinned and taken down again
+/// when none is.
+fn spawn_top_overlay(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window("top-overlay").is_some() {
+        return Ok(());
+    }
+    let (x, y, w, h) = overlay_rect(app);
+    log_line(app, &format!("spawn top-overlay at {x},{y} size {w}x{h}"));
+    let win = WebviewWindowBuilder::new(
+        app,
+        "top-overlay",
+        WebviewUrl::App("index.html#/overlay".into()),
+    )
+    .title("Floaty On Top")
+    .inner_size(w, h)
+    .position(x, y)
+    .transparent(true)
+    .decorations(false)
+    .shadow(false)
+    .resizable(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .focused(false)
+    .build()?;
+
+    #[cfg(windows)]
+    {
+        if let Ok(hwnd) = win.hwnd() {
+            desktop_pin::apply_overlay_desktop_pin("top-overlay", hwnd.0 as isize, false);
+        }
+    }
+    // and straight to the front: the band it has to win is the topmost one
+    raise_top_layer(app);
+    Ok(())
+}
+
+fn spawn_top_overlay_async(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let h2 = handle.clone();
+        if let Err(e) = handle.run_on_main_thread(move || {
+            if let Err(e) = spawn_top_overlay(&h2) {
+                log_line(&h2, &format!("spawn top-overlay FAILED: {e}"));
+            }
+        }) {
+            log_line(&handle, &format!("main-thread dispatch FAILED for top-overlay: {e}"));
+        }
+    });
+}
+
+/// Bring the always-on-top layer in line with the records: it only exists while
+/// something is pinned, so an idle desktop is not paying for a whole second
+/// full-screen webview.
+fn sync_top_overlay(app: &AppHandle) {
+    let pinned: Vec<String> = app
+        .state::<AppState>()
+        .0
+        .lock()
+        .map(|g| {
+            g.widgets
+                .values()
+                .filter(|r| wants_on_top(r))
+                .map(|r| r.id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if pinned.is_empty() {
+        if let Some(w) = app.get_webview_window("top-overlay") {
+            log_line(app, "no widget is pinned: taking the top layer down");
+            let _ = w.close();
+        }
+        return;
+    }
+    if app.get_webview_window("top-overlay").is_none() {
+        log_line(app, &format!("{} pinned widget(s): building the top layer", pinned.len()));
+        spawn_top_overlay_async(app);
+    }
+}
+
+/// Pin a widget above other windows, or let it back down into the desktop layer.
+///
+/// The flag cannot be set on the window that holds the widget: the desktop
+/// overlay holds *every* widget, so setting it there lifted the whole desktop
+/// layer — which is what "Pin on top" used to do to all of them. The widget is
+/// re-homed into the top layer instead, and back when it is unpinned. Both
+/// layers mount the same plugins from the same records, and both are told to
+/// reconcile, so each one draws exactly the widgets that belong to it.
 #[tauri::command]
-async fn floaty_update_hit_rects(rects: Vec<desktop_pin::HitRect>) {
-    desktop_pin::set_hit_rects(rects);
+fn floaty_set_on_top(id: String, on_top: bool, app: AppHandle) -> Result<(), String> {
+    let rec = {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        let rec = guard.widgets.get_mut(&id).ok_or("widget not found")?;
+        if let Some(obj) = rec.data.as_object_mut() {
+            obj.insert("on_top".to_string(), serde_json::Value::Bool(on_top));
+        }
+        rec.clone()
+    };
+    persist(&app);
+    sync_top_overlay(&app);
+    // straight to the front when something is pinned, rather than waiting for the
+    // next watchdog tick
+    raise_top_layer(&app);
+
+    // Whichever layer was drawing it drops it, and the layer that should draw it
+    // mounts it again: `removed` first, so nothing is mounted twice.
+    app.emit("floaty-widget-removed", &id).ok();
+    app.emit("floaty-widget-added", &rec).ok();
+    log_line(&app, &format!("on_top {id} = {on_top}"));
+    Ok(())
 }
 
 #[tauri::command]
-fn floaty_set_overlay_dragging(dragging: bool) {
-    desktop_pin::set_dragging(dragging);
+async fn floaty_update_hit_rects(label: String, rects: Vec<desktop_pin::HitRect>) {
+    desktop_pin::set_hit_rects(label, rects);
+}
+
+#[tauri::command]
+fn floaty_set_overlay_dragging(label: String, dragging: bool) {
+    desktop_pin::set_dragging(label, dragging);
 }
 
 /// Create a widget window without blocking the calling (command) thread.
@@ -1744,8 +2024,8 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
         // delegates resizability to the plugin definition
         .resizable(plugins::resizable(&rec.kind))
         .skip_taskbar(true)
-        // desktop layer for everything by default; per-widget pin-on-top
-        // lives in the webview (right-click menu) instead
+        // desktop layer for everything by default; pin-on-top is a *layer* the
+        // backend owns (see `spawn_top_overlay`), not a per-window flag
         .always_on_top(false)
         .build()?;
     #[cfg(windows)]
@@ -1758,12 +2038,16 @@ fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Show a widget in whichever mode is running: the overlay mounts it from the
+/// Show a widget in whichever mode is running: the overlays mount it from the
 /// record, per-window mode spawns its own window. Every "make this widget
-/// visible" path must go through here — spawning a window while the overlay is
-/// up puts a second copy of the widget on the desktop.
+/// visible" path must go through here — spawning a window while an overlay is up
+/// puts a second copy of the widget on the desktop.
+///
+/// Every overlay hears the event and mounts the widget only if it belongs to
+/// that overlay's layer (see `overlays`), which is what keeps a pinned widget in
+/// the top layer and everything else in the desktop layer.
 fn show_widget(app: &AppHandle, rec: &WidgetRecord) {
-    if app.get_webview_window("desktop-overlay").is_some() {
+    if is_overlay_running(app) {
         app.emit("floaty-widget-added", rec).ok();
     } else {
         spawn_widget_async(app, rec);
@@ -1772,7 +2056,7 @@ fn show_widget(app: &AppHandle, rec: &WidgetRecord) {
 
 /// Counterpart of `show_widget`: hide it again without leaving anything behind.
 fn hide_widget(app: &AppHandle, id: &str) {
-    if app.get_webview_window("desktop-overlay").is_some() {
+    if is_overlay_running(app) {
         app.emit("floaty-widget-removed", id).ok();
     } else {
         close_widget_async(app, id);
@@ -3382,7 +3666,14 @@ fn scan_folder_items(dir_path: &std::path::Path) -> Vec<FolderItem> {
 /// Close a widget window off the command thread (same reason as creation).
 fn close_widget_async(app: &AppHandle, id: &str) {
     if app.get_webview_window("desktop-overlay").is_some() {
+        // the overlay draws it: tell the overlay to drop it
         app.emit("floaty-widget-removed", id).ok();
+    }
+    // A widget can have a window of its own *in overlay mode too* — a pinned one
+    // does — and that window has to come down for real: leaving it up left a
+    // second copy of the widget on the desktop (and the overlay was asked to
+    // drop a widget it was not drawing).
+    if app.get_webview_window(&widget_label(id)).is_none() {
         return;
     }
     let handle = app.clone();
@@ -4643,6 +4934,7 @@ pub fn run() {
             let handle = app.handle().clone();
             watch_display_by_callback(&handle);
             start_pump_watchdog();
+            start_top_layer_watchdog();
             log_line(&handle, "=== floaty starting ===");
             log_line(&handle, &format!("backend build {}", env!("FLOATY_BUILD_MARK")));
 
@@ -4787,6 +5079,9 @@ pub fn run() {
             if let Err(e) = spawn_overlay_window(&handle) {
                 log_line(&handle, &format!("spawn_overlay_window FAILED: {e}"));
             }
+            // A pin survives a restart: whatever was pinned comes back in the top
+            // layer, which means building that layer again.
+            sync_top_overlay(&handle);
             let bg_app = handle.clone();
             tauri::async_runtime::spawn(async move {
                 upgrade_low_res_icons(&bg_app).await;
@@ -4835,6 +5130,7 @@ pub fn run() {
             floaty_resolve_folder_icons,
             floaty_update_hit_rects,
             floaty_set_overlay_dragging,
+            floaty_set_on_top,
             floaty_log,
             floaty_heartbeat,
             floaty_audio_start,

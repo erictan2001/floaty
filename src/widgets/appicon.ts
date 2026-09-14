@@ -6,6 +6,7 @@ import {
   addPinMenu,
   appWin,
   applyFloatieAnimation,
+  enforceDesktopLayer,
   currentSettings,
   iconIsMissing,
   isOverlayMode,
@@ -243,8 +244,10 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         });
       }
     }).catch(() => undefined);
-    // desktop layer (with the builder flag): icons live under real apps
-    void appWin.setAlwaysOnTop(false).catch(() => undefined);
+    // desktop layer (with the builder flag): icons live under real apps. In an
+    // overlay the window's z-order is the layer's, so this only applies when a
+    // widget has a window of its own.
+    enforceDesktopLayer();
     addPinMenu(wrap, () => rec);
     wrap.classList.remove("idle-hidden");
 

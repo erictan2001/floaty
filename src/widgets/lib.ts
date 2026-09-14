@@ -17,8 +17,29 @@ if (appWin.label.startsWith("widget-")) {
   void appWin.setSkipTaskbar(true).catch(() => undefined);
 }
 
+export const DESKTOP_LAYER = "desktop-overlay";
+export const TOP_LAYER = "top-overlay";
+
 export function isOverlayMode(): boolean {
-  return appWin.label === "desktop-overlay" || window.location.hash.startsWith("#/overlay");
+  return (
+    appWin.label === DESKTOP_LAYER ||
+    appWin.label === TOP_LAYER ||
+    window.location.hash.startsWith("#/overlay")
+  );
+}
+
+/**
+ * Whether this page is the always-on-top layer, the one that draws the widgets
+ * pinned above other windows. Both layers are full-screen overlays running the
+ * same mount code; they differ in which records they draw.
+ */
+export function isTopLayer(): boolean {
+  return appWin.label === TOP_LAYER;
+}
+
+/** Whether a record belongs in this layer rather than the desktop one. */
+export function isPinned(rec: WidgetRecord): boolean {
+  return rec.data["on_top"] === true;
 }
 
 export interface OverlaySlot {
@@ -93,7 +114,10 @@ export function syncHitRectsToRust(): void {
   if (key === lastHitRectsKey) return;
   lastHitRectsKey = key;
 
-  invoke("floaty_update_hit_rects", { rects }).catch(() => undefined);
+  // The label says *which* overlay these rects are the click-through region of:
+  // there are two of them (the desktop layer and the always-on-top layer), and a
+  // region applied to the wrong window blocks the screen or the widgets.
+  invoke("floaty_update_hit_rects", { label: appWin.label, rects }).catch(() => undefined);
 }
 
 let overlayDragging = false;
@@ -103,7 +127,11 @@ export function notifyDragging(dragging: boolean): void {
     if (!dragging) {
       syncHitRectsToRust();
     }
-    invoke("floaty_set_overlay_dragging", { dragging }).catch(() => undefined);
+    // per overlay layer: the drag only clears the region of the window being
+    // dragged in, or the other layer loses its clicks for the duration
+    invoke("floaty_set_overlay_dragging", { label: appWin.label, dragging }).catch(
+      () => undefined,
+    );
     if (!dragging) {
       scheduleHitRectsUpdate();
     }
@@ -878,6 +906,18 @@ export interface PinMenuOptions {
   rows?: (api: PinMenuApi) => void;
 }
 
+/**
+ * Put this window into the desktop layer.
+ *
+ * Only meaningful for a window that holds a single widget: an overlay window's
+ * z-order is the backend's business — the desktop layer, or the always-on-top
+ * layer a pinned widget is drawn in (`floaty_set_on_top`).
+ */
+export function enforceDesktopLayer(): void {
+  if (isOverlayMode()) return;
+  void appWin.setAlwaysOnTop(false).catch(() => undefined);
+}
+
 /** Right-click menu with a per-widget pin-on-top toggle. Applies instantly
  * and persists in the record; everything defaults to the desktop layer.
  * `options.rows` lets a plugin add its own rows to its widget's menu. */
@@ -886,10 +926,6 @@ export function addPinMenu(
   getRec: () => WidgetRecord | undefined,
   options?: PinMenuOptions,
 ): void {
-  const cur = getRec();
-  if (cur && cur.data["on_top"] === true) {
-    void appWin.setAlwaysOnTop(true).catch(() => undefined);
-  }
   wrap.addEventListener("contextmenu", (e) => {
     const t = e.target as HTMLElement | null;
     if (t instanceof Element && t.closest("textarea, input")) return; // keep native edit menus
@@ -987,8 +1023,15 @@ export function addPinMenu(
     box.checked = rec.data["on_top"] === true;
     box.addEventListener("click", (ev) => ev.stopPropagation());
     box.addEventListener("change", () => {
-      rec.data["on_top"] = box.checked;
-      void appWin.setAlwaysOnTop(box.checked).catch(() => undefined);
+      const onTop = box.checked;
+      rec.data["on_top"] = onTop;
+      // The backend owns this one: a pinned widget is drawn in the other overlay
+      // layer, so it has to be re-homed, which a flag set from here cannot do.
+      void invoke("floaty_set_on_top", { id: rec.id, onTop }).catch((err: unknown) => {
+        void invoke("floaty_log", {
+          msg: `[menu] pin on top ${rec.id} failed: ${String(err)}`,
+        }).catch(() => undefined);
+      });
       void saveRecord(rec).catch(() => undefined);
       closeMenu();
     });
