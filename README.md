@@ -40,31 +40,61 @@ settings, one right-click from pin-on-top.
   directly). Windows 10 needs the WebView2 runtime; Windows 11 ships it.
 - Rust (stable) and Node 18+ for building from source.
 
-## Run and build
+## Building
+
+### Development
 
 ```powershell
 npm install
-npm run tauri dev          # dev build, Vite on http://localhost:1420
-npm run tauri build        # release exe + NSIS installer
+npm run tauri dev
 ```
 
-Release output lands in `src-tauri\target\release\bundle\`. Two environment
-harnesses help when developing:
+`tauri dev` starts Vite on `http://localhost:1420` and a debug build that loads its
+pages from it, so the frontend reloads as you edit while the Rust side is
+recompiled and the app restarted when that changes. Two environment harnesses help
+when reproducing something:
 
 ```powershell
 $env:FLOATY_OPEN_SETTINGS=1   # open the settings window on boot
 $env:FLOATY_DEMO=1            # float a few sample apps, a clock and the pet
 ```
 
+Two things worth knowing before they cost you an afternoon:
+
+- A running app locks its own executable, so `cargo build` (and the link step of
+  `cargo test`) fails with `Access is denied` until you quit Floaty. The dev tree
+  rebuilds by itself, so close the app when you want to build or test by hand.
+- A debug build expects that dev server: launch it with nothing listening on
+  `:1420` and the windows come up empty.
+
+### Release
+
+```powershell
+npm run tauri build
+```
+
+The release build runs the frontend checks first (the same `npm run build`: plugin
+ids, `tsc`, Vite), then compiles in release and bundles whatever `bundle.targets`
+in `tauri.conf.json` asks for — `"all"` here, which on Windows means both
+installers:
+
+| Output | What it is |
+| --- | --- |
+| `src-tauri\target\release\bundle\nsis\Floaty_<version>_x64-setup.exe` | NSIS installer |
+| `src-tauri\target\release\bundle\msi\Floaty_<version>_x64_en-US.msi` | WiX (MSI) installer |
+| `src-tauri\target\release\floaty.exe` | the application on its own |
+
+The first build needs network and some patience: Tauri downloads the WiX and NSIS
+toolchains and every crate compiles from scratch. Later builds reuse `target/`.
+Windows only, and nothing is signed unless you sign it.
+
 ### Signing
 
 Builds are unsigned: Windows has no certificate to check, so the first run gets
 SmartScreen's "Windows protected your PC" (*More info* → *Run anyway*) and the
 installer's publisher shows as unknown. That is a certificate, not a code change —
-with one in the machine's certificate store, Tauri signs through `signtool`:
-
-Use `signCommand` (with a `%1` placeholder for the binary) for any other signing
-tool. In `src-tauri/tauri.conf.json`:
+with one in the machine's certificate store, Tauri signs both the executable and
+the installers through `signtool`. In `src-tauri/tauri.conf.json`:
 
 ```json
 "bundle": {
@@ -76,22 +106,24 @@ tool. In `src-tauri/tauri.conf.json`:
 }
 ```
 
-The thumbprint is per-machine, which is why this repository carries none.
+Use `signCommand` (with a `%1` placeholder for the binary) for any other signing
+tool. The thumbprint is per-machine, which is why this repository carries none.
 
 ## Checks
 
 ```powershell
 npm run build              # plugin id check + tsc --noEmit + vite build
 npm run check:plugins      # only the backend/frontend plugin id agreement
-cargo test                 # 42 backend tests, run from src-tauri
+cargo test                 # 43 backend tests, run from src-tauri
 cargo check
 ```
 
 The backend tests cover the watcher, the shortcut and grouping rules, the plugin
-manifests and the desktop-layer window policy. `scripts/check-plugins.mjs` fails
-the build when the plugin listed in the backend registry and the one registered in
-the frontend disagree, which is the one mistake that is easy to make and invisible
-at runtime.
+manifests, the desktop-layer window policy and how an older settings file loads.
+`scripts/check-plugins.mjs` fails the build when the plugin listed in the backend
+registry and the one registered in the frontend disagree, which is the one mistake
+that is easy to make and invisible at runtime. (Quit Floaty first: the running app
+locks the executable the test link step needs.)
 
 ## Releasing
 
@@ -106,7 +138,7 @@ git push origin main --tags
 
 `.github/workflows/release.yml` then checks the tree (`check-plugins`, `tsc`,
 `cargo test` — a tag whose tests fail gets no release), builds on `windows-latest`
-and attaches the NSIS installer, the MSI and the bare `Floaty.exe` to the GitHub
+and attaches the NSIS installer, the MSI and the bare `floaty.exe` to the GitHub
 release for that tag. The version in the bundles is taken from the tag, so the
 release page and the file you download cannot disagree about which release they
 are. The same workflow can be run by hand against a tag that already exists; set

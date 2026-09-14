@@ -105,12 +105,12 @@ jobs:
 
             **Install:** `Floaty_*_x64-setup.exe` is the NSIS installer; the `.msi` is there for anyone who wants one. Both are unsigned, so SmartScreen will warn — *More info* → *Run anyway*. Needs Windows 10/11 with the WebView2 runtime (Windows 11 ships it).
 
-            `Floaty.exe` on its own is the unpacked application, if you would rather not install anything.
+            `floaty.exe` is attached on its own as well, if you would rather not install anything.
           releaseDraft: false
           prerelease: false
           # No updater plugin in this project, so there is no updater feed to write
           uploadUpdaterJson: false
-          # also attach the bare Floaty.exe: nothing to install, and it is what the
+          # also attach the bare floaty.exe: nothing to install, and it is what the
           # release body points at for people who would rather not run a setup
           uploadPlainBinary: true
           retryAttempts: 2
