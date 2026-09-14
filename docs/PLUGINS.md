@@ -86,7 +86,7 @@ Two files. No build step, no dependencies, no floaty source.
 | `defaultData` | no | The `data` a new widget record starts with (an object, yours to use). |
 | `addLabel` | no | Button text in **+ New floatie** (`"+ countdown"`). Omit for no button. |
 | `layoutPriority` | no | Where the desktop layout puts it, lower first. Built-ins: live2d 1, note 2, clock 3, pet 4, visualizer/sysmon 5, icon grid 10. |
-| `desktopItem` | no | Only for a widget that stands for a real file: `{ "pathKey": "target", "noun": "… floatie", "group": false }` gives it the shell verbs and a Recycle Bin delete. |
+| `desktopItem` | no | Only for a widget that stands for a real file: `{ "pathKey": "target", "noun": "… floatie", "group": false }` gives it the shell verbs and a Recycle Bin delete. Such items are mirrored from the root folder, so they follow the disk (see [the desktop as a mirror](#desktop-items)) — and group them and the real files move into a new folder in the root, an app getting a shortcut written instead of having its program moved. Label them with `api.displayName(name)` so a caption reads `Arc`, not `Arc.lnk`. |
 
 ### `index.js`
 
@@ -135,6 +135,14 @@ theirs. `ctx.getSharedRow(name)` still hands you a row bound to one of those
 names (`gravity`, `pet_speed`, …) if you want it in your own card too; it returns
 a fresh row each call, and `undefined` for a name this build does not have.
 
+To follow a setting while the widget is on screen, pass `api.onSettings(cb)` the
+function that re-applies it: `api.onSettings(draw)` runs `draw` on every change
+and once as soon as the settings are loaded, after floaty has updated its cache.
+Do not register your own `listen("floaty-settings-changed")` for this — that puts
+your handler in a race with floaty's cache updater, and yours can run with the
+values from before the change. `api.settings()` reads the current values at any
+time.
+
 ### The `api` object
 
 Everything a plugin needs from floaty. Use this instead of importing floaty's
@@ -153,7 +161,9 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.addResizeHandle(wrap, rec, minW, minH)` | Bottom-right grip that resizes and saves the record. |
 | `api.removeSelf(rec)` | Remove the widget, asking first when the user enabled confirmation. |
 | `api.settings()` | Current global settings (`gravity`, `bounce`, `pet_speed`, …). |
-| `api.watchSettings()` | Call once to be told when those change. |
+| `api.onSettings(cb)` | Run `cb` on every settings change, and once when the settings are first loaded. This is how a widget follows a setting — see [the note above](#indexjs). |
+| `api.watchSettings()` | Make sure the settings have been loaded once. `settings()` reads whatever is cached, and this reports nothing back to you. |
+| `api.displayName(name)` | The desktop's caption rule: `Arc.lnk` → `Arc`, while a file keeps its extension. Use it for any label that names a file. |
 | `api.monitorArea()` | The desktop area the widget may use: `{ x, y, w, h }`. |
 
 Style the widget yourself: size the container to `100%` and inject a `<style>`
@@ -173,6 +183,25 @@ of the plugin contract).
   skipped; a `mount()` that throws is logged too (`[overlay] mount <id> failed: …`).
 - Edit the files, press **rescan plugins**, and both windows reload — no restart.
   A `plugin.json` you broke is reported by name in settings.
+- A settings edit logs what each window received and what each widget did with it
+  (`[motion] desktop-overlay settings: ratio=0 …`, `[motion] app-17 -> static …`),
+  so "it only took effect after a restart" can be read out of the log instead of
+  guessed at.
+
+### Desktop items
+
+A widget whose manifest carries `desktopItem` is not free-floating: its record
+mirrors an entry in the root folder floaty is pointed at. `pathKey` names the field
+that holds the path (the frontend's `desktopItemFor(kind)` tells you whether a kind
+is one of these), `noun` is what the removal dialog calls it, and `group: true`
+means other items can be dropped into it.
+
+The root is watched, so an item added, renamed or deleted on disk appears, moves or
+leaves on the desktop while floaty runs — a rename keeps the floatie's id,
+position and icon. Removal is only ever applied to entries that are direct children
+of the root, and only when the whole directory could be read. If you write a kind
+of this sort, expect `rec.data` to be reconciled with the disk rather than owned by
+your widget.
 
 ### Reference plugin
 
@@ -247,8 +276,23 @@ and settings window stay cheap for every other widget.
 
 ### Standard helpers in `src/widgets/lib.ts`
 
-Built-in plugins may import these directly (third-party plugins get them through
-`api`): `loadRecord`, `saveRecord`, `removeSelf`, `addPinMenu`, `addResizeHandle`,
-`setWidgetPos`, `setWidgetSize`, `watchSettings`, `currentSettings`,
-`watchPluginEnabled`, `monitorArea`, `iconIsMissing`, `iconSize`,
-`confirmRemoveDialog`, `describeForConfirm`.
+Built-in plugins may import these directly (third-party plugins get the equivalent
+through `api`):
+
+- **Records and settings** — `loadRecord`, `saveRecord`, `currentSettings`,
+  `onSettings`, `refreshSettings`, `watchSettings`, `watchPluginEnabled`. Follow a
+  setting with `onSettings(cb)`, never with your own settings listener.
+- **Position and size** — `logicalPos`, `setLogicalPos`, `setWidgetPos`,
+  `setWidgetSize`, `monitorArea`, `trackPosition`, `overlaySlots`,
+  `isOverlayMode`, `isTopLayer`, `enforceDesktopLayer`.
+- **Interaction** — `enableOverlayDrag`, `addPinMenu`, `addResizeHandle`,
+  `removeSelf`, `confirmRemoveDialog`, `describeForConfirm`, `makeBar`, and
+  `notifyDragging` + `notifyDragMove`, which arm the desktop's drop and merge
+  preview while an icon is dragged by hand.
+- **Presentation** — `applyFloatieAnimation` (the shared motion modes),
+  `iconIsMissing` (whether an icon URL still needs resolving) and `displayName`
+  (the caption rule, so a label that names a file matches its neighbours).
+
+Kind facts come from the manifest instead: `pathOf`, `desktopItemFor`,
+`pluginSize`, `isDesktopItem` and `layoutPriorityFor` in
+`src/widgets/pluginManifest.ts`.

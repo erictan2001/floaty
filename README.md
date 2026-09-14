@@ -1,130 +1,274 @@
-# Floaty — widgets living on your desktop
+# Floaty
 
-Rust + Tauri v2 desktop app (Vite + TypeScript frontend). Widgets are drawn
-inside one full-screen transparent overlay, so the rest of your desktop stays
-clickable; a per-widget window path still exists (`index.html#/<kind>/<id>`).
+Gravity widgets for the Windows desktop. Your shortcuts, files and folders float
+on the wallpaper and pile up under real physics, next to sticky notes, a pomodoro
+clock, a wandering pet, a Live2D companion, an audio visualizer and a system
+monitor.
 
-## Widgets
+Rust + Tauri v2 backend, plain-DOM TypeScript frontend (Vite). No UI framework:
+each widget builds its own DOM and throws the tree away when it re-renders.
 
-- **Sticky notes** — drag by the top bar, text autosaves.
-- **Clock + pomodoro** — live clock, focus/break timer with round tracking.
-- **Pet blob** — wanders your screen on its own. Hover to make it sit still,
-  double-click to freeze/unfreeze it, drag it anywhere by its body.
-- **Gravity app launchers** — real apps, auto-discovered from Start Menu +
-  Desktop. Drag one anywhere and it pins there; single-click drops it with
-  gravity (bounces, piles onto other icons); double-click launches the app
-  in place. Shows the app's real icon when one can be resolved.
-- **Group folders** — drag one app icon onto another to group them (or drop
-  icons onto a folder). Click a folder to expand it into a launch grid;
-  click again to collapse. Remove via the × like any widget.
-- **Desktop files & folders** — point Floaty to any root directory and the
-  desktop becomes a view of it: files and subdirectories appear as floaties,
-  and the folder is watched, so a file added, renamed or deleted on disk (here
-  or in Explorer, while the app runs) appears, moves or goes — no sync button
-  needed. Dragging a file or directory out of
-  a folder moves it on disk into the desktop parent directory and spawns it as a new
-  desktop floatie. Dragging files/folders onto folder floaties moves them into the folder on disk.
-- **Live2D companion** — interactive desktop companion (pixi + Cubism 2/3/4
-  runtimes). Follows cursor across desktop, reacts to head/body taps, idles,
-  and drags anywhere. Point its plugin card at any model library folder
-  and pick per-widget models from the scan (Cubism 2 `.model.json` / Cubism 3+ `.model3.json`).
+![Floaty on a desktop](screenshots/desktop-screenshot.png)
 
-A **settings window** (tray icon → Settings; the tray itself is just Settings
-+ Quit) hosts the plugin manager, scans/floats apps, lists what's on the
-desktop, and removes widgets. Everything — positions, pinned states, note
-text, resolved icons — persists in `floaty-store.json` and restores on
-launch. Disabling a plugin closes its windows outright (records are kept);
-nothing disabled is loaded, listed, or creatable until re-enabled.
+## What it does
 
-## Run (dev)
+**Your desktop, floated.** Point Floaty at a folder — usually your real Desktop —
+and its contents become floaties: shortcuts become app launchers, documents
+become file icons, subfolders become folder icons. The folder is watched, so a
+file added, renamed or deleted on disk (by you, in Explorer, or by a cloud-synced
+folder) appears, moves or disappears on the desktop while the app runs. There is
+no sync button to press.
+
+**Gravity.** Icons fall, bounce and come to rest on the wallpaper. Drag one and
+it lands where you let go; drop it onto another icon and it lands on top of it.
+Drop it squarely onto a second icon and the two arm a merge preview — the
+Android-style shrink that shows the folder they are about to become.
+
+**Real files, not a mock-up.** Grouping writes to disk: the files really move into
+the new folder inside your root, and an app becomes a shortcut in it instead of
+having its program moved. Dragging an item out of a folder moves it out on disk
+too. Removing a file or folder floatie sends it to the Recycle Bin; removing
+anything else just stops it floating.
+
+**Widgets that live with them.** Notes, clock with pomodoro, pet, Live2D model,
+system audio visualizer, CPU/GPU/RAM monitor — the same overlay, the same motion
+settings, one right-click from pin-on-top.
+
+## Requirements
+
+- Windows 10 or 11 (Win32 shell, Recycle Bin and WASAPI loopback are used
+  directly). Windows 10 needs the WebView2 runtime; Windows 11 ships it.
+- Rust (stable) and Node 18+ for building from source.
+
+## Run and build
 
 ```powershell
 npm install
-npm run tauri dev
+npm run tauri dev          # dev build, Vite on http://localhost:1420
+npm run tauri build        # release exe + NSIS installer
 ```
 
-Tray icon: add widgets, open settings, quit. Useful env harnesses:
+Release output lands in `src-tauri\target\release\bundle\`. Two environment
+harnesses help when developing:
 
 ```powershell
-$env:FLOATY_OPEN_SETTINGS=1   # auto-open settings on boot
-$env:FLOATY_DEMO=1            # float a few sample apps + clock + pet
+$env:FLOATY_OPEN_SETTINGS=1   # open the settings window on boot
+$env:FLOATY_DEMO=1            # float a few sample apps, a clock and the pet
 ```
 
-## Build
+## Checks
 
 ```powershell
-npm run tauri build
+npm run build              # plugin id check + tsc --noEmit + vite build
+npm run check:plugins      # only the backend/frontend plugin id agreement
+cargo test                 # 42 backend tests, run from src-tauri
+cargo check
 ```
 
-Unsigned exe/NSIS installer lands in `src-tauri\target\release\bundle\`.
-Windows 10 needs the WebView2 runtime (Win11 ships it).
+The backend tests cover the watcher, the shortcut and grouping rules, the plugin
+manifests and the desktop-layer window policy. `scripts/check-plugins.mjs` fails
+the build when the plugin listed in the backend registry and the one registered in
+the frontend disagree, which is the one mistake that is easy to make and invisible
+at runtime.
 
-## Project structure
+## The desktop is a folder
 
-```text
-index.html / settings.html  entry pages (widget host / settings UI)
-src/
-  bootstrap.ts   error forwarding + widget router (hash: #/note/:id …)
-  main.ts        mounts the routed plugin
-  settings.ts    settings page: plugin manager, app scan, desktop list
-  style.css      all widget + settings styling
-  widgets/
-    plugin.ts       plugin registry & FloatyPlugin interface
-    live2dPlugin.ts lazy-loading wrapper for Live2D
-    lib.ts          window-pos helpers, store access, drag bar, settings cache
-    note.ts         sticky note plugin
-    clock.ts        clock + pomodoro plugin
-    pet.ts          wandering pet plugin
-    appicon.ts      gravity launcher plugin
-    folder.ts       group folder plugin
-    live2d.ts       Live2D companion (lazy pixi chunk, Cubism 2/3/4 model)
-src-tauri/
-  src/lib.rs        store, widget windows, tray, scan, launch, icons
-  src/plugins.rs    backend plugin registry, sizing, resizability, default data
-  capabilities/     Tauri ACL grants (window ops, …)
-  tauri.conf.json
-  icons/            tray + bundle icons (source: assets/icon.png)
-```
+`files_root` is the single source of truth. Every desktop item is a mirror of an
+entry in it, and the backend keeps the two in step:
+
+- A watcher (`src-tauri/src/fs_watch.rs`) does a recursive
+  `ReadDirectoryChangesW` on the root — name changes only, because a desktop root
+  is usually cloud-synced and size/mtime churn constantly — debounced 700 ms
+  quiet / 2.5 s maximum. It reports a create, a rename (the floatie keeps its id,
+  position and icon and simply moves) or a removal (the floatie leaves).
+- Removal is guarded hard: records come off the desktop only when the directory
+  could be read *and* every entry in it was readable, and only for entries that
+  are direct children of the root. A transient read failure must not delete
+  someone's icons.
+- Dragging a file or directory out of a folder moves it on disk into the parent
+  directory; dragging one in moves it into the folder. Both are refused when the
+  source is outside the root, so the desktop can never drag files out of a folder
+  it does not own.
+- Grouping creates a real folder in the root (unique name, like Explorer's "New
+  folder") and moves the items in. Ungrouping moves the item back out.
+
+Captions are labels, not filenames: an app icon reads "Visual Studio Code", not
+"Visual Studio Code.lnk", and the same rule applies inside a folder's grid. File
+icons keep their extension, where it carries information. The stored name is
+untouched — tooltips and the settings list still show the real file, and icons are
+resolved from the shell and cached in the record.
+
+## Motion and clicks
+
+Motion is one shared setting across every desktop item, collected in the settings
+window's Motion tab:
+
+| Setting | What it does |
+| --- | --- |
+| `gravity`, `bounce` | how an icon falls and how it settles |
+| `floatiness` | overall amount of resting motion |
+| `float_amplitude`, `float_period` | how far and how slowly a resting icon drifts |
+| `float_spread` | phase spread across icons, so they do not bob in lockstep |
+| `animated_ratio` | percentage of icons that animate at all; the rest sit still |
+| `animation_mode` | `wave`, `sync`, `gentle` or `static` |
+| `single_click`, `double_click` | `drop` / `hop` / `nothing`, and `launch` / `drop` / `nothing` |
+
+These apply live: a widget re-applies on the settings event, and each page fans a
+single handler out to its widgets so nothing reads a half-updated cache. Every
+change is logged (`[motion] …`) with the values it used and the decision each
+icon made.
+
+Right-click any floatie for its menu: pin on top (a real second layer, above all
+normal windows, persisted per widget), or remove it. "Stay on the desktop"
+(General tab) keeps floaties visible through Win+D instead of minimising with
+everything else.
+
+## Windows and layers
+
+- `desktop-overlay` — one full-screen transparent window holding every floatie
+  that is not pinned. Click-through to the desktop is preserved by hit rectangles
+  the backend keeps in sync with the frontend.
+- `top-overlay` — built only while something is pinned, drawing only pinned
+  records, so the desktop layer does not have to be always-on-top.
+- `settings`, `manager` and `widget-<id>` — ordinary windows. The manager is a
+  hidden window that outlives the overlays and carries the display/sleep watch;
+  the per-widget path (`index.html#/<kind>/<id>`) still exists for spawning a
+  widget as its own window.
+
+The desktop layer is a Windows-level policy, not a Tauri flag: those windows carry
+`WS_EX_TOOLWINDOW` (no taskbar button, out of alt-tab), survive `SWP_HIDEWINDOW`
+from *Show desktop*, and get a 1 px recovery nudge plus a power-event pass after
+sleep or display-off — the overlay is the thing that goes missing, so it is the
+thing that gets repaired. The policy is gated on one predicate
+(`is_desktop_layer_label`), because applying it to an ordinary window takes away
+its taskbar button and breaks minimise and drag.
+
+## Widgets
+
+Built in (`src-tauri/src/plugins.rs` is the manifest):
+
+| Kind | What it is |
+| --- | --- |
+| `app` | gravity launcher for a real app; icons group into folders |
+| `file` | a loose file in the root; double-click opens it with its default app |
+| `folder` | a group of launchers; click to expand into a launch grid |
+| `note` | sticky note, drag by the top bar, text autosaves |
+| `clock` | clock plus pomodoro timer |
+| `pet` | a wandering blob; hover to calm it, double-click to freeze it |
+| `live2d` | animated Live2D companion (pixi + Cubism 2/3/4) |
+| `visualizer` | spectrum bars for system audio (loopback, not the mic) |
+| `sysmon` | CPU, 3D GPU and RAM load with a scrolling graph |
+
+`countdown`, in [`examples/plugins/countdown`](examples/plugins/countdown), is a
+complete third-party-style plugin and a good reference.
 
 ## Plugins
 
-Every floatie is a modular plugin. A plugin is described twice, on purpose: the
-backend manifest (`src-tauri/src/plugins.rs`) owns names, sizes, the quick-add
-label and whether the kind stands for a file on disk, and the frontend module
-(`src/widgets/*.ts`, listed in `src/widgets/plugin.ts`) owns behaviour — mounting,
-describing, settings rows. The frontend reads the manifest, so those facts exist
-once; `npm run build` runs `scripts/check-plugins.mjs`, which fails when the two
-id lists disagree.
+Every floatie is a plugin, described twice on purpose: the backend manifest owns
+names, sizes, the quick-add label and whether the kind stands for a file on disk,
+while the frontend module owns behaviour — mount, describe, settings rows. The
+frontend reads the manifest, so those facts exist once.
 
-**Third-party plugins need no floaty source at all.** Drop a folder with
-`plugin.json` + `index.js` into `%APPDATA%\com.floaty.app\plugins`, press
-**rescan plugins** in settings, and the widget is available — same manifest, same
-API, same settings card as a built-in. Installing, the full `plugin.json`
-reference, the module contract and the `api` object are in
-**[docs/PLUGINS.md](docs/PLUGINS.md)**; a complete worked example lives in
-[`examples/plugins/countdown`](examples/plugins/countdown).
+Third-party plugins need no Floaty source: drop a folder with `plugin.json` and
+`index.js` into `%APPDATA%\com.floaty.app\plugins`, press **rescan plugins**, and
+the widget is available with the same API and the same settings card as a
+built-in. Installation, the `plugin.json` reference and the module contract are in
+[docs/PLUGINS.md](docs/PLUGINS.md).
 
-The settings **Plugins** section lists every plugin (built-in and installed) with
-enable toggles and per-plugin parameter cards, plus the buttons that open the
-plugins folder and rescan it. Disabling a plugin closes its widgets (records are
-kept); re-enabling respawns them; creating a widget re-enables its plugin.
-Global values live in `floaty-settings.json` with per-widget data in
-`floaty-store.json`.
+Disabling a plugin closes its widgets and keeps their records; re-enabling brings
+them back. Nothing disabled is loaded, listed or creatable until it is turned back
+on.
 
-## Notes
+## Settings window
 
-- All window motion uses logical px (`scaleFactor`-converted), so HiDPI
-  restores don't drift. Widget loops never drive the window before the stored
-  position loads, and never hold the store lock across file IO.
-- Pet and launchers use manual cursor-following drags instead of
-  OS-level `startDragging`, which swallowed click/double-click sequences and
-  raced the motion loops.
-- Window create/close runs off the command thread — blocking it on the
-  main-thread dispatch froze the settings UI.
-- Everything sits at desktop level under real apps by default; right-click
-  any widget for a pin-on-top toggle (persisted per widget).
-- Frontend errors/rejections are forwarded to the backend log via
-  `floaty_log`. Log + store live in `%APPDATA%\com.floaty.app\`
-  (`floaty.log`, `floaty-store.json`).
-- Run one instance at a time — there is no single-instance guard yet, and two
-  backends sharing one store step on each other.
+Tray icon → **Settings** (the tray is Settings and Quit). One tab per question you
+arrive with, and the tab lives in the URL hash so a reload stays where you were:
+
+| Tab | Hash | Holds |
+| --- | --- | --- |
+| Desktop | `#/desktop` | what is on your desktop, removal |
+| Apps | `#/apps` | scan and float applications |
+| Files | `#/files` | the root folder and its contents |
+| Motion | `#/motion` | the table above, plus click behaviour |
+| Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
+| General | `#/general` | stay on desktop, ask before removing |
+
+Edits are applied immediately; slider drags are debounced so a five-step drag is
+one save.
+
+## Where things live
+
+| Path | Contents |
+| --- | --- |
+| `%APPDATA%\com.floaty.app\floaty-store.json` | widget records: `id`, `kind`, logical `x`/`y`, and the per-widget `data` (name, target, icon, `pinned`) |
+| `%APPDATA%\com.floaty.app\floaty-settings.json` | global settings (the keys in the Motion table and the panes) |
+| `%APPDATA%\com.floaty.app\plugins\` | installed third-party plugins |
+| `%APPDATA%\com.floaty.app\floaty.log` | backend log, including forwarded frontend errors |
+
+Frontend errors and rejections are forwarded to that log through `floaty_log`, so
+a broken widget says why instead of going quiet.
+
+## Project layout
+
+```text
+index.html / settings.html   widget host page / settings UI
+src/
+  bootstrap.ts   error forwarding + hash router (#/overlay, #/note/:id, …)
+  main.ts        mounts the routed plugin, heartbeat for ordinary pages
+  overlay.ts     the desktop and top overlays: slot layout, mounting, hit rects
+  style.css      all widget and settings styling (one --panel-* theme recipe)
+  settings.ts    settings shell: tabs, save plumbing
+  settings/
+    api.ts       safe invoke + error banner
+    dom.ts       group / row / card builders shared by every pane
+    params.ts    the setting table: key, label, range, unit
+    pane.ts      Pane interface
+    store.ts     settings cache, debounced saves, widget list reload
+    panes/       desktop, apps, files, motion, plugins, general
+  widgets/
+    plugin.ts        frontend plugin registry + FloatyPlugin interface
+    pluginManifest.ts reads the backend manifest
+    lib.ts           store access, settings fan-out, drag, animation, sizing
+    physics.ts       stepBody / supportGone: one integrator for every faller
+    appicon.ts       app + file launchers (one implementation, two kinds)
+    folder.ts        group folders, grid, drag in/out
+    note.ts clock.ts pet.ts live2d.ts live2dPlugin.ts live2dBounds.ts
+    sysmon.ts visualizer.ts
+src-tauri/src/
+  lib.rs        store, overlays and windows, watcher wiring, tray, apps, icons
+  plugins.rs    backend plugin registry, manifests, sizing, installed plugins
+  fs_watch.rs   the root-folder watcher
+  audio.rs      WASAPI loopback capture for the visualizer
+  sysmon.rs     CPU / GPU / RAM sampling
+  shell_ops.rs  shell-level file operations (shortcuts, icons, recycle)
+  main.rs       entry point
+docs/PLUGINS.md                 plugin authoring reference
+examples/plugins/countdown      worked example plugin
+scripts/check-plugins.mjs       backend/frontend plugin id agreement
+```
+
+## Notes for anyone working on it
+
+- Positions and sizes are logical pixels everywhere (`scaleFactor`-converted), so
+  a HiDPI restore does not drift.
+- Panes read from the settings store and load nothing themselves; saves patch the
+  store and debounce. That keeps a re-render cheap and stops an unmounted control
+  from silently resetting a setting.
+- Widgets follow settings through `onSettings(cb)` in `lib.ts`. Never register a
+  second `listen("floaty-settings-changed")` in a widget: the cache updater and
+  the widget then race, and one of them reads the values from before the change.
+- Manual cursor-following drags are used instead of OS-level `startDragging`,
+  which swallowed click and double-click sequences and raced the motion loops.
+- Window create and close run off the command thread — blocking on main-thread
+  dispatch froze the settings UI.
+- `cargo check` reports two unused constants, `RDW_ERASE` and `RDW_UPDATENOW`:
+  they are the unhired half of the `RedrawWindow` flag set declared next to the
+  two that the repaint helper uses. The warning is expected.
+
+## Known limits
+
+- Windows only, and one instance at a time: there is no single-instance guard, and
+  two backends sharing one store will step on each other.
+- Release builds are unsigned, so SmartScreen will warn on first run.
+- The watcher reports names, not contents, and gives up a batch when it overflows;
+  a root being rewritten en masse may need one manual re-scan.

@@ -81,9 +81,24 @@ export interface WidgetApi {
   addResizeHandle: (wrap: HTMLElement, rec: WidgetRecord, minW: number, minH: number) => void;
   /** Remove the widget (asks first when the user enabled confirmation). */
   removeSelf: (rec: WidgetRecord) => Promise<void>;
-  /** Current global settings, and a hook to react when they change. */
+  /** Current global settings. */
   settings: () => FloatSettings;
+  /**
+   * Re-run `cb` whenever the settings change, and once as soon as they are
+   * loaded. This is how a widget follows the settings: it is the same path the
+   * built-ins use, and it runs after floaty has updated its own cache.
+   *
+   * Do *not* register your own `listen("floaty-settings-changed")` instead:
+   * floaty's cache updater and your handler are then two listeners on one event,
+   * and yours can run with the values from before the change.
+   */
+  onSettings: (cb: () => void) => void;
+  /** Load the settings once if nothing has yet. Not needed before `settings()`
+   *  — that reads whatever is cached — and it tells you nothing about changes. */
   watchSettings: () => void;
+  /** The caption rule the desktop uses for a name: `Arc.lnk` reads as `Arc`.
+   *  Use it wherever your widget labels a file, so it matches its neighbours. */
+  displayName: (name: string) => string;
   /** The desktop area this widget may live in. */
   monitorArea: () => Promise<MonitorArea>;
 }
@@ -160,7 +175,9 @@ export const widgetApi: WidgetApi = {
   addResizeHandle: floaty.addResizeHandle,
   removeSelf: floaty.removeSelf,
   settings: floaty.currentSettings,
+  onSettings: floaty.onSettings,
   watchSettings: floaty.watchSettings,
+  displayName: floaty.displayName,
   monitorArea: floaty.monitorArea,
 };
 
