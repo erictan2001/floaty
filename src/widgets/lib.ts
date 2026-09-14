@@ -748,8 +748,20 @@ export function applyFloatieAnimation(wrap: HTMLElement, id: string): void {
     "phase-5",
   );
 
+  // One line when this element's decision changes, so the log answers "did the
+  // edit reach the widgets on screen" instead of leaving it to guesswork. The
+  // guard is on the element, because the physics calls this on every frame.
+  const logDecision = (decision: string): void => {
+    if (wrap.dataset.motionLogged === decision) return;
+    wrap.dataset.motionLogged = decision;
+    void invoke("floaty_log", { msg: `[motion] ${id} -> ${decision} (${describeMotion(s)})` }).catch(
+      () => undefined,
+    );
+  };
+
   if (mode === "static" || ratio <= 0 || f <= 0) {
     wrap.classList.add("anim-static");
+    logDecision("static");
     return;
   }
 
@@ -763,29 +775,79 @@ export function applyFloatieAnimation(wrap: HTMLElement, id: string): void {
   const isAnimated = ((num * 37) % 100) < ratio;
   if (!isAnimated) {
     wrap.classList.add("anim-static");
+    logDecision("static");
     return;
   }
 
   wrap.classList.add(`anim-${mode}`);
   if (mode === "wave") {
     wrap.classList.add(`phase-${num % 6}`);
+    logDecision(`wave-p${num % 6}`);
+    return;
   }
+  logDecision(mode);
 }
 
 let settingsCache: FloatSettings = { ...DEFAULT_SETTINGS };
 let settingsWatched = false;
+/** True once the cache holds values the backend actually sent, not defaults. */
+let settingsReady = false;
+/** Everyone who has to re-apply something when the settings change. */
+const settingsConsumers = new Set<() => void>();
 
 export function currentSettings(): FloatSettings {
   return settingsCache;
 }
 
+/**
+ * Re-run `cb` on every settings change, and once as soon as the real values are
+ * in hand (immediately when they already are).
+ *
+ * This is the only way a widget should follow the settings. Registering a second
+ * `listen("floaty-settings-changed", …)` instead — which is what the callers of
+ * `applyFloatieAnimation` used to do — makes the result depend on *listener
+ * registration order*: the handler that refreshes `settingsCache` and the handler
+ * that reads it are two separate listeners on one event, so a widget can re-apply
+ * with the values from before the change and never be told again. It also leaves
+ * the first application wrong, because a page mounts its widgets before
+ * `refreshSettings()` has answered and a pinned icon never runs another frame to
+ * correct itself.
+ */
+export function onSettings(cb: () => void): void {
+  settingsConsumers.add(cb);
+  if (settingsReady) cb();
+}
+
+/** Fan out to every consumer, after the cache has been updated. */
+function applySettings(): void {
+  for (const cb of settingsConsumers) {
+    try {
+      cb();
+    } catch {
+      /* one bad consumer must not stop the others */
+    }
+  }
+}
+
+/**
+ * The animation-relevant settings as one line, so the log can prove that an edit
+ * reached the page that draws the widgets — which is the question that "it only
+ * takes effect after a restart" always really is.
+ */
+function describeMotion(s: FloatSettings): string {
+  return `ratio=${s.animated_ratio} mode=${s.animation_mode} floatiness=${s.floatiness} amp=${s.float_amplitude} period=${s.float_period} spread=${s.float_spread}`;
+}
+let lastMotion = "";
+
 export async function refreshSettings(): Promise<void> {
   try {
     const s = await invoke<FloatSettings>("floaty_get_settings");
     settingsCache = { ...DEFAULT_SETTINGS, ...s };
+    settingsReady = true;
   } catch {
     /* keep last */
   }
+  applySettings();
 }
 
 /** Load once + stay live via backend change events. Safe to call per window. */
@@ -795,6 +857,16 @@ export function watchSettings(): void {
   void refreshSettings();
   listen<FloatSettings>("floaty-settings-changed", (e) => {
     settingsCache = { ...DEFAULT_SETTINGS, ...e.payload };
+    settingsReady = true;
+    const motion = describeMotion(settingsCache);
+    if (motion !== lastMotion) {
+      lastMotion = motion;
+      void invoke("floaty_log", { msg: `[motion] ${appWin.label} settings: ${motion}` }).catch(
+        () => undefined,
+      );
+    }
+    // consumers run *after* the cache is updated: nobody reads a stale cache
+    applySettings();
   }).catch(() => undefined);
 }
 

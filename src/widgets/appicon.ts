@@ -15,6 +15,7 @@ import {
   monitorArea,
   notifyDragMove,
   notifyDragging,
+  onSettings,
   overlaySlots,
   removeSelf,
   saveRecord,
@@ -99,8 +100,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     applyFloatieAnimation(wrap, id);
   };
   const syncFloat = syncAnim;
-  syncAnim();
-  listen("floaty-settings-changed", syncAnim).catch(() => undefined);
+  // one consumer instead of a second settings listener: this runs after the
+  // cached settings are updated, and once as soon as the first fetch lands
+  onSettings(syncAnim);
 
   const squash = () => {
     tile.classList.remove("squash");

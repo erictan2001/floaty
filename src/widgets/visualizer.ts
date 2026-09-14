@@ -7,6 +7,7 @@ import {
   currentSettings,
   enableOverlayDrag,
   loadRecord,
+  onSettings,
   removeSelf,
   saveRecord,
   trackPosition,
@@ -258,9 +259,9 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
         })
         .catch(() => undefined);
     }, 2500);
-    listen("floaty-settings-changed", () => {
+    onSettings(() => {
       void invoke("floaty_audio_set_fps", { fps: fps() }).catch(() => undefined);
-    }).catch(() => undefined);
+    });
 
     resizeCanvas();
     void appWin.show().catch(() => undefined);

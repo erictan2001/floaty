@@ -7,6 +7,7 @@ import {
   currentSettings,
   enableOverlayDrag,
   loadRecord,
+  onSettings,
   removeSelf,
   saveRecord,
   trackPosition,
@@ -268,9 +269,9 @@ export function mountSysmon(root: HTMLElement, id: string): void {
         })
         .catch(() => undefined);
     }, Math.max(1500, interval() * 3));
-    listen("floaty-settings-changed", () => {
+    onSettings(() => {
       void invoke("floaty_sysmon_set_interval", { ms: interval() }).catch(() => undefined);
-    }).catch(() => undefined);
+    });
 
     scheduleRedraw();
     void appWin.show().catch(() => undefined);

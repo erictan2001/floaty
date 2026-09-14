@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -39,8 +39,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
     applyFloatieAnimation(wrap, id);
   };
   const syncFloat = syncAnim;
-  syncAnim();
-  listen("floaty-settings-changed", syncAnim).catch(() => undefined);
+  onSettings(syncAnim);
 
   const savePos = () => {
     if (!rec) return;
