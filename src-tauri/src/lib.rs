@@ -262,8 +262,6 @@ struct FloatSettings {
     gravity: f64,
     #[serde(default = "default_bounce")]
     bounce: f64,
-    #[serde(default = "default_floatiness")]
-    floatiness: f64,
     #[serde(default = "default_single_click")]
     single_click: String,
     #[serde(default = "default_double_click")]
@@ -289,13 +287,16 @@ struct FloatSettings {
     /// animation mode: "wave", "sync", "gentle", "static"
     #[serde(default = "default_animation_mode")]
     animation_mode: String,
-    /// base float travel in px (icons bob this far)
+    /// how far a resting icon rises, in px — the same travel in every mode.
+    /// (Was multiplied by a second `floatiness` slider, which is folded in once
+    /// by `migrate_float_settings`.)
     #[serde(default = "default_float_amplitude")]
     float_amplitude: f64,
-    /// seconds per float cycle (lower = floating more often)
+    /// seconds per bob, in every mode
     #[serde(default = "default_float_period")]
     float_period: f64,
-    /// how far apart neighbouring floaties bob, as a percentage of the stagger
+    /// wave only: how much of the cycle separates one icon from the next, as a
+    /// percentage of one cycle
     #[serde(default = "default_float_spread")]
     float_spread: f64,
     /// ask before removing a floatie (file, folder or widget)
@@ -336,7 +337,7 @@ fn default_start_on_boot() -> bool {
 }
 
 fn default_float_amplitude() -> f64 {
-    4.5
+    6.0
 }
 
 fn default_float_period() -> f64 {
@@ -344,7 +345,7 @@ fn default_float_period() -> f64 {
 }
 
 fn default_float_spread() -> f64 {
-    100.0
+    10.0
 }
 
 fn default_confirm_remove() -> bool {
@@ -380,9 +381,6 @@ fn default_gravity() -> f64 {
 fn default_bounce() -> f64 {
     0.45
 }
-fn default_floatiness() -> f64 {
-    1.0
-}
 fn default_single_click() -> String {
     "drop".to_string()
 }
@@ -399,9 +397,52 @@ fn settings_file(app: &AppHandle) -> std::path::PathBuf {
     dir.join("floaty-settings.json")
 }
 
+/// Fold the settings a file written before the float sliders were made honest.
+///
+/// `floatiness` multiplied `float_amplitude`, so the two rows moved the same
+/// thing and neither number was the travel; and `float_spread` was a percentage
+/// of a stagger that never reached the tiles (the delay lost the cascade), on a
+/// 0-200 scale whose 100 meant "15% of a cycle between neighbours". An existing
+/// look therefore has to survive both changes: the multiplier is folded into
+/// the height once, and the spread moves onto its new scale — percent of one
+/// cycle between neighbouring icons.
+///
+/// Both results are rounded to the step of the slider that will show them (0.5px
+/// and 1%), because a range input snaps to its own grid: a file holding 12.4
+/// would otherwise draw its handle at 12 and write 12 the moment it was touched.
+///
+/// The presence of `floatiness` is what marks a file as old, and it is dropped
+/// so this runs exactly once.
+fn migrate_float_settings(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    let Some(legacy) = map.remove("floatiness").and_then(|v| v.as_f64()) else {
+        return;
+    };
+    if legacy.is_finite() && legacy > 0.0 {
+        if let Some(amp) = map.get("float_amplitude").and_then(|v| v.as_f64()) {
+            let folded = ((amp * legacy).clamp(0.0, 16.0) * 2.0).round() / 2.0;
+            map.insert("float_amplitude".into(), serde_json::json!(folded));
+        }
+    }
+    if let Some(spread) = map.get("float_spread").and_then(|v| v.as_f64()) {
+        let rescaled = (spread * 0.15).clamp(0.0, 100.0).round();
+        map.insert("float_spread".into(), serde_json::json!(rescaled));
+    }
+}
+
 fn load_settings(app: &AppHandle) -> FloatSettings {
-    let parsed: Option<FloatSettings> =
-        read_json_with_backup::<FloatSettings>(&settings_file(app)).map(|(s, _)| s);
+    let path = settings_file(app);
+    // Read through `Value` first so an old file can be migrated; anything that
+    // is not an object falls back to the plain typed read below.
+    let parsed: Option<FloatSettings> = read_json_with_backup::<serde_json::Value>(&path)
+        .map(|(mut value, _)| {
+            migrate_float_settings(&mut value);
+            value
+        })
+        .and_then(|value| serde_json::from_value::<FloatSettings>(value).ok())
+        .or_else(|| read_json_with_backup::<FloatSettings>(&path).map(|(s, _)| s));
     match parsed {
         Some(s) => FloatSettings {
             single_click: if s.single_click.is_empty() {
@@ -425,7 +466,6 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             pet_speed: default_pet_speed(),
             gravity: default_gravity(),
             bounce: default_bounce(),
-            floatiness: default_floatiness(),
             single_click: default_single_click(),
             double_click: default_double_click(),
             live2d_root: String::new(),
@@ -463,7 +503,6 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
         pet_speed: settings.pet_speed.clamp(0.0, 3.0),
         gravity: settings.gravity.clamp(0.0, 8000.0),
         bounce: settings.bounce.clamp(0.0, 0.95),
-        floatiness: settings.floatiness.clamp(0.0, 2.0),
         single_click: match settings.single_click.as_str() {
             "hop" | "nothing" => settings.single_click,
             _ => "drop".to_string(),
@@ -482,9 +521,9 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             "sync" | "gentle" | "static" => settings.animation_mode,
             _ => "wave".to_string(),
         },
-        float_amplitude: settings.float_amplitude.clamp(0.0, 24.0),
+        float_amplitude: settings.float_amplitude.clamp(0.0, 16.0),
         float_period: settings.float_period.clamp(2.0, 60.0),
-        float_spread: settings.float_spread.clamp(0.0, 200.0),
+        float_spread: settings.float_spread.clamp(0.0, 100.0),
         confirm_remove: settings.confirm_remove,
         viz_gain: settings.viz_gain.clamp(0.1, 4.0),
         viz_fps: settings.viz_fps.clamp(5.0, 60.0),
@@ -5734,6 +5773,51 @@ mod tests {
         let back: FloatSettings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
         assert!(!back.start_on_boot);
+    }
+
+    /// The float rows used to overlap: `floatiness` multiplied
+    /// `float_amplitude`, so neither number was the travel, and `float_spread`
+    /// was a percentage of a stagger that never reached the tiles. An old file
+    /// must come out of the migration with the look it had and one knob per
+    /// idea — and exactly once, however many times the app is started.
+    #[test]
+    fn an_old_float_file_folds_its_multiplier_in_once() {
+        let mut old: serde_json::Value = serde_json::from_str(
+            r#"{ "floatiness": 2.0, "float_amplitude": 4.0, "float_period": 6.0,
+                 "float_spread": 80.0, "animation_mode": "wave" }"#,
+        )
+        .expect("the shape of a real pre-change settings file");
+        migrate_float_settings(&mut old);
+        let s: FloatSettings = serde_json::from_value(old.clone()).expect("must still parse");
+        assert_eq!(s.float_amplitude, 8.0, "2x of 4px is what the user was looking at");
+        assert_eq!(s.float_spread, 12.0, "0-200 scale becomes percent of one cycle");
+        assert_eq!(s.float_period, 6.0, "nothing else moves");
+        assert!(
+            !old.as_object().unwrap().contains_key("floatiness"),
+            "the marker is dropped, so the fold cannot happen twice"
+        );
+        migrate_float_settings(&mut old);
+        let again: FloatSettings = serde_json::from_value(old).expect("parses again");
+        assert_eq!(again.float_amplitude, 8.0, "a second pass must not fold again");
+
+        // a file that already speaks the new scale is left alone
+        let mut new: serde_json::Value =
+            serde_json::from_str(r#"{ "float_amplitude": 6.0, "float_spread": 10.0 }"#).unwrap();
+        migrate_float_settings(&mut new);
+        let n: FloatSettings = serde_json::from_value(new).unwrap();
+        assert_eq!(n.float_amplitude, 6.0);
+        assert_eq!(n.float_spread, 10.0);
+
+        // and the results land on the sliders' own grids, so the handle and the
+        // label of the row can never disagree about what they are showing
+        let mut odd: serde_json::Value = serde_json::from_str(
+            r#"{ "floatiness": 1.5, "float_amplitude": 4.5, "float_spread": 33.0 }"#,
+        )
+        .unwrap();
+        migrate_float_settings(&mut odd);
+        let o: FloatSettings = serde_json::from_value(odd).unwrap();
+        assert_eq!(o.float_amplitude, 7.0, "6.75px rounded to the 0.5px step");
+        assert_eq!(o.float_spread, 5.0, "4.95% rounded to a whole percent");
     }
 
     /// The desktop-layer window policy — no taskbar button, swallowed minimize,

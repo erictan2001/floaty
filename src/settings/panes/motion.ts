@@ -36,16 +36,16 @@ export const motionPane: Pane = {
         "gravity",
         "bounce",
       ]),
-      rows("Floating", "The idle bob: how far it drifts, how often, and how far apart neighbouring floaties sit.", [
-        "floatiness",
-        "float_amplitude",
-        "float_period",
-        "float_spread",
-      ]),
-      rows("Animation", "How many floaties animate at all, and the wave they follow.", [
-        "animated_ratio",
-        "animation_mode",
-      ]),
+      rows(
+        "Floating",
+        "The idle bob, one value at a time: how far a floatie rises, how long one bob takes, and — in wave mode — how far apart neighbours bob. Float height is the real travel in every mode, so the numbers mean what they say.",
+        ["float_amplitude", "float_period", "float_spread"],
+      ),
+      rows(
+        "Animation",
+        "wave: a hop that travels from one floatie to the next. sync: all of them hop together. gentle: a slow, continuous drift. static: no motion at all. The last slider decides how many floaties take part — the rest sit still.",
+        ["animation_mode", "animated_ratio"],
+      ),
       rows("Clicking", "What one click and two clicks do to a floatie.", ["single_click", "double_click"]),
     );
   },

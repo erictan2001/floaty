@@ -218,12 +218,16 @@ window's Motion tab:
 | Setting | What it does |
 | --- | --- |
 | `gravity`, `bounce` | how an icon falls and how it settles |
-| `floatiness` | overall amount of resting motion |
-| `float_amplitude`, `float_period` | how far and how slowly a resting icon drifts |
-| `float_spread` | phase spread across icons, so they do not bob in lockstep |
-| `animated_ratio` | percentage of icons that animate at all; the rest sit still |
-| `animation_mode` | `wave`, `sync`, `gentle` or `static` |
+| `float_amplitude` | how far a resting icon rises, in px — the same travel in every mode |
+| `float_period` | seconds per bob, in every mode |
+| `float_spread` | wave only: how much of the cycle separates one icon from the next |
+| `animated_ratio` | percentage of icons that float at all; the rest sit still |
+| `animation_mode` | `wave` (the bob travels from icon to icon), `sync` (all together), `gentle` (a slow continuous drift) or `static` |
 | `single_click`, `double_click` | `drop` / `hop` / `nothing`, and `launch` / `drop` / `nothing` |
+
+A mode changes the *pattern*, never the height or the period: `float_amplitude` is
+the travel in every mode, and `float_spread` orders the wave by where the icons
+are on the desktop, so the ripple crosses the screen instead of scattering.
 
 These apply live: a widget re-applies on the settings event, and each page fans a
 single handler out to its widgets so nothing reads a half-updated cache. Every

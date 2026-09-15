@@ -544,86 +544,73 @@ body {
   transform: translate3d(0, 0, 0) !important;
 }
 
-/* 1. Wave mode (default 12s phased ripple) */
-/* 1. Wave mode (ambient ripple wave with full rest interval) */
-/* The bob is a staircase, not a smooth curve: the compositor only presents a
-   frame when an animated value actually changes, so a smooth curve costs ~60
-   full-desktop composites per second and a staircase costs one per step — that
-   rate is what the GPU pays for. Measured on this 2880x1920 desktop: ~6% of the
-   3D engine with the bob off, ~33% with it running smooth-equivalent; the
-   compact `steps(n)` counts below land near 24 steps/s on the default cycle,
-   which is double the original choppy 12/s at roughly half the smooth cost.
+/* One bob, three modes. The bob runs only while an icon is at rest (`.rest`,
+   or a folder that is closed), the travel is `--bob-amp` in every mode, and
+   `--bob-cycle` is the seconds per bob in every mode — a mode changes the
+   *pattern*, never the height or the speed the sliders asked for:
 
-   The counts are literal integers on purpose: Chromium silently drops
+     wave    this hop, each icon offset by `--bob-delay` — the ripple travels
+     sync    this hop, no offset — everything moves together
+     gentle  a continuous drift (see below), no rest interval
+     static  nothing
+
+   Two rules of the cascade are load-bearing here:
+
+   1. `animation-delay: var(--bob-delay, 0s)` comes *after* the `animation`
+      shorthand in the same block. A shorthand resets `animation-delay` to 0s
+      at its own specificity, which is why the old `.phase-N .tile` rules
+      (0,2,0) never applied against `.launcher.anim-wave.rest .tile` (0,4,0):
+      measured on twelve tiles, every one delay=0s, phase-0 and phase-3
+      identical in every sampled frame — "wave" was "sync" under another name.
+   2. The count of a phase is a *place* on the desktop, not an id, so the chip
+      the user sees move is the one nearest the one that just moved.
+
+   The step counts are literal integers on purpose: Chromium silently drops
    `steps(var(--n))` (falling back to 60fps interpolation), and generating one
-   keyframe stop per step measured 5x the GPU while looking identical.
-   Amplitude / cycle / phase spread still come from settings as CSS variables
-   set by applyFloatieAnimation (--bob-amp, --bob-cycle, --bob-spread). The
-   per-mode durations keep their historical ratio to the cycle (10s / 8s / 6s);
-   the fallbacks in the variables cover widgets that never call it. */
+   keyframe stop per step measured 5x the GPU while looking identical. The
+   counts below are tuned for the default 10s cycle: the hop's 0.5-0.6s
+   segments land near 24 steps/s and the continuous drift at 12/s. A smooth
+   curve costs ~60 full-desktop composites a second (~33% of the 3D engine on
+   this desktop) against ~6.9% for the staircase. */
 .launcher.anim-wave.rest .tile,
 .folder.anim-wave:not(.open) .ftile,
-.launcher:not(.anim-sync):not(.anim-gentle):not(.anim-static).rest .tile,
-.folder:not(.anim-sync):not(.anim-gentle):not(.anim-static):not(.open) .ftile {
-  will-change: transform;
-  backface-visibility: hidden;
-  animation: restbob-wave var(--bob-cycle, 10s) cubic-bezier(0.37, 0, 0.63, 1) infinite;
-  transform: translate3d(0, 0, 0);
-}
-.phase-0 .tile, .phase-0 .ftile { animation-delay: 0s; }
-.phase-1 .tile, .phase-1 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.03 * var(--bob-spread, 1)); }
-.phase-2 .tile, .phase-2 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.06 * var(--bob-spread, 1)); }
-.phase-3 .tile, .phase-3 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.09 * var(--bob-spread, 1)); }
-.phase-4 .tile, .phase-4 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.12 * var(--bob-spread, 1)); }
-.phase-5 .tile, .phase-5 .ftile { animation-delay: calc(var(--bob-cycle, 10s) * 0.15 * var(--bob-spread, 1)); }
-
-
-/* 2. Sync mode (gentle simultaneous bob with rest interval) */
 .launcher.anim-sync.rest .tile,
-.folder.anim-sync:not(.open) .ftile {
+.folder.anim-sync:not(.open) .ftile,
+.launcher:not(.anim-gentle):not(.anim-static).rest .tile,
+.folder:not(.anim-gentle):not(.anim-static):not(.open) .ftile {
   will-change: transform;
   backface-visibility: hidden;
-  animation: restbob-sync calc(var(--bob-cycle, 10s) * 0.8) cubic-bezier(0.37, 0, 0.63, 1) infinite;
-  animation-delay: 0s;
+  animation: restbob-hop var(--bob-cycle, 10s) cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  animation-delay: var(--bob-delay, 0s);
   transform: translate3d(0, 0, 0);
 }
 
-
-/* 3. Gentle mode (smooth continuous sine float) */
+/* gentle: always moving, never hurrying — a long soft drift with no rest
+   interval, which is what makes it different from `sync` rather than an
+   undocumented 0.6x speed on the same hop. */
 .launcher.anim-gentle.rest .tile,
 .folder.anim-gentle:not(.open) .ftile {
   will-change: transform;
   backface-visibility: hidden;
-  animation: restbob-gentle calc(var(--bob-cycle, 10s) * 0.6) ease-in-out infinite;
-  animation-delay: 0s;
+  animation: restbob-drift var(--bob-cycle, 10s) ease-in-out infinite;
+  animation-delay: var(--bob-delay, 0s);
   transform: translate3d(0, 0, 0);
 }
 
-
-/* Step counts are literal so Chromium applies them (it silently drops
-   steps(var(--n))): roughly 24 steps/s on the default 10s cycle — ~14/19/10 for
-   the wave, which is double the original 12/s that read as choppy, without the
-   60/s of a smooth curve. Measured on this desktop, each step is one
-   full-desktop composite: bob off ~6% of the 3D engine, smooth/60fps ~33%. */
-@keyframes restbob-wave {
-  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(14); }
-  6% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * -1), 0); animation-timing-function: steps(19); }
-  14% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * 0.22), 0); animation-timing-function: steps(10); }
-  18% { transform: translate3d(0, 0, 0); }
+/* Rise `--bob-amp`, dip a quarter of it, settle, then hold still for the rest
+   of the cycle: a hop, not a shove. Rising first is what makes the amplitude
+   the number the user typed. */
+@keyframes restbob-hop {
+  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(12); }
+  5% { transform: translate3d(0, calc(var(--bob-amp, 6px) * -1), 0); animation-timing-function: steps(14); }
+  11% { transform: translate3d(0, calc(var(--bob-amp, 6px) * 0.25), 0); animation-timing-function: steps(12); }
+  16% { transform: translate3d(0, 0, 0); }
   100% { transform: translate3d(0, 0, 0); }
 }
 
-@keyframes restbob-sync {
-  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(23); }
-  12% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * -0.89), 0); animation-timing-function: steps(19); }
-  22% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * 0.22), 0); animation-timing-function: steps(12); }
-  28% { transform: translate3d(0, 0, 0); }
-  100% { transform: translate3d(0, 0, 0); }
-}
-
-@keyframes restbob-gentle {
-  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(72); }
-  50% { transform: translate3d(0, calc(var(--bob-amp, 4.5px) * -0.67), 0); animation-timing-function: steps(79); }
+@keyframes restbob-drift {
+  0% { transform: translate3d(0, 0, 0); animation-timing-function: steps(120); }
+  50% { transform: translate3d(0, calc(var(--bob-amp, 6px) * -1), 0); animation-timing-function: steps(120); }
   100% { transform: translate3d(0, 0, 0); }
 }
 
