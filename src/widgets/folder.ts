@@ -36,7 +36,9 @@ export function mountFolder(root: HTMLElement, id: string): void {
   watchSettings();
 
   const syncAnim = () => {
-    applyFloatieAnimation(wrap, id);
+    // px/py are the folder's place on the desktop, which is its place in the
+    // wave (see applyFloatieAnimation).
+    applyFloatieAnimation(wrap, id, { x: px, y: py });
   };
   const syncFloat = syncAnim;
   onSettings(syncAnim);

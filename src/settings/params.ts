@@ -41,11 +41,10 @@ export const NUMBER_PARAMS: NumberParam[] = [
   { key: "pet_speed", label: "pet speed", min: 0, max: 2, step: 0.1 },
   { key: "gravity", label: "gravity", min: 0, max: 5000, step: 50 },
   { key: "bounce", label: "bounce", min: 0, max: 0.9, step: 0.05 },
-  { key: "floatiness", label: "float", min: 0, max: 2, step: 0.1 },
-  { key: "float_amplitude", label: "float height", min: 0, max: 12, step: 0.5, unit: "px" },
-  { key: "float_period", label: "float cycle", min: 2, max: 30, step: 1, unit: "s" },
-  { key: "float_spread", label: "wave spread", min: 0, max: 200, step: 10, unit: "%" },
-  { key: "animated_ratio", label: "animated icons", min: 0, max: 100, step: 10, unit: "%" },
+  { key: "float_amplitude", label: "float height", min: 0, max: 16, step: 0.5, unit: "px" },
+  { key: "float_period", label: "float period", min: 2, max: 30, step: 1, unit: "s" },
+  { key: "float_spread", label: "wave spread", min: 0, max: 100, step: 1, unit: "%" },
+  { key: "animated_ratio", label: "icons that float", min: 0, max: 100, step: 10, unit: "%" },
   { key: "viz_gain", label: "viz gain", min: 0.2, max: 3, step: 0.1, unit: "x" },
   { key: "viz_fps", label: "viz fps", min: 5, max: 60, step: 5, unit: "fps" },
   { key: "sysmon_interval", label: "sysmon refresh", min: 250, max: 5000, step: 250, unit: "ms" },
@@ -69,10 +68,24 @@ function label(text: string): HTMLSpanElement {
   return el("span", "slider-label", text);
 }
 
+/**
+ * The nearest value the control can actually hold. A range input snaps to its
+ * step grid the moment it is given a value, so a row that showed the raw
+ * setting could disagree with its own handle — a migrated `float_spread` of 12%
+ * on a slider stepping by 5 rendered the handle at 10 with the label reading
+ * "12%", and the first touch of the handle then wrote 10: a setting the user
+ * never meant to move. Display and write the value the control shows.
+ */
+function snapToStep(value: number, def: NumberParam): number {
+  if (!Number.isFinite(value)) return def.min;
+  const stepped = def.min + Math.round((value - def.min) / def.step) * def.step;
+  return Number(Math.min(def.max, Math.max(def.min, stepped)).toFixed(4));
+}
+
 /** A slider row, live: dragging it writes the setting (debounced). */
 export function numberRow(key: string, def = numberParam(key)): HTMLElement | undefined {
   if (!def) return undefined;
-  const value = settings()[def.key];
+  const value = snapToStep(settings()[def.key], def);
   const row = el("div", "slider-row");
   const input = el("input", "");
   input.type = "range";

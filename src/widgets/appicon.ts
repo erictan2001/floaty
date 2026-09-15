@@ -98,7 +98,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
   let supportTimer: number | undefined;
 
   const syncAnim = () => {
-    applyFloatieAnimation(wrap, id);
+    // x/y carry the icon's place in the wave: the ripple has to be ordered by
+    // where the icons are, or it scatters instead of travelling.
+    applyFloatieAnimation(wrap, id, { x, y });
   };
   const syncFloat = syncAnim;
   // one consumer instead of a second settings listener: this runs after the

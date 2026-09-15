@@ -693,7 +693,6 @@ export interface FloatSettings {
   pet_speed: number;
   gravity: number;
   bounce: number;
-  floatiness: number;
   single_click: string;
   double_click: string;
   live2d_root: string;
@@ -702,13 +701,14 @@ export interface FloatSettings {
   stay_on_desktop: boolean;
   /** launch floaty when the user signs in */
   start_on_boot: boolean;
+  /** percentage of the desktop items that bob at all */
   animated_ratio: number;
   animation_mode: string;
-  /** base float travel in px (icons bob this far) */
+  /** how far a resting icon rises, in px — the same travel in every mode */
   float_amplitude: number;
-  /** seconds per float cycle (lower = floating more often) */
+  /** seconds per bob */
   float_period: number;
-  /** how far apart neighbouring floaties bob (percent of the stagger) */
+  /** wave only: how much of the cycle separates one icon from the next, in % */
   float_spread: number;
   /** ask before removing a file, folder or widget */
   confirm_remove: boolean;
@@ -724,7 +724,6 @@ export const DEFAULT_SETTINGS: FloatSettings = {
   pet_speed: 1,
   gravity: 2600,
   bounce: 0.45,
-  floatiness: 1,
   single_click: "nothing",
   double_click: "launch",
   live2d_root: "",
@@ -734,58 +733,84 @@ export const DEFAULT_SETTINGS: FloatSettings = {
   start_on_boot: false,
   animated_ratio: 100,
   animation_mode: "wave",
-  float_amplitude: 4.5,
+  float_amplitude: 6,
   float_period: 10,
-  float_spread: 100,
+  float_spread: 10,
   confirm_remove: true,
   viz_gain: 1,
   viz_fps: 30,
   sysmon_interval: 1000,
 };
 
-/**
- * Configures the floating animation classes and styles for app icons and folders
- * based on currentSettings().floatiness, .animated_ratio, and .animation_mode.
- */
-export function applyFloatieAnimation(wrap: HTMLElement, id: string): void {
-  const s = currentSettings();
-  const f = typeof s.floatiness === "number" ? s.floatiness : 1;
-  wrap.style.setProperty("--float", String(f));
+/** A settings number, or the fallback when the field is missing or not one. */
+function settingNum(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
 
-  const ratio = typeof s.animated_ratio === "number" ? s.animated_ratio : 100;
+/** The launcher cell and its gap: what "the next icon along" means to the eye. */
+const CELL_W = 100;
+const CELL_H = 120;
+
+/**
+ * Where an item sits in the ripple, read the way the eye reads a desktop —
+ * left to right, top to bottom. A *place* is what a wave has to be ordered by:
+ * the id it used to come from (`num % 6` of `app-17`, `folder-14`) scattered the
+ * phases randomly across the screen, so even a stagger that applied would not
+ * have read as a wave.
+ */
+function rippleIndex(at: { x: number; y: number }): number {
+  const cols = Math.max(1, Math.ceil((window.innerWidth || 1920) / CELL_W));
+  const col = clampNum(Math.round(at.x / CELL_W), 0, cols - 1);
+  return Math.max(0, Math.round(at.y / CELL_H)) * cols + col;
+}
+
+/**
+ * Applies the float settings to one desktop item: its mode, its travel and
+ * period, and — in wave mode — where it sits in the ripple.
+ *
+ * `at` is the item's place on the desktop (omit it and the item takes the first
+ * place, i.e. sync-like timing; the widgets pass it whenever they know it).
+ *
+ * The mode classes used to carry the stagger (`.phase-N`), which never worked:
+ * an `animation` shorthand resets `animation-delay` to 0s, and the rule holding
+ * the shorthand is a `.launcher.anim-wave.rest .tile` (specificity 0,4,0)
+ * against `.phase-1 .tile` (0,2,0) — measured on twelve tiles, every one came
+ * out `delay: 0s` and every phase group moved identically, so "wave" was
+ * "sync" with a different name and the wave-spread slider did nothing at all.
+ * The offset is `--bob-delay` now, read by the CSS inside the same rule as the
+ * shorthand, and it is negative: a positive one leaves the far side of the
+ * desktop standing still for tens of seconds before its turn comes.
+ */
+export function applyFloatieAnimation(
+  wrap: HTMLElement,
+  id: string,
+  at?: { x: number; y: number },
+): void {
+  const s = currentSettings();
+  const height = clampNum(settingNum(s.float_amplitude, 6), 0, 24);
+  const period = clampNum(settingNum(s.float_period, 10), 2, 60);
+  const ratio = clampNum(settingNum(s.animated_ratio, 100), 0, 100);
+  const spread = clampNum(settingNum(s.float_spread, 10), 0, 100);
   const mode = s.animation_mode || "wave";
 
-  // Live float parameters. `floatiness` stays the coarse "how floaty" knob and
-  // scales the base travel from settings; period and spread are read straight
-  // from the sliders (settings-changed re-runs this, so edits apply instantly).
-  const ampBase = typeof s.float_amplitude === "number" ? s.float_amplitude : 4.5;
-  const period = typeof s.float_period === "number" ? s.float_period : 10;
-  const spread = typeof s.float_spread === "number" ? s.float_spread : 100;
-  const amp = clampNum(ampBase * f, 0, 24);
-  wrap.style.setProperty("--bob-amp", `${amp}px`);
-  wrap.style.setProperty("--bob-cycle", `${clampNum(period, 2, 60)}s`);
-  wrap.style.setProperty("--bob-spread", String(clampNum(spread / 100, 0, 2)));
+  // One knob, one meaning: `--bob-amp` is how far the icon rises, and every
+  // mode's keyframes travel exactly that far. It used to be multiplied by a
+  // second "float" slider as well, and the modes then scaled it again (wave
+  // moved 1.22x the number, gentle 0.67x), so a px value only matched the
+  // motion in the one mode nobody had chosen.
+  wrap.style.setProperty("--bob-amp", `${height}px`);
+  wrap.style.setProperty("--bob-cycle", `${period}s`);
+  const ripple = mode === "wave" && at ? rippleIndex(at) : 0;
+  wrap.style.setProperty("--bob-delay", `${((-ripple * spread) / 100) * period}s`);
 
   // The bob's step counts live in style.css as literal `steps(n)`: Chromium
   // silently drops `steps(var(--n))`, and a generated staircase with a stop per
   // step measured 5x the GPU of the compact form while looking the same.
 
-  wrap.classList.remove(
-    "anim-wave",
-    "anim-sync",
-    "anim-gentle",
-    "anim-static",
-    "phase-0",
-    "phase-1",
-    "phase-2",
-    "phase-3",
-    "phase-4",
-    "phase-5",
-  );
+  wrap.classList.remove("anim-wave", "anim-sync", "anim-gentle", "anim-static");
 
   // One line when this element's decision changes, so the log answers "did the
-  // edit reach the widgets on screen" instead of leaving it to guesswork. The
-  // guard is on the element, because the physics calls this on every frame.
+  // edit reach the widgets on screen" instead of leaving it to guesswork.
   const logDecision = (decision: string): void => {
     if (wrap.dataset.motionLogged === decision) return;
     wrap.dataset.motionLogged = decision;
@@ -794,7 +819,7 @@ export function applyFloatieAnimation(wrap: HTMLElement, id: string): void {
     );
   };
 
-  if (mode === "static" || ratio <= 0 || f <= 0) {
+  if (mode === "static" || ratio <= 0 || height <= 0) {
     wrap.classList.add("anim-static");
     logDecision("static");
     return;
@@ -815,12 +840,7 @@ export function applyFloatieAnimation(wrap: HTMLElement, id: string): void {
   }
 
   wrap.classList.add(`anim-${mode}`);
-  if (mode === "wave") {
-    wrap.classList.add(`phase-${num % 6}`);
-    logDecision(`wave-p${num % 6}`);
-    return;
-  }
-  logDecision(mode);
+  logDecision(ripple > 0 ? `${mode} #${ripple}` : mode);
 }
 
 let settingsCache: FloatSettings = { ...DEFAULT_SETTINGS };
@@ -870,7 +890,7 @@ function applySettings(): void {
  * takes effect after a restart" always really is.
  */
 function describeMotion(s: FloatSettings): string {
-  return `ratio=${s.animated_ratio} mode=${s.animation_mode} floatiness=${s.floatiness} amp=${s.float_amplitude} period=${s.float_period} spread=${s.float_spread}`;
+  return `ratio=${s.animated_ratio} mode=${s.animation_mode} height=${s.float_amplitude} period=${s.float_period} spread=${s.float_spread}`;
 }
 let lastMotion = "";
 
