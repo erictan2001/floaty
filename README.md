@@ -88,6 +88,35 @@ The first build needs network and some patience: Tauri downloads the WiX and NSI
 toolchains and every crate compiles from scratch. Later builds reuse `target/`.
 Windows only, and nothing is signed unless you sign it.
 
+Both architectures build from the same command with a target:
+
+| Target | What it is |
+| --- | --- |
+| `x86_64-pc-windows-msvc` | Intel and AMD — what you get by default |
+| `aarch64-pc-windows-msvc` | Windows on ARM |
+
+```powershell
+rustup target add aarch64-pc-windows-msvc
+npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis
+```
+
+ARM64 is NSIS only: the WiX path for arm64 is not worth relying on, and the installer
+this project points people at is the NSIS one. The ARM64 MSVC toolset is part of a
+normal Visual Studio install with the C++ workload.
+
+One trap worth knowing before it bites: `tauri::generate_context!()` reads
+`frontendDist` *while the crate compiles*, so a Rust step with no frontend build behind
+it panics — `cargo test` and `cargo check` included:
+
+```
+error: proc macro panicked
+    --> src\lib.rs:5702:16
+    = help: message: The `frontendDist` configuration is set to `"../dist"` but this path doesn't exist
+```
+
+Run `npm run build` first, or let `npm run tauri build` do it — that is what its
+`beforeBuildCommand` is for.
+
 ### Signing
 
 Builds are unsigned: Windows has no certificate to check, so the first run gets
@@ -136,10 +165,16 @@ git tag v0.2.0
 git push origin main --tags
 ```
 
-`.github/workflows/release.yml` then checks the tree (`check-plugins`, `tsc`,
-`cargo test` — a tag whose tests fail gets no release), builds on `windows-latest`
-and attaches the NSIS installer, the MSI and the bare `floaty.exe` to the GitHub
-release for that tag. The version in the bundles is taken from the tag, so the
+`.github/workflows/release.yml` then checks the tree (`check-plugins`, `tsc`, and
+`cargo test` — a tag whose tests fail gets no release), builds **both architectures** on
+`windows-latest` — `x86_64-pc-windows-msvc` with the NSIS and MSI installers, and
+`aarch64-pc-windows-msvc` with the NSIS one, cross-compiled from the same x64 runner —
+and attaches them, plus the x64 `floaty.exe`, to the GitHub release for that tag. The
+two targets build one after the other, because both attach to the same release and the
+first one creates it. The backend tests run on x64 only: an arm64 test binary cannot
+execute on an x64 runner. Note that the frontend is built *before* any Rust step —
+`cargo test` included — because the crate compiles `dist/` into itself (see
+[Release](#release)). The version in the bundles is taken from the tag, so the
 release page and the file you download cannot disagree about which release they
 are. The same workflow can be run by hand against a tag that already exists; set
 `releaseDraft: true` in it if you would rather review a release before it goes

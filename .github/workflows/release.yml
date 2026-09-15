@@ -1,9 +1,18 @@
 name: release
 
 # A tag is the release. Push v0.2.0 and this checks the tree, builds the Windows
-# bundles with the version taken from that tag, and attaches them to the tag's
-# GitHub release. It is the same path a manual run takes, except that a manual run
-# must name a tag that already exists instead of creating one.
+# bundles for both x64 and ARM64 with the version taken from that tag, and attaches
+# them to the tag's GitHub release. It is the same path a manual run takes, except
+# that a manual run must name a tag that already exists instead of creating one.
+#
+# The Rust side compiles the frontend *into* the binary: `tauri::generate_context!()`
+# reads `frontendDist` while `src/lib.rs` is being compiled, so any Rust step — `cargo
+# test` included — panics with
+#
+#   The `frontendDist` configuration is set to "../dist" but this path doesn't exist
+#
+# unless the frontend has been built first. That is why the frontend build sits above
+# the Rust steps and not only in `beforeBuildCommand`.
 #
 # Nothing here is signed: SmartScreen warns on first run until a certificate is
 # wired in (see "Signing" in the README — the thumbprint is per-machine, so it
@@ -35,7 +44,26 @@ jobs:
     # Windows only, matching the app: shell verbs, the Recycle Bin, WASAPI loopback
     # and the desktop-layer window policy are all Win32.
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      # Both jobs attach to the same release, so they run one after the other: the
+      # first creates the release, the second finds it. Building in parallel races
+      # two creators against each other for no gain — they are separate rust-cache
+      # entries either way.
+      max-parallel: 1
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+            # every Windows bundle type
+            bundles: ""
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
+            # NSIS only: WiX has no arm64 story worth relying on here, and the setup
+            # this project points people at is the NSIS one.
+            bundles: "--bundles nsis"
 
     steps:
       - name: check out the tag
@@ -59,11 +87,17 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # cross-compiling arm64 from the x64 runner: the ARM64 MSVC toolset is in
+          # the windows-latest image, this is the Rust half of it
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           # the crate lives in src-tauri, so that is the workspace to cache
           workspaces: src-tauri -> target
+          # one cache per target: the two build trees share nothing
+          key: ${{ matrix.target }}
           cache-on-failure: true
 
       - name: install frontend dependencies
@@ -82,14 +116,21 @@ jobs:
           node scripts/set-version.mjs "$version"
           echo "version: \`$version\` (from $TAG)" >> "$GITHUB_STEP_SUMMARY"
 
-      # The same guards the build runs, plus the tests: a tag whose tree does not
-      # pass them does not get a release.
+      # The same guards the build runs.
       - name: check plugins and types
         run: |
           npm run check:plugins
           npx tsc --noEmit
 
+      # Before anything Rust-shaped: `generate_context!` reads `frontendDist` at
+      # compile time and panics when it is missing.
+      - name: build the frontend (the Rust side needs dist/)
+        run: npm run build
+
+      # Only on x64: an arm64 test binary cannot execute on this runner, and a
+      # cross-compiled `cargo test` would have to skip the running part anyway.
       - name: rust tests
+        if: matrix.target == 'x86_64-pc-windows-msvc'
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: build and publish the release
@@ -101,18 +142,19 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: Floaty ${{ github.event.inputs.tag || github.ref_name }}
           releaseBody: |
-            Desktop widgets for Windows, built from `${{ github.event.inputs.tag || github.ref_name }}`.
+            Desktop widgets for Windows, built from `${{ github.event.inputs.tag || github.ref_name }}` — **x64** (`x86_64-pc-windows-msvc`) and **ARM64** (`aarch64-pc-windows-msvc`).
 
-            **Install:** `Floaty_*_x64-setup.exe` is the NSIS installer; the `.msi` is there for anyone who wants one. Both are unsigned, so SmartScreen will warn — *More info* → *Run anyway*. Needs Windows 10/11 with the WebView2 runtime (Windows 11 ships it).
+            **Install:** `Floaty_*_<arch>-setup.exe` is the NSIS installer for that architecture — `x64` on Intel/AMD, `arm64` on Windows on ARM. The `.msi` is x64 only; it is there for anyone who wants one. All of them are unsigned, so SmartScreen will warn — *More info* → *Run anyway*. Needs Windows 10/11 with the WebView2 runtime (Windows 11 ships it; the installer fetches it if it is missing).
 
-            `floaty.exe` is attached on its own as well, if you would rather not install anything.
+            The x64 `floaty.exe` is attached on its own as well, if you would rather not install anything.
           releaseDraft: false
           prerelease: false
           # No updater plugin in this project, so there is no updater feed to write
           uploadUpdaterJson: false
-          # also attach the bare floaty.exe: nothing to install, and it is what the
-          # release body points at for people who would rather not run a setup
-          uploadPlainBinary: true
+          # also attach the bare floaty.exe — x64 only, since a plain binary has to
+          # name itself and two targets would fight over `floaty.exe`
+          uploadPlainBinary: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
+          args: --target ${{ matrix.target }} ${{ matrix.bundles }}
           retryAttempts: 2
 
       - name: list what was built
@@ -121,7 +163,7 @@ jobs:
           PATHS: ${{ steps.build.outputs.artifactPaths }}
         run: |
           {
-            echo "### bundled files"
+            echo "### ${{ matrix.arch }} (${{ matrix.target }})"
             echo
             echo '```'
             echo "$PATHS" | tr ',' '\n'
