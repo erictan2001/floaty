@@ -5909,6 +5909,15 @@ mod tests {
         std::path::PathBuf::from(raw)
     }
 
+    /// The shell hands a shortcut's target back the way it stored it, and on a volume
+    /// with 8.3 aliases enabled that is the short name (the runner's temp directory
+    /// comes back as RUNNER~1) while the test built its path from %TEMP% — so the two
+    /// strings disagree while both name the same file, which is the whole point of the
+    /// shortcut. Compare the files: canonicalize expands the alias to the long path.
+    fn pinned(p: &std::path::Path) -> std::path::PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    }
+
     fn folder_item(name: &str, target: &std::path::Path) -> FolderItem {
         FolderItem {
             name: name.to_string(),
@@ -6014,7 +6023,11 @@ mod tests {
         assert!(exe.exists(), "the program must not be moved");
         let made = std::path::PathBuf::from(&item.target);
         assert_eq!(made, dir.join("Some App.lnk"));
-        assert_eq!(shortcut_target(&made), exe, "the shortcut must point at the app");
+        assert_eq!(
+            pinned(&shortcut_target(&made)),
+            pinned(&exe),
+            "the shortcut must point at the app"
+        );
         assert!(log.starts_with("shortcut in folder"), "{log}");
         assert!(!item.is_dir && item.name == "Some App.lnk");
 
@@ -6037,7 +6050,7 @@ mod tests {
         assert_eq!(name, "Thing.lnk");
         let made = std::path::PathBuf::from(&path);
         assert_eq!(made, root.join("Thing.lnk"));
-        assert_eq!(shortcut_target(&made), exe);
+        assert_eq!(pinned(&shortcut_target(&made)), pinned(&exe));
         assert!(exe.exists(), "the program is only pointed at, never moved");
 
         let (_, second, _) = shortcut_into_root(&root, "Thing", &exe.to_string_lossy()).unwrap();
