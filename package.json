@@ -2,6 +2,8 @@
   "name": "floaty",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "author": "erictan2001",
   "type": "module",
   "scripts": {
     "dev": "vite",
