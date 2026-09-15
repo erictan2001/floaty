@@ -205,6 +205,11 @@ your widget.
 
 ### Reference plugins
 
+Both of these install as they stand — copy the folder into your plugins folder and
+press rescan — and [`examples/plugins/README.md`](../examples/plugins/README.md)
+covers that, along with what each one is worth reading for. What follows is the
+design behind them.
+
 [`examples/plugins/countdown`](../examples/plugins/countdown) is a complete,
 commented plugin: it saves state in the record, redraws every second, and wires up
 dragging, the right-click menu and the resize grip — with no dependencies. Copy it into your
