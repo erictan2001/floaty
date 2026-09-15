@@ -406,3 +406,32 @@ scripts/set-version.mjs         write the version into every file that carries o
   usually cloud-synced, where content notifications fire on every write while
   nothing on the desktop depends on a file's contents. Editing a file in place is
   not a desktop change, so nothing has to happen for it.
+
+## Built with AI
+
+Floaty was written with AI coding agents in the loop. The implementation, the
+refactors, most of this documentation, and a good deal of the investigation behind
+the awkward parts — the Win32 window policy, the visibility repair after a display
+wake, the trail arrangement — were produced by agents working from directions, bug
+reports and measurements. The decisions were a person's: what Floaty is, what it
+does on a real desktop, what was worth measuring and what was allowed to ship.
+Agents propose; they do not decide.
+
+Two things follow, and they are worth saying plainly rather than leaving implied:
+
+- **Read it before you trust it.** Generated code can be confidently wrong, and the
+  parts that touch Win32, the shell and the Recycle Bin deserve a second pair of
+  eyes before you run them on a machine you care about.
+- **The license is a license, not a warranty.** Nothing here is certified, and the
+  [known limits](#known-limits) above are real limits rather than modesty.
+
+Where this README states a measurement, it came from a test or a probe run against
+the running app rather than from an agent's summary. Where it states a rule — the
+one `onSettings` registry, the integer coordinates, a saved position being the
+truth — the rule is there because breaking it caused a bug, and the bug is in the
+commit history.
+
+## License
+
+MIT — see [LICENSE](LICENSE): use, copy, modify, merge, publish, distribute,
+sublicense or sell it, keeping the copyright notice. It comes with no warranty.

@@ -3,6 +3,7 @@ name = "floaty"
 version = "0.1.0"
 description = "Floaty - widgets living on your desktop"
 authors = ["floaty"]
+license = "MIT"
 edition = "2021"
 
 [build-dependencies]
