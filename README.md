@@ -275,12 +275,11 @@ Built in (`src-tauri/src/plugins.rs` is the manifest):
 | `visualizer` | spectrum bars for system audio (loopback, not the mic) |
 | `sysmon` | CPU, 3D GPU and RAM load with a scrolling graph |
 
-`countdown` and `trail`, in [`examples/plugins`](examples/plugins), are complete
-plugins written the third-party way — `countdown` is a widget that keeps to itself;
-`trail` draws paths on the desktop and lines the desktop items up along them, in
-`single` mode where every stroke rearranges the icons at once or `multiple` mode where
-the paths pile up until you press done, with enter or escape to leave the surface — and
-both are good references.
+`countdown` and `trail`, in [`examples/plugins`](examples/plugins), are two
+complete plugins written the third-party way — one that keeps to itself, one that
+rearranges the desktop — and both are meant to be read. Their
+[README](examples/plugins/README.md) says how to install them and what each one
+is worth reading for.
 
 ## Plugins
 
@@ -376,7 +375,7 @@ src-tauri/src/
   shell_ops.rs  shell-level file operations (shortcuts, icons, recycle)
   main.rs       entry point
 docs/PLUGINS.md                 plugin authoring reference
-examples/plugins/countdown      worked example plugin
+examples/plugins/               two worked example plugins, and their README
 scripts/check-plugins.mjs       backend/frontend plugin id agreement
 scripts/set-version.mjs         write the version into every file that carries one
 .github/workflows/release.yml   tagged build → checked, published GitHub release

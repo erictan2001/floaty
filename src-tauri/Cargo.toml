@@ -1,6 +1,6 @@
 [package]
 name = "floaty"
-version = "0.1.0"
+version = "0.1.1"
 description = "Floaty - widgets living on your desktop"
 authors = ["floaty"]
 license = "MIT"
