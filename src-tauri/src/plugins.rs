@@ -373,13 +373,7 @@ pub fn manifest(disabled: &[String]) -> Vec<PluginInfo> {
 /// Pure: no global state, so the tests can point it at a fixture directory.
 /// Everything a broken or hostile plugin could get wrong is checked here — the
 /// id, the API version, the entry path staying inside the folder, the sizes.
-pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
-    let manifest_path = dir.join("plugin.json");
-    let text =
-        std::fs::read_to_string(&manifest_path).map_err(|e| format!("plugin.json unreadable: {e}"))?;
-    let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("plugin.json is not valid JSON: {e}"))?;
-
+fn validate_plugin_id(json: &serde_json::Value) -> Result<String, String> {
     let id = json
         .get("id")
         .and_then(|v| v.as_str())
@@ -392,21 +386,12 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
     if find(&id).is_some() {
         return Err(format!("id {id:?} is a built-in plugin"));
     }
-    let api = json.get("apiVersion").and_then(|v| v.as_u64()).unwrap_or_default() as u32;
-    if api != PLUGIN_API_VERSION {
-        return Err(format!(
-            "apiVersion {api} is not supported (this build speaks {PLUGIN_API_VERSION})"
-        ));
-    }
-    let name = json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if name.is_empty() {
-        return Err("name is required".into());
-    }
+    Ok(id)
+}
+
+fn validate_plugin_sizes(
+    json: &serde_json::Value,
+) -> Result<((f64, f64), Option<(f64, f64)>, Option<(f64, f64)>), String> {
     let size = json.get("size").ok_or("size { w, h } is required")?;
     let w = size.get("w").and_then(|v| v.as_f64()).unwrap_or_default();
     let h = size.get("h").and_then(|v| v.as_f64()).unwrap_or_default();
@@ -424,7 +409,10 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
             return Err("minSize is larger than maxSize".into());
         }
     }
+    Ok(((w, h), min_size, max_size))
+}
 
+fn validate_entry_path(dir: &std::path::Path, json: &serde_json::Value) -> Result<std::path::PathBuf, String> {
     let entry_rel = json.get("entry").and_then(|v| v.as_str()).unwrap_or("index.js");
     let entry_rel_path = std::path::Path::new(entry_rel);
     if entry_rel_path.is_absolute()
@@ -443,17 +431,11 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
     if !entry.is_file() {
         return Err(format!("entry {entry_rel:?} does not exist in the plugin folder"));
     }
+    Ok(entry)
+}
 
-    let default_data = json
-        .get("defaultData")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !default_data.is_object() {
-        return Err("defaultData must be an object".into());
-    }
-
-    let desktop_item = json
-        .get("desktopItem")
+fn parse_desktop_item(json: &serde_json::Value, name: &str) -> Option<PluginDesktopItem> {
+    json.get("desktopItem")
         .and_then(|v| v.as_object())
         .map(|d| PluginDesktopItem {
             path_key: d
@@ -467,7 +449,51 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("{name} floatie")),
             group: d.get("group").and_then(|v| v.as_bool()).unwrap_or(false),
-        });
+        })
+}
+
+/// Read and validate one plugin folder.
+///
+/// Pure: no global state, so the tests can point it at a fixture directory.
+/// Everything a broken or hostile plugin could get wrong is checked here — the
+/// id, the API version, the entry path staying inside the folder, the sizes.
+pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
+    let manifest_path = dir.join("plugin.json");
+    let text =
+        std::fs::read_to_string(&manifest_path).map_err(|e| format!("plugin.json unreadable: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("plugin.json is not valid JSON: {e}"))?;
+
+    let id = validate_plugin_id(&json)?;
+
+    let api = json.get("apiVersion").and_then(|v| v.as_u64()).unwrap_or_default() as u32;
+    if api != PLUGIN_API_VERSION {
+        return Err(format!(
+            "apiVersion {api} is not supported (this build speaks {PLUGIN_API_VERSION})"
+        ));
+    }
+    let name = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return Err("name is required".into());
+    }
+
+    let (default_size, min_size, max_size) = validate_plugin_sizes(&json)?;
+    let entry = validate_entry_path(dir, &json)?;
+
+    let default_data = json
+        .get("defaultData")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !default_data.is_object() {
+        return Err("defaultData must be an object".into());
+    }
+
+    let desktop_item = parse_desktop_item(&json, &name);
 
     Ok(InstalledPlugin {
         name,
@@ -478,7 +504,7 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
             .to_string(),
         version: json.get("version").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
         author: json.get("author").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-        default_size: (w, h),
+        default_size,
         resizable: json.get("resizable").and_then(|v| v.as_bool()).unwrap_or(false),
         min_size,
         max_size,
@@ -503,6 +529,20 @@ fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
+fn list_plugin_dirs(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("{}: cannot create the plugins folder: {e}", dir.display()))?;
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: cannot read the plugins folder: {e}", dir.display()))?;
+    let mut dirs: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    Ok(dirs)
+}
+
 /// Load every plugin folder in `dir` (created if missing).
 ///
 /// Returns `(accepted descriptions, rejections)`. A broken plugin is reported,
@@ -512,27 +552,10 @@ pub fn install_from(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
     let mut rejected = Vec::new();
     let mut loaded: Vec<InstalledPlugin> = Vec::new();
 
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        return (
-            accepted,
-            vec![format!("{}: cannot create the plugins folder: {e}", dir.display())],
-        );
-    }
-    let entries = match std::fs::read_dir(dir) {
+    let dirs = match list_plugin_dirs(dir) {
         Ok(list) => list,
-        Err(e) => {
-            return (
-                accepted,
-                vec![format!("{}: cannot read the plugins folder: {e}", dir.display())],
-            )
-        }
+        Err(err) => return (accepted, vec![err]),
     };
-    let mut dirs: Vec<std::path::PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    dirs.sort();
 
     for plugin_dir in dirs {
         match read_plugin(&plugin_dir) {

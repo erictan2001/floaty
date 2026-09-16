@@ -88,54 +88,104 @@ pub fn is_running() -> bool {
 // ---------------------------------------------------------------- capture ---
 
 #[cfg(windows)]
-fn capture_loop(app: &AppHandle) -> Result<(), String> {
+unsafe fn init_wasapi_capture(
+) -> Result<(windows::Win32::Media::Audio::IAudioClient, windows::Win32::Media::Audio::IAudioCaptureClient, AudioFormat), String> {
     use windows::Win32::Media::Audio::{
         eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-        AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
     };
 
-    unsafe {
-        // MTA: we never touch a window from this thread
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    let enumerator: IMMDeviceEnumerator =
+        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
+    let device = enumerator
+        .GetDefaultAudioEndpoint(eRender, eConsole)
+        .map_err(|e| format!("no default render endpoint: {e}"))?;
+    let client: IAudioClient = device
+        .Activate(CLSCTX_ALL, None)
+        .map_err(|e| format!("activate IAudioClient: {e}"))?;
+    let fmt_ptr = client
+        .GetMixFormat()
+        .map_err(|e| format!("GetMixFormat: {e}"))?;
+    if fmt_ptr.is_null() {
+        return Err("GetMixFormat returned null".into());
     }
+    let fmt = AudioFormat::parse(&*fmt_ptr);
+    let res = client.Initialize(
+        AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_LOOPBACK,
+        0,
+        0,
+        fmt_ptr,
+        None,
+    );
+    CoTaskMemFree(Some(fmt_ptr as *const _));
+    let fmt = fmt.ok_or_else(|| "unsupported mix format".to_string())?;
+    res.map_err(|e| format!("Initialize(loopback): {e}"))?;
+    let capture: IAudioCaptureClient = client
+        .GetService()
+        .map_err(|e| format!("GetService(IAudioCaptureClient): {e}"))?;
+    client.Start().map_err(|e| format!("Start: {e}"))?;
+    Ok((client, capture, fmt))
+}
 
-    let (client, capture, fmt) = unsafe {
-        let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
-        let device = enumerator
-            .GetDefaultAudioEndpoint(eRender, eConsole)
-            .map_err(|e| format!("no default render endpoint: {e}"))?;
-        let client: IAudioClient = device
-            .Activate(CLSCTX_ALL, None)
-            .map_err(|e| format!("activate IAudioClient: {e}"))?;
-        let fmt_ptr = client
-            .GetMixFormat()
-            .map_err(|e| format!("GetMixFormat: {e}"))?;
-        if fmt_ptr.is_null() {
-            return Err("GetMixFormat returned null".into());
+#[cfg(windows)]
+unsafe fn drain_audio_packets(
+    capture: &windows::Win32::Media::Audio::IAudioCaptureClient,
+    fmt: &AudioFormat,
+    mut packet_frames: u32,
+    scratch: &mut Vec<u8>,
+    window: &mut Vec<f32>,
+) -> bool {
+    use windows::Win32::Media::Audio::AUDCLNT_BUFFERFLAGS_SILENT;
+    let mut got_audio = false;
+    while packet_frames > 0 {
+        let mut data: *mut u8 = std::ptr::null_mut();
+        let mut frames: u32 = 0;
+        let mut flags: u32 = 0;
+        let ok = capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None).is_ok();
+        if !ok || frames == 0 {
+            break;
         }
-        let fmt = AudioFormat::parse(&*fmt_ptr);
-        let res = client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK,
-            0,
-            0,
-            fmt_ptr,
-            None,
-        );
-        CoTaskMemFree(Some(fmt_ptr as *const _));
-        let fmt = fmt.ok_or_else(|| "unsupported mix format".to_string())?;
-        res.map_err(|e| format!("Initialize(loopback): {e}"))?;
-        let capture: IAudioCaptureClient = client
-            .GetService()
-            .map_err(|e| format!("GetService(IAudioCaptureClient): {e}"))?;
-        client.Start().map_err(|e| format!("Start: {e}"))?;
-        (client, capture, fmt)
-    };
+        let silent_packet = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
+        let bytes = fmt.bytes_for(frames as usize);
+        scratch.resize(bytes, 0);
+        if !silent_packet && !data.is_null() {
+            std::ptr::copy_nonoverlapping(data, scratch.as_mut_ptr(), bytes);
+            got_audio = true;
+        }
+        fmt.append_mono(scratch, frames as usize, window);
+        let _ = capture.ReleaseBuffer(frames);
+        let next = capture.GetNextPacketSize().unwrap_or(0);
+        if next == 0 {
+            break;
+        }
+        packet_frames = next;
+    }
+    got_audio
+}
+
+#[cfg(windows)]
+fn process_fft_windows(window: &mut Vec<f32>, fft: &mut Fft, bands: &mut [f32]) -> (f32, bool) {
+    let mut rms = 0.0f32;
+    let mut analyzed = false;
+    while window.len() >= FFT_N {
+        let chunk: Vec<f32> = window.drain(..FFT_N).collect();
+        let sum: f32 = chunk.iter().map(|s| s * s).sum();
+        rms = (sum / FFT_N as f32).sqrt();
+        fft.analyze(&chunk, bands);
+        analyzed = true;
+    }
+    (rms, analyzed)
+}
+
+#[cfg(windows)]
+fn capture_loop(app: &AppHandle) -> Result<(), String> {
+    let (client, capture, fmt) = unsafe { init_wasapi_capture()? };
 
     crate::log_line(
         app,
@@ -155,12 +205,8 @@ fn capture_loop(app: &AppHandle) -> Result<(), String> {
     let mut last_emit = std::time::Instant::now();
     let mut scratch: Vec<u8> = Vec::new();
 
-    let shutdown = |client: &IAudioClient| unsafe {
-        let _ = client.Stop();
-    };
-
     while CLIENTS.load(Ordering::SeqCst) > 0 {
-        let mut packet_frames: u32 = match unsafe { capture.GetNextPacketSize() } {
+        let packet_frames: u32 = match unsafe { capture.GetNextPacketSize() } {
             Ok(n) => n,
             Err(e) => {
                 crate::log_line(app, &format!("[audio] GetNextPacketSize failed: {e}"));
@@ -169,49 +215,10 @@ fn capture_loop(app: &AppHandle) -> Result<(), String> {
                 0
             }
         };
-        let mut got_audio = false;
-        while packet_frames > 0 {
-            let mut data: *mut u8 = std::ptr::null_mut();
-            let mut frames: u32 = 0;
-            let mut flags: u32 = 0;
-            let ok = unsafe {
-                capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None).is_ok()
-            };
-            if !ok || frames == 0 {
-                break;
-            }
-            let silent_packet = flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
-            if !silent_packet && !data.is_null() {
-                let bytes = fmt.bytes_for(frames as usize);
-                scratch.resize(bytes, 0);
-                unsafe { std::ptr::copy_nonoverlapping(data, scratch.as_mut_ptr(), bytes) };
-                fmt.append_mono(&scratch, frames as usize, &mut window);
-                got_audio = true;
-            } else {
-                // silence keeps the timeline moving so the decay still runs
-                let zeros = fmt.bytes_for(frames as usize);
-                scratch.resize(zeros, 0);
-                fmt.append_mono(&scratch, frames as usize, &mut window);
-            }
-            unsafe {
-                let _ = capture.ReleaseBuffer(frames);
-            }
-            let next = unsafe { capture.GetNextPacketSize() }.unwrap_or(0);
-            if next == 0 {
-                break;
-            }
-            packet_frames = next;
-        }
 
-        // analyse whatever complete windows we have (non-overlapping: cheap)
-        let mut rms = 0.0f32;
-        while window.len() >= FFT_N {
-            let chunk: Vec<f32> = window.drain(..FFT_N).collect();
-            let sum: f32 = chunk.iter().map(|s| s * s).sum();
-            rms = (sum / FFT_N as f32).sqrt();
-            fft.analyze(&chunk, &mut bands);
-            got_audio = true;
-        }
+        let drained = unsafe { drain_audio_packets(&capture, &fmt, packet_frames, &mut scratch, &mut window) };
+        let (rms, analyzed) = process_fft_windows(&mut window, &mut fft, &mut bands);
+        let got_audio = drained || analyzed;
 
         // fast attack / slow release keeps the bars lively but not jittery
         level = if rms > level { rms } else { level * 0.82 + rms * 0.18 };
@@ -250,7 +257,9 @@ fn capture_loop(app: &AppHandle) -> Result<(), String> {
         }
     }
 
-    shutdown(&client);
+    unsafe {
+        let _ = client.Stop();
+    }
     crate::log_line(app, "[audio] loopback capture stopped");
     Ok(())
 }
@@ -311,6 +320,23 @@ impl AudioFormat {
         frames * self.channels * (self.bits as usize / 8)
     }
 
+    #[inline]
+    fn decode_sample(bytes: &[u8], off: usize, is_float: bool, bits: u16) -> f32 {
+        if is_float && bits == 32 {
+            f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+        } else if bits == 16 {
+            i16::from_le_bytes([bytes[off], bytes[off + 1]]) as f32 / 32768.0
+        } else {
+            i32::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+            ]) as f32
+                / 2147483648.0
+        }
+    }
+
     /// Downmixes a packet to mono and appends it to the analysis window.
     fn append_mono(&self, bytes: &[u8], frames: usize, out: &mut Vec<f32>) {
         let bytes_per_sample = self.bits as usize / 8;
@@ -323,20 +349,7 @@ impl AudioFormat {
             let mut acc = 0.0f32;
             for c in 0..self.channels {
                 let off = base + c * bytes_per_sample;
-                let s = if self.is_float && self.bits == 32 {
-                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
-                } else if self.bits == 16 {
-                    i16::from_le_bytes([bytes[off], bytes[off + 1]]) as f32 / 32768.0
-                } else {
-                    i32::from_le_bytes([
-                        bytes[off],
-                        bytes[off + 1],
-                        bytes[off + 2],
-                        bytes[off + 3],
-                    ]) as f32
-                        / 2147483648.0
-                };
-                acc += s;
+                acc += Self::decode_sample(bytes, off, self.is_float, self.bits);
             }
             out.push(acc / self.channels as f32);
         }

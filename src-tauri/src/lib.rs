@@ -90,7 +90,7 @@ fn store_file(app: &AppHandle) -> std::path::PathBuf {
     let dir = app
         .path()
         .app_data_dir()
-        .expect("app data dir should resolve");
+        .unwrap_or_else(|_| std::env::temp_dir().join("floaty"));
     fs::create_dir_all(&dir).ok();
     dir.join("floaty-store.json")
 }
@@ -171,7 +171,7 @@ fn write_store_now(app: &AppHandle) {
     // settings window while widgets persisted positions in the background.
     let json = {
         let state = app.state::<AppState>();
-        let guard = state.0.lock().expect("store lock");
+        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
         let list: Vec<&WidgetRecord> = guard.widgets.values().collect();
         serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".to_string())
     };
@@ -392,7 +392,7 @@ fn settings_file(app: &AppHandle) -> std::path::PathBuf {
     let dir = app
         .path()
         .app_data_dir()
-        .expect("app data dir should resolve");
+        .unwrap_or_else(|_| std::env::temp_dir().join("floaty"));
     fs::create_dir_all(&dir).ok();
     dir.join("floaty-settings.json")
 }
@@ -779,9 +779,7 @@ mod desktop_pin {
     }
 
     const RDW_INVALIDATE: u32 = 0x0001;
-    const RDW_ERASE: u32 = 0x0004;
     const RDW_ALLCHILDREN: u32 = 0x0080;
-    const RDW_UPDATENOW: u32 = 0x0100;
 
     /// Make the window paint itself from scratch.
     ///
@@ -5536,7 +5534,7 @@ pub fn run() {
             let mut reclassified = 0usize;
             {
                 let state = handle.state::<AppState>();
-                let mut guard = state.0.lock().expect("store lock");
+                let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
                 let mut max_n: u64 = 0;
                 for mut rec in saved {
                     if let Some(n) = rec

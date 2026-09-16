@@ -120,7 +120,9 @@ try {
   listen("floaty-widgets-changed", () => {
     void reloadWidgets();
   }).catch(() => undefined);
-  void boot();
+  void boot().catch((err) => {
+    showError(`settings failed to load: ${err instanceof Error ? err.message : String(err)}`);
+  });
 } catch (err) {
   showError(`settings failed to start: ${err instanceof Error ? err.message : String(err)}`);
 }

@@ -82,13 +82,79 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     }
   };
 
+  const drawBars = (w: number, h: number, usable: number): void => {
+    if (!ctx) return;
+    const n = bands.length;
+    const gap = Math.max(1, Math.round(w / n / 5));
+    const bw = Math.max(1, w / n - gap);
+    // roundRect is Chromium 99+; fall back to plain rects rather than throwing
+    const rounded = typeof (ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect === "function";
+    for (let i = 0; i < n; i++) {
+      const v = Math.max(0.012, bands[i]);
+      const bh = Math.max(2, usable * v);
+      const px = i * (bw + gap) + gap / 2;
+      const py = h / 2 - bh / 2;
+      ctx.globalAlpha = 0.85;
+      if (rounded) {
+        ctx.beginPath();
+        const r = Math.min(bw / 2, 6);
+        ctx.roundRect(px, py, bw, bh, r);
+        ctx.fill();
+      } else {
+        ctx.fillRect(px, py, bw, bh);
+      }
+    }
+    ctx.globalAlpha = 1;
+  };
+
+  const drawWave = (w: number, h: number, usable: number): void => {
+    if (!ctx) return;
+    const n = bands.length;
+    ctx.lineWidth = Math.max(2, h * 0.045);
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const px = (i / (n - 1)) * w;
+      const py = h / 2 - (bands[i] - 0.5) * usable * 1.4;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.globalAlpha = 0.9;
+    ctx.stroke();
+    // mirrored ghost for the classic look
+    ctx.globalAlpha = 0.35;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const px = (i / (n - 1)) * w;
+      const py = h / 2 + (bands[i] - 0.5) * usable * 1.4;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+
+  const drawDots = (w: number, h: number): void => {
+    if (!ctx) return;
+    const n = bands.length;
+    const step = w / n;
+    for (let i = 0; i < n; i++) {
+      const v = bands[i];
+      const r = Math.max(1.5, (step * 0.36) * (0.4 + v * 0.9));
+      ctx.globalAlpha = 0.35 + v * 0.65;
+      ctx.beginPath();
+      ctx.arc(i * step + step / 2, h / 2, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  };
+
   /** Bars, a mirrored waveform or a row of glowing dots. */
   const draw = (): void => {
     if (!ctx) return;
     const w = canvas.width;
     const h = canvas.height;
     ctx.clearRect(0, 0, w, h);
-    const n = bands.length;
     const pad = Math.round(h * 0.12);
     const usable = h - pad * 2;
 
@@ -101,60 +167,11 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     ctx.strokeStyle = grad;
 
     if (mode === "bars") {
-      const gap = Math.max(1, Math.round(w / n / 5));
-      const bw = Math.max(1, w / n - gap);
-      // roundRect is Chromium 99+; fall back to plain rects rather than throwing
-      const rounded = typeof (ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect === "function";
-      for (let i = 0; i < n; i++) {
-        const v = Math.max(0.012, bands[i]);
-        const bh = Math.max(2, usable * v);
-        const px = i * (bw + gap) + gap / 2;
-        const py = h / 2 - bh / 2;
-        ctx.globalAlpha = 0.85;
-        if (rounded) {
-          ctx.beginPath();
-          const r = Math.min(bw / 2, 6);
-          ctx.roundRect(px, py, bw, bh, r);
-          ctx.fill();
-        } else {
-          ctx.fillRect(px, py, bw, bh);
-        }
-      }
-      ctx.globalAlpha = 1;
+      drawBars(w, h, usable);
     } else if (mode === "wave") {
-      ctx.lineWidth = Math.max(2, h * 0.045);
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      for (let i = 0; i < n; i++) {
-        const px = (i / (n - 1)) * w;
-        const py = h / 2 - (bands[i] - 0.5) * usable * 1.4;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.globalAlpha = 0.9;
-      ctx.stroke();
-      // mirrored ghost for the classic look
-      ctx.globalAlpha = 0.35;
-      ctx.beginPath();
-      for (let i = 0; i < n; i++) {
-        const px = (i / (n - 1)) * w;
-        const py = h / 2 + (bands[i] - 0.5) * usable * 1.4;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-      ctx.globalAlpha = 1;
+      drawWave(w, h, usable);
     } else {
-      const step = w / n;
-      for (let i = 0; i < n; i++) {
-        const v = bands[i];
-        const r = Math.max(1.5, (step * 0.36) * (0.4 + v * 0.9));
-        ctx.globalAlpha = 0.35 + v * 0.65;
-        ctx.beginPath();
-        ctx.arc(i * step + step / 2, h / 2, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
+      drawDots(w, h);
     }
   };
 

@@ -153,278 +153,282 @@ export function mountFolder(root: HTMLElement, id: string): void {
     render();
   };
 
+  const createItemVisual = (it: FolderItem, mini: boolean): HTMLElement => {
+    if (it.icon) {
+      const img = document.createElement("img");
+      img.src = it.icon;
+      img.alt = "";
+      img.draggable = false;
+      return img;
+    }
+    if (it.is_dir) {
+      const glyph = document.createElement("div");
+      glyph.className = mini ? "ffolder fmini-dir" : "ffolder";
+      if (!mini) glyph.style.transform = "scale(0.85)";
+      return glyph;
+    }
+    const ch = document.createElement("span");
+    ch.className = mini ? "fmini-letter" : "fletter";
+    ch.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
+    return ch;
+  };
+
+  const createGhostElement = (it: FolderItem, clientX: number, clientY: number): HTMLElement => {
+    const ghost = document.createElement("div");
+    ghost.className = "floaty-drag-ghost";
+    ghost.style.transform = `translate3d(${clientX - 36}px, ${clientY - 36}px, 0)`;
+    if (it.icon && it.icon !== "none") {
+      const gImg = document.createElement("img");
+      gImg.src = it.icon;
+      ghost.append(gImg);
+    } else if (it.is_dir) {
+      const gGlyph = document.createElement("div");
+      gGlyph.className = "ffolder ghost-folder";
+      ghost.append(gGlyph);
+    } else {
+      const gTile = document.createElement("div");
+      gTile.className = "ghost-letter";
+      gTile.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
+      ghost.append(gTile);
+    }
+    const gLab = document.createElement("span");
+    gLab.className = "ghost-label";
+    gLab.textContent = it.name;
+    ghost.append(gLab);
+    return ghost;
+  };
+
+  const renderCollapsed = () => {
+    const tile = document.createElement("div");
+    tile.className = "ftile";
+    const shown = items.slice(0, 4);
+    if (shown.length === 0) {
+      const glyph = document.createElement("div");
+      glyph.className = "ffolder";
+      tile.append(glyph);
+    } else {
+      const minis = document.createElement("div");
+      minis.className = "fminis";
+      for (const it of shown) {
+        minis.append(createItemVisual(it, true));
+      }
+      tile.append(minis);
+    }
+    if (items.length > 0) {
+      const badge = document.createElement("div");
+      badge.className = "fbadge";
+      badge.textContent = String(items.length);
+      tile.append(badge);
+    }
+    const x = document.createElement("button");
+    x.className = "launcher-x";
+    x.title = "Remove";
+    x.textContent = "×";
+    x.addEventListener("pointerdown", (e) => e.stopPropagation());
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (rec) void removeSelf(rec);
+    });
+    const nm = document.createElement("div");
+    nm.className = "launcher-name";
+    nm.textContent = folderName();
+    nm.title = folderName();
+    wrap.append(tile, x, nm);
+    void setWindowSize(WIN_W, WIN_H);
+  };
+
+  const setupItemDrag = (b: HTMLButtonElement, it: FolderItem) => {
+    b.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      itemDragMoved = false;
+      const isOverlay = isOverlayMode();
+      const sx = isOverlay ? e.clientX : e.screenX;
+      const sy = isOverlay ? e.clientY : e.screenY;
+      let out = false;
+      let captured = false;
+      let ghost: HTMLElement | null = null;
+
+      const onMove = (ev: PointerEvent) => {
+        const curSX = isOverlay ? ev.clientX : ev.screenX;
+        const curSY = isOverlay ? ev.clientY : ev.screenY;
+        if (!out && Math.hypot(curSX - sx, curSY - sy) > 8) {
+          out = true;
+          itemDragMoved = true;
+          b.classList.add("dragging-out");
+          suppressClickUntil = performance.now() + 300;
+          notifyDragging(true);
+          if (!captured) {
+            captured = true;
+            try {
+              b.setPointerCapture(e.pointerId);
+            } catch {
+              /* ignore */
+            }
+          }
+          ghost = createGhostElement(it, ev.clientX, ev.clientY);
+          document.body.append(ghost);
+        }
+        if (ghost) {
+          ghost.style.transform = `translate3d(${ev.clientX - 36}px, ${ev.clientY - 36}px, 0)`;
+        }
+      };
+
+      const onUp = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (captured) {
+          try {
+            if (b.hasPointerCapture(e.pointerId)) b.releasePointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+        }
+        if (ghost) {
+          ghost.remove();
+          ghost = null;
+        }
+        b.classList.remove("dragging-out");
+        if (out) notifyDragging(false);
+        if (!out) return;
+
+        const isInside = isOverlay
+          ? (() => {
+              const r = wrap.getBoundingClientRect();
+              return (
+                ev.clientX >= r.left + 4 &&
+                ev.clientX <= r.right - 4 &&
+                ev.clientY >= r.top + 4 &&
+                ev.clientY <= r.bottom - 4
+              );
+            })()
+          : ev.clientX >= 0 &&
+            ev.clientY >= 0 &&
+            ev.clientX < window.innerWidth &&
+            ev.clientY < window.innerHeight;
+
+        if (isInside) return;
+
+        let nx = isOverlay ? Math.round(ev.clientX - 46) : Math.round(px + ev.clientX - 46);
+        let ny = isOverlay ? Math.round(ev.clientY - 56) : Math.round(py + ev.clientY - 56);
+        if (isOverlay) {
+          const monW = window.innerWidth || 1920;
+          const monH = window.innerHeight || 1080;
+          nx = Math.max(16, Math.min(monW - 92 - 16, nx));
+          ny = Math.max(16, Math.min(monH - 112 - 16, ny));
+        }
+        const index = items.indexOf(it);
+        if (index >= 0) {
+          invoke("floaty_ungroup", { folderId: id, index, x: nx, y: ny })
+            .then(() => reload())
+            .catch(() => undefined);
+        }
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+  };
+
+  const renderExpanded = () => {
+    const head = document.createElement("div");
+    head.className = "fhead";
+    const dot = document.createElement("span");
+    dot.className = "fhead-dot";
+    const nm = document.createElement("span");
+    nm.className = "fhead-name";
+    nm.textContent = folderName();
+    nm.title = "Click to rename";
+    nm.style.cursor = "text";
+    nm.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const input = document.createElement("input");
+      input.className = "fname-edit";
+      input.value = folderName();
+      input.maxLength = 24;
+      const commit = (save: boolean) => {
+        if (save && rec) {
+          const newName = input.value.trim() || "Folder";
+          rec.data["name"] = newName;
+          void saveRecord(rec).catch(() => undefined);
+          if (typeof rec.data["path"] === "string" && rec.data["path"]) {
+            invoke("floaty_rename_folder_dir", { folderId: id, newName }).catch(() => undefined);
+          }
+        }
+        render();
+      };
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") commit(true);
+        else if (ev.key === "Escape") commit(false);
+      });
+      input.addEventListener("blur", () => commit(true));
+      input.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      input.addEventListener("click", (ev) => ev.stopPropagation());
+      head.replaceChild(input, nm);
+      input.focus();
+      input.select();
+    });
+    const shut = document.createElement("button");
+    shut.className = "fshut";
+    shut.title = "Collapse";
+    shut.textContent = "–";
+    shut.addEventListener("pointerdown", (e) => e.stopPropagation());
+    shut.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void collapseFolder();
+    });
+    head.append(dot, nm, shut);
+    const grid = document.createElement("div");
+    grid.className = "fgrid";
+    const cols = Math.min(4, Math.max(1, items.length));
+    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "fempty";
+      empty.textContent = "drag app icons or files onto this folder";
+      grid.append(empty);
+    }
+    for (const it of items) {
+      const b = document.createElement("button");
+      b.className = "fitem";
+      b.title = it.name;
+      b.append(createItemVisual(it, false));
+      const lab = document.createElement("span");
+      lab.className = "flabel";
+      lab.textContent = displayName(it.name);
+      b.append(lab);
+      setupItemDrag(b, it);
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (itemDragMoved) {
+          itemDragMoved = false;
+          return;
+        }
+        b.classList.add("go");
+        window.setTimeout(() => b.classList.remove("go"), 500);
+        invoke("floaty_launch_target", { target: it.target }).catch(() => {
+          b.classList.remove("go");
+          b.classList.add("shake");
+          window.setTimeout(() => b.classList.remove("shake"), 500);
+        });
+      });
+      grid.append(b);
+    }
+    wrap.append(head, grid);
+    const rows = Math.max(1, Math.ceil(items.length / cols));
+    const targetW = Math.max(cols * CELL + (rows > 4 ? 28 : 20), 220);
+    const targetH = Math.min(56 + rows * 82, 420);
+    void setWindowSize(targetW, targetH);
+  };
+
   const render = () => {
     wrap.innerHTML = "";
     wrap.classList.toggle("open", expanded);
     if (!expanded) {
-      const tile = document.createElement("div");
-      tile.className = "ftile";
-      // android-style preview: up to 4 mini icons packed in the folder
-      const shown = items.slice(0, 4);
-      if (shown.length === 0) {
-        const glyph = document.createElement("div");
-        glyph.className = "ffolder";
-        tile.append(glyph);
-      } else {
-        const minis = document.createElement("div");
-        minis.className = "fminis";
-        for (const it of shown) {
-          if (it.icon) {
-            const img = document.createElement("img");
-            img.src = it.icon;
-            img.alt = "";
-            img.draggable = false;
-            minis.append(img);
-          } else if (it.is_dir) {
-            const glyph = document.createElement("div");
-            glyph.className = "ffolder fmini-dir";
-            minis.append(glyph);
-          } else {
-            const ch = document.createElement("span");
-            ch.className = "fmini-letter";
-            ch.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
-            minis.append(ch);
-          }
-        }
-        tile.append(minis);
-      }
-      if (items.length > 0) {
-        const badge = document.createElement("div");
-        badge.className = "fbadge";
-        badge.textContent = String(items.length);
-        tile.append(badge);
-      }
-      const x = document.createElement("button");
-      x.className = "launcher-x";
-      x.title = "Remove";
-      x.textContent = "×";
-      x.addEventListener("pointerdown", (e) => e.stopPropagation());
-      x.addEventListener("click", (e) => {
-        e.stopPropagation();
-        if (rec) void removeSelf(rec);
-      });
-      const nm = document.createElement("div");
-      nm.className = "launcher-name";
-      nm.textContent = folderName();
-      nm.title = folderName();
-      wrap.append(tile, x, nm);
-      void setWindowSize(WIN_W, WIN_H);
+      renderCollapsed();
     } else {
-      const head = document.createElement("div");
-      head.className = "fhead";
-      const dot = document.createElement("span");
-      dot.className = "fhead-dot";
-      const nm = document.createElement("span");
-      nm.className = "fhead-name";
-      nm.textContent = folderName();
-      nm.title = "Click to rename";
-      nm.style.cursor = "text";
-      nm.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const input = document.createElement("input");
-        input.className = "fname-edit";
-        input.value = folderName();
-        input.maxLength = 24;
-        const commit = (save: boolean) => {
-          if (save && rec) {
-            const newName = input.value.trim() || "Folder";
-            rec.data["name"] = newName;
-            void saveRecord(rec).catch(() => undefined);
-            if (typeof rec.data["path"] === "string" && rec.data["path"]) {
-              invoke("floaty_rename_folder_dir", { folderId: id, newName }).catch(() => undefined);
-            }
-          }
-          render();
-        };
-        input.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter") commit(true);
-          else if (ev.key === "Escape") commit(false);
-        });
-        input.addEventListener("blur", () => commit(true));
-        input.addEventListener("pointerdown", (ev) => ev.stopPropagation());
-        input.addEventListener("click", (ev) => ev.stopPropagation());
-        head.replaceChild(input, nm);
-        input.focus();
-        input.select();
-      });
-      const shut = document.createElement("button");
-      shut.className = "fshut";
-      shut.title = "Collapse";
-      shut.textContent = "–";
-      shut.addEventListener("pointerdown", (e) => e.stopPropagation());
-      shut.addEventListener("click", (e) => {
-        e.stopPropagation();
-        void collapseFolder();
-      });
-      head.append(dot, nm, shut);
-      const grid = document.createElement("div");
-      grid.className = "fgrid";
-      const cols = Math.min(4, Math.max(1, items.length));
-      grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-      if (items.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "fempty";
-        empty.textContent = "drag app icons or files onto this folder";
-        grid.append(empty);
-      }
-      for (const it of items) {
-        const b = document.createElement("button");
-        b.className = "fitem";
-        b.title = it.name;
-        if (it.icon) {
-          const img = document.createElement("img");
-          img.src = it.icon;
-          img.alt = "";
-          img.draggable = false;
-          b.append(img);
-        } else if (it.is_dir) {
-          const glyph = document.createElement("div");
-          glyph.className = "ffolder";
-          glyph.style.transform = "scale(0.85)";
-          b.append(glyph);
-        } else {
-          const ch = document.createElement("span");
-          ch.className = "fletter";
-          ch.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
-          b.append(ch);
-        }
-        const lab = document.createElement("span");
-        lab.className = "flabel";
-        lab.textContent = displayName(it.name);
-        b.append(lab);
-        // drag an item out past the folder boundaries to unfloat it as its own icon
-        b.addEventListener("pointerdown", (e) => {
-          if (e.button !== 0) return;
-          e.stopPropagation(); // not a folder-window drag
-          itemDragMoved = false;
-          const isOverlay = isOverlayMode();
-          const sx = isOverlay ? e.clientX : e.screenX;
-          const sy = isOverlay ? e.clientY : e.screenY;
-          let out = false;
-          let captured = false;
-          let ghost: HTMLElement | null = null;
-
-          const onMove = (ev: PointerEvent) => {
-            const curSX = isOverlay ? ev.clientX : ev.screenX;
-            const curSY = isOverlay ? ev.clientY : ev.screenY;
-            if (!out && Math.hypot(curSX - sx, curSY - sy) > 8) {
-              out = true;
-              itemDragMoved = true;
-              b.classList.add("dragging-out");
-              suppressClickUntil = performance.now() + 300;
-              notifyDragging(true);
-              if (!captured) {
-                captured = true;
-                try {
-                  b.setPointerCapture(e.pointerId);
-                } catch {
-                  /* ignore */
-                }
-              }
-              // Floating ghost element following cursor across the desktop
-              ghost = document.createElement("div");
-              ghost.className = "floaty-drag-ghost";
-              ghost.style.transform = `translate3d(${ev.clientX - 36}px, ${ev.clientY - 36}px, 0)`;
-              if (it.icon && it.icon !== "none") {
-                const gImg = document.createElement("img");
-                gImg.src = it.icon;
-                ghost.append(gImg);
-              } else if (it.is_dir) {
-                const gGlyph = document.createElement("div");
-                gGlyph.className = "ffolder ghost-folder";
-                ghost.append(gGlyph);
-              } else {
-                const gTile = document.createElement("div");
-                gTile.className = "ghost-letter";
-                gTile.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
-                ghost.append(gTile);
-              }
-              const gLab = document.createElement("span");
-              gLab.className = "ghost-label";
-              gLab.textContent = it.name;
-              ghost.append(gLab);
-              document.body.append(ghost);
-            }
-            if (ghost) {
-              ghost.style.transform = `translate3d(${ev.clientX - 36}px, ${ev.clientY - 36}px, 0)`;
-            }
-          };
-
-          const onUp = (ev: PointerEvent) => {
-            window.removeEventListener("pointermove", onMove);
-            window.removeEventListener("pointerup", onUp);
-            window.removeEventListener("pointercancel", onUp);
-            if (captured) {
-              try {
-                if (b.hasPointerCapture(e.pointerId)) b.releasePointerCapture(e.pointerId);
-              } catch {
-                /* ignore */
-              }
-            }
-            if (ghost) {
-              ghost.remove();
-              ghost = null;
-            }
-            b.classList.remove("dragging-out");
-            if (out) {
-              notifyDragging(false);
-            }
-            if (!out) return; // plain tap: the click handler below launches
-
-            let inside = false;
-            if (isOverlay) {
-              const folderRect = wrap.getBoundingClientRect();
-              inside =
-                ev.clientX >= folderRect.left + 4 &&
-                ev.clientX <= folderRect.right - 4 &&
-                ev.clientY >= folderRect.top + 4 &&
-                ev.clientY <= folderRect.bottom - 4;
-            } else {
-              inside =
-                ev.clientX >= 0 &&
-                ev.clientY >= 0 &&
-                ev.clientX < window.innerWidth &&
-                ev.clientY < window.innerHeight;
-            }
-            if (inside) return; // dragged but stayed inside folder: cancel, don't launch or ungroup
-
-            let nx = isOverlay ? Math.round(ev.clientX - 46) : Math.round(px + ev.clientX - 46);
-            let ny = isOverlay ? Math.round(ev.clientY - 56) : Math.round(py + ev.clientY - 56);
-            if (isOverlay) {
-              const monW = window.innerWidth || 1920;
-              const monH = window.innerHeight || 1080;
-              nx = Math.max(16, Math.min(monW - 92 - 16, nx));
-              ny = Math.max(16, Math.min(monH - 112 - 16, ny));
-            }
-            const index = items.indexOf(it);
-            if (index >= 0) {
-              invoke("floaty_ungroup", { folderId: id, index, x: nx, y: ny })
-                .then(() => reload())
-                .catch(() => undefined);
-            }
-          };
-          window.addEventListener("pointermove", onMove);
-          window.addEventListener("pointerup", onUp);
-          window.addEventListener("pointercancel", onUp);
-        });
-        b.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (itemDragMoved) { itemDragMoved = false; return; } // was a drag, not a tap
-          b.classList.add("go");
-          window.setTimeout(() => b.classList.remove("go"), 500);
-          invoke("floaty_launch_target", { target: it.target }).catch(() => {
-            b.classList.remove("go");
-            b.classList.add("shake");
-            window.setTimeout(() => b.classList.remove("shake"), 500);
-          });
-        });
-        grid.append(b);
-      }
-      wrap.append(head, grid);
-      const rows = Math.max(1, Math.ceil(items.length / cols));
-      const targetW = Math.max(cols * CELL + (rows > 4 ? 28 : 20), 220);
-      const targetH = Math.min(56 + rows * 82, 420);
-      void setWindowSize(targetW, targetH);
+      renderExpanded();
     }
   };
 

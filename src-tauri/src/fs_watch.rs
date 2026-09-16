@@ -117,6 +117,75 @@ fn watch_root(root: String, stop: Arc<AtomicBool>, app: AppHandle) {
 /// The loop itself: open the root (waiting for it to appear), read, debounce
 /// what comes back, hand each burst to `sink`.
 ///
+fn wait_for_retry(stop: &AtomicBool) -> bool {
+    for _ in 0..(RETRY.as_millis() as u32 / 250) {
+        if stop.load(Ordering::Relaxed) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+fn watch_dir_session(
+    dir: &mut DirWatch,
+    root: &str,
+    stop: &AtomicBool,
+    sink: &mut dyn FnMut(Renames, bool),
+    log: &mut dyn FnMut(&str),
+) -> bool {
+    let mut started: Option<Instant> = None;
+    let mut last = Instant::now();
+    let mut renames: Renames = Vec::new();
+    let mut touched = false;
+    let mut overflowed = false;
+    let mut pending_old: Option<String> = None;
+    let root_path = std::path::PathBuf::from(root);
+
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return true;
+        }
+        if dir.wait(POLL) {
+            match dir.drain(&mut pending_old) {
+                Ok(batch) => {
+                    if batch.touched || !batch.renames.is_empty() {
+                        let now = Instant::now();
+                        started.get_or_insert(now);
+                        last = now;
+                        touched |= batch.touched;
+                        overflowed |= batch.overflow;
+                        renames.extend(batch.renames.into_iter().map(|(from, to)| {
+                            let join =
+                                |name: &str| root_path.join(name).to_string_lossy().to_string();
+                            (join(&from), join(&to))
+                        }));
+                    }
+                }
+                Err(err) => {
+                    log(&format!("watch: read failed ({err}) — re-arming"));
+                    return false;
+                }
+            }
+            if dir.issue().is_err() {
+                return false;
+            }
+        }
+
+        let due = started.is_some_and(|at| last.elapsed() >= QUIET || at.elapsed() >= MAX_WAIT);
+        if due {
+            let burst = std::mem::take(&mut renames);
+            if overflowed {
+                log("watch: change queue overflowed — reconciling the whole root");
+            }
+            sink(burst, touched);
+            started = None;
+            touched = false;
+            overflowed = false;
+        }
+    }
+}
+
 /// Kept apart from `watch_root` so it can be exercised against a real temp
 /// folder in a test, with no app handle anywhere near it. `sink` runs on this
 /// thread and must be quick.
@@ -142,13 +211,8 @@ fn watch_loop(
                     reported_missing = true;
                     log(&format!("watch: '{root}' is not available yet ({err})"));
                 }
-                // Not a stop: the root may be a drive that is not mounted yet, or
-                // a folder being recreated. Sleep in short steps so a stop is quick.
-                for _ in 0..(RETRY.as_millis() as u32 / 250) {
-                    if stop.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(250));
+                if wait_for_retry(stop) {
+                    return;
                 }
                 continue;
             }
@@ -159,68 +223,8 @@ fn watch_loop(
             continue;
         }
 
-        // When the burst started, and when it last grew.
-        let mut started: Option<Instant> = None;
-        let mut last = Instant::now();
-        let mut renames: Renames = Vec::new();
-        let mut touched = false;
-        let mut overflowed = false;
-        // A rename can be split across two reads (the OLD entry in one, the NEW
-        // in the next), so the half-seen name is carried between batches.
-        let mut pending_old: Option<String> = None;
-        let root_path = std::path::PathBuf::from(root);
-
-        loop {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            if dir.wait(POLL) {
-                match dir.drain(&mut pending_old) {
-                    Ok(batch) => {
-                        if batch.touched || !batch.renames.is_empty() {
-                            let now = Instant::now();
-                            started.get_or_insert(now);
-                            last = now;
-                            touched |= batch.touched;
-                            overflowed |= batch.overflow;
-                            // The API names the file, not the path: join it with
-                            // the root, or nothing downstream can match a record.
-                            renames.extend(batch.renames.into_iter().map(|(from, to)| {
-                                let join =
-                                    |name: &str| root_path.join(name).to_string_lossy().to_string();
-                                (join(&from), join(&to))
-                            }));
-                        }
-                    }
-                    Err(err) => {
-                        log(&format!("watch: read failed ({err}) — re-arming"));
-                        break; // reopen below
-                    }
-                }
-                // The read completes once; it has to be issued again to keep
-                // watching this directory.
-                if dir.issue().is_err() {
-                    break;
-                }
-            }
-
-            let due = started.is_some_and(|at| last.elapsed() >= QUIET || at.elapsed() >= MAX_WAIT);
-            if due {
-                let burst = std::mem::take(&mut renames);
-                // An overflowed queue arrives with no names at all: the batch only
-                // says "something happened", so the reconcile it triggers is a
-                // full pass over the root — which is why a burst that outran the
-                // buffer still ends up correct on screen. Worth saying out loud:
-                // it is the one case where the desktop catches up without any
-                // notification naming what changed.
-                if overflowed {
-                    log("watch: change queue overflowed — reconciling the whole root");
-                }
-                sink(burst, touched);
-                started = None;
-                touched = false;
-                overflowed = false;
-            }
+        if watch_dir_session(&mut dir, root, stop, sink, log) {
+            return;
         }
     }
 }
@@ -372,6 +376,25 @@ impl Drop for DirWatch {
 /// lives in the buffer after the 12-byte header, so reading it out of a copied
 /// struct gives whatever happened to follow it on the stack.
 ///
+#[cfg(windows)]
+fn parse_notification_entry(buffer: &[u8], offset: usize, end: usize) -> Option<(usize, u32, String)> {
+    const HEADER: usize = 12;
+    if offset + HEADER > end {
+        return None;
+    }
+    let next = u32::from_le_bytes(buffer[offset..offset + 4].try_into().ok()?) as usize;
+    let action = u32::from_le_bytes(buffer[offset + 4..offset + 8].try_into().ok()?);
+    let name_bytes = u32::from_le_bytes(buffer[offset + 8..offset + 12].try_into().ok()?) as usize;
+    let name_start = offset + HEADER;
+    let name_end = (name_start + name_bytes).min(end);
+    let u16_chars: Vec<u16> = buffer[name_start.min(end)..name_end]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let name = String::from_utf16_lossy(&u16_chars);
+    Some((next, action, name))
+}
+
 /// `pending` is where a half-seen rename lives between batches: a read can end
 /// between the OLD and the NEW entry of one rename.
 #[cfg(windows)]
@@ -388,39 +411,16 @@ fn parse_batch(buffer: &[u8], bytes: u32, pending: &mut Option<String>) -> Batch
     };
     let end = (bytes as usize).min(buffer.len());
     if end == 0 {
-        // Overflow: more changes queued than the buffer could hold, so this batch
-        // knows nothing about which names they were. `touched` asks for the full
-        // reconcile; `overflow` exists so that can be said in the log.
         batch.touched = true;
         batch.overflow = true;
         return batch;
     }
 
-    /// `NextEntryOffset` + `Action` + `FileNameLength`.
-    const HEADER: usize = 12;
     let mut offset = 0usize;
-    while offset + HEADER <= end {
-        let next =
-            u32::from_le_bytes(buffer[offset..offset + 4].try_into().unwrap_or([0; 4])) as usize;
-        let action =
-            u32::from_le_bytes(buffer[offset + 4..offset + 8].try_into().unwrap_or([0; 4]));
-        let name_bytes =
-            u32::from_le_bytes(buffer[offset + 8..offset + 12].try_into().unwrap_or([0; 4]))
-                as usize;
-        let name_start = offset + HEADER;
-        let name_end = (name_start + name_bytes).min(end);
-        let name = String::from_utf16_lossy(
-            &buffer[name_start.min(end)..name_end]
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect::<Vec<u16>>(),
-        );
-
+    while let Some((next, action, name)) = parse_notification_entry(buffer, offset, end) {
         if action == FILE_ACTION_RENAMED_OLD_NAME.0 {
             *pending = Some(name);
         } else if action == FILE_ACTION_RENAMED_NEW_NAME.0 {
-            // A lone NEW_NAME (a file moved *into* the watched tree from outside,
-            // or an OLD that never arrived) is a new file, not a pair.
             match pending.take() {
                 Some(old) => batch.renames.push((old, name)),
                 None => batch.touched = true,
@@ -429,8 +429,6 @@ fn parse_batch(buffer: &[u8], bytes: u32, pending: &mut Option<String>) -> Batch
             *pending = None;
             batch.touched = true;
         } else if action == FILE_ACTION_MODIFIED.0 {
-            // The filter asks for names only, so this should not arrive; if it
-            // does, nothing the desktop draws depends on it.
             *pending = None;
         }
 

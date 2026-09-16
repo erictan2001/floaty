@@ -946,6 +946,59 @@ export default {
         }
       };
 
+      function computeTrailQuotas(cumByTrail, totalCount) {
+        const trailCount = cumByTrail.length;
+        const lens = cumByTrail.map((c) => c[c.length - 1]);
+        const totalLen = lens.reduce((sum, v) => sum + v, 0) || 1;
+        const exact = lens.map((l) => (totalCount * l) / totalLen);
+        const quota = exact.map((v) => Math.max(0, Math.floor(v)));
+        let leftOver = totalCount - quota.reduce((sum, v) => sum + v, 0);
+
+        const order = exact
+          .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+          .sort((a, b) => b.frac - a.frac || lens[b.i] - lens[a.i]);
+        for (const { i } of order) {
+          if (leftOver <= 0) break;
+          quota[i] += 1;
+          leftOver -= 1;
+        }
+
+        if (totalCount >= trailCount) {
+          for (let i = 0; i < trailCount; i++) {
+            if (quota[i] > 0) continue;
+            let biggest = 0;
+            for (let j = 0; j < trailCount; j++) {
+              if (quota[j] > quota[biggest]) biggest = j;
+            }
+            if (quota[biggest] > 1) {
+              quota[biggest] -= 1;
+              quota[i] = 1;
+            }
+          }
+        }
+        return quota;
+      }
+
+      function assignIconsToTrails(enriched, all, quota) {
+        const claims = enriched
+          .map((e) => {
+            const centre = { x: e.rec.x + e.w / 2, y: e.rec.y + e.h / 2 };
+            const ds = all
+              .map((t, i) => ({ i, d: distanceTo(t, centre) }))
+              .sort((a, b) => a.d - b.d);
+            return { entry: e, order: ds.map((x) => x.i), d: ds[0].d };
+          })
+          .sort((a, b) => a.d - b.d);
+        const groups = all.map(() => []);
+        const room = quota.slice();
+        for (const c of claims) {
+          const target = c.order.find((i) => room[i] > 0) ?? 0;
+          if (room[target] > 0) room[target] -= 1;
+          groups[target].push(c.entry);
+        }
+        return groups;
+      }
+
       /** Spread the desktop items along the trails and settle them there. */
       const place = async (paths, opts = {}) => {
         note.textContent = "arranging…";
@@ -989,62 +1042,8 @@ export default {
           })
           .sort((a, b) => a.trail - b.trail || a.d - b.d);
 
-        // Share the icons between the trails by length, not by count: a short trail given
-        // as many icons as a long one is cramped while the long one is sparse, and the
-        // spacing on either side of a crossing stops matching. What is wanted is one gap
-        // for the run on *every* trail, and that gap is (total length)/(icons) — so each
-        // trail's share of the icons is its share of the length.
-        const trailCount = all.length;
-        const lens = cumByTrail.map((c) => c[c.length - 1]);
-        const totalLen = lens.reduce((sum, v) => sum + v, 0) || 1;
-        const exact = lens.map((l) => (enriched.length * l) / totalLen);
-        const quota = exact.map((v) => Math.max(0, Math.floor(v)));
-        let leftOver = enriched.length - quota.reduce((sum, v) => sum + v, 0);
-        // hand out what the rounding left over, biggest fraction first
-        const order = exact
-          .map((v, i) => ({ i, frac: v - Math.floor(v) }))
-          .sort((a, b) => b.frac - a.frac || lens[b.i] - lens[a.i]);
-        for (const { i } of order) {
-          if (leftOver <= 0) break;
-          quota[i] += 1;
-          leftOver -= 1;
-        }
-        // and no trail sits empty while there are icons to spare — an unpopulated trail
-        // looks broken — so the shortest one takes a single icon off the longest
-        if (enriched.length >= trailCount) {
-          for (let i = 0; i < trailCount; i++) {
-            if (quota[i] > 0) continue;
-            let biggest = 0;
-            for (let j = 0; j < trailCount; j++) if (quota[j] > quota[biggest]) biggest = j;
-            if (quota[biggest] > 1) {
-              quota[biggest] -= 1;
-              quota[i] = 1;
-            }
-          }
-        }
-
-        // Who goes where: the icons closest to a trail fill it first, each taking its own
-        // nearest trail while that trail still has room, otherwise the nearest one that
-        // does. The counts come out of the length; the membership stays local, so nothing
-        // crosses the desktop to reach its place.
-        const claims = enriched
-          .map((e) => {
-            // inline: the shared helper is defined further down, and a claim is just a
-            // centre to measure from
-            const centre = { x: e.rec.x + e.w / 2, y: e.rec.y + e.h / 2 };
-            const ds = all
-              .map((t, i) => ({ i, d: distanceTo(t, centre) }))
-              .sort((a, b) => a.d - b.d);
-            return { entry: e, order: ds.map((x) => x.i), d: ds[0].d };
-          })
-          .sort((a, b) => a.d - b.d);
-        const groups = all.map(() => []);
-        const room = quota.slice();
-        for (const c of claims) {
-          const target = c.order.find((i) => room[i] > 0) ?? 0;
-          if (room[target] > 0) room[target] -= 1;
-          groups[target].push(c.entry);
-        }
+        const quota = computeTrailQuotas(cumByTrail, enriched.length);
+        const groups = assignIconsToTrails(enriched, all, quota);
 
         const placed = [];
         const taken = [];
@@ -1061,6 +1060,25 @@ export default {
           };
         };
         const centreOf = (entry) => ({ x: entry.rec.x + entry.w / 2, y: entry.rec.y + entry.h / 2 });
+        const searchClearCandidate = (path, cum, spot, entry, others, picky) => {
+          const clash = (r) => others.some((o) => o.trail !== entry.trail && overlaps(o, r));
+          const cramped = (r) => others.some((o) => o.trail === entry.trail && overlaps(o, r));
+          const stride = (entry.w + GAP) * 0.9;
+          const end = cum[cum.length - 1];
+
+          for (let k = 1; k <= 12; k++) {
+            for (const dir of [1, -1]) {
+              const candidate = spot.at + dir * k * stride;
+              if (candidate < 0 || candidate > end) continue;
+              const r = rectOn(path, cum, candidate, entry);
+              if (!clash(r) && (!picky || !cramped(r))) {
+                return r;
+              }
+            }
+          }
+          return null;
+        };
+
         /**
          * The same place, nudged along its own path until no icon *from another trail* is
          * standing there. Within a single trail the run is evenly spaced and stays that
@@ -1069,27 +1087,12 @@ export default {
          */
         const clearOf = (path, cum, spot, entry, others) => {
           const clash = (r) => others.some((o) => o.trail !== entry.trail && overlaps(o, r));
-          const cramped = (r) => others.some((o) => o.trail === entry.trail && overlaps(o, r));
           if (!clash(spot)) return spot;
-          const stride = (entry.w + GAP) * 0.9;
-          const end = cum[cum.length - 1];
-          // Two looks: a place clear of the other trail *and* not crammed against a
-          // trail-mate comes first, because a nudge that clears a crossing by landing on
-          // your own neighbour has only moved the problem. If there is no such place, take
-          // the least bad one — standing on the other trail is worse than a tight run.
-          for (const picky of [true, false]) {
-            for (let k = 1; k <= 12; k++) {
-              for (const dir of [1, -1]) {
-                const candidate = spot.at + dir * k * stride;
-                if (candidate < 0 || candidate > end) continue;
-                const r = rectOn(path, cum, candidate, entry);
-                if (clash(r)) continue;
-                if (picky && cramped(r)) continue;
-                return r;
-              }
-            }
-          }
-          return spot;
+          return (
+            searchClearCandidate(path, cum, spot, entry, others, true) ||
+            searchClearCandidate(path, cum, spot, entry, others, false) ||
+            spot
+          );
         };
 
         all.forEach((path, ti) => {
