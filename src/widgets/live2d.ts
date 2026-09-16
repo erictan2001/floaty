@@ -112,19 +112,9 @@ function getAvailableMotions(model: L2DModel): AvailableMotion[] {
   return result;
 }
 
-/** Select and play the most fitting motion for the interaction target */
-async function playInteractMotion(
-  model: L2DModel,
-  target: "head" | "body" | "special",
-  priority: MotionPriority = MotionPriority.NORMAL,
-): Promise<boolean> {
-  const motions = getAvailableMotions(model);
-  if (motions.length === 0) return false;
-
-  let candidates: AvailableMotion[] = [];
-
-  const headKeywords = ["touch_head", "tap_head", "flick_head", "head", "face", "hair", "ear"];
-  const bodyKeywords = [
+const INTERACT_KEYWORDS: Record<"head" | "body" | "special", string[]> = {
+  head: ["touch_head", "tap_head", "flick_head", "head", "face", "hair", "ear"],
+  body: [
     "touch_body",
     "tap_body",
     "pinch_in",
@@ -137,8 +127,8 @@ async function playInteractMotion(
     "main_",
     "tap",
     "touch",
-  ];
-  const specialKeywords = [
+  ],
+  special: [
     "touch_special",
     "tap_special",
     "special",
@@ -149,29 +139,31 @@ async function playInteractMotion(
     "complete",
     "mission",
     "happy",
-  ];
+  ],
+};
 
-  const searchKeywords =
-    target === "head" ? headKeywords : target === "special" ? specialKeywords : bodyKeywords;
-
-  for (const kw of searchKeywords) {
+function selectMotionCandidates(
+  motions: AvailableMotion[],
+  target: "head" | "body" | "special",
+): AvailableMotion[] {
+  for (const kw of INTERACT_KEYWORDS[target]) {
     const matched = motions.filter((m) => m.descriptor.includes(kw));
-    if (matched.length > 0) {
-      candidates = matched;
-      break;
-    }
+    if (matched.length > 0) return matched;
   }
+  const nonIdle = motions.filter((m) => !m.isIdle);
+  return nonIdle.length > 0 ? nonIdle : motions;
+}
 
-  // Fallback 1: any non-idle motion
-  if (candidates.length === 0) {
-    candidates = motions.filter((m) => !m.isIdle);
-  }
+/** Select and play the most fitting motion for the interaction target */
+async function playInteractMotion(
+  model: L2DModel,
+  target: "head" | "body" | "special",
+  priority: MotionPriority = MotionPriority.NORMAL,
+): Promise<boolean> {
+  const motions = getAvailableMotions(model);
+  if (motions.length === 0) return false;
 
-  // Fallback 2: any motion at all
-  if (candidates.length === 0) {
-    candidates = motions;
-  }
-
+  const candidates = selectMotionCandidates(motions, target);
   if (candidates.length === 0) return false;
 
   const chosen = candidates[Math.floor(Math.random() * candidates.length)];
@@ -331,64 +323,63 @@ export function mountLive2D(root: HTMLElement, id: string): void {
     }
   };
 
-  const handleModelInteract = (
+  const resolveTargetRegion = (
     model: L2DModel,
     clientX: number,
     clientY: number,
     overrideTarget?: "head" | "body" | "special",
-    priority: MotionPriority = MotionPriority.NORMAL,
+  ): "head" | "body" | "special" => {
+    if (overrideTarget) return overrideTarget;
+    let hitAreas: string[] = [];
+    try {
+      hitAreas = model.hitTest(clientX, clientY) || [];
+    } catch {
+      /* ignore */
+    }
+
+    if (hitAreas.length > 0) {
+      const joined = hitAreas.join(" ").toLowerCase();
+      if (/head|face|hair|ear|hat|eye|mouth/.test(joined)) return "head";
+      if (/special|star|acc/.test(joined)) return "special";
+      return "body";
+    }
+
+    const bounds = model.getBounds();
+    const relY = bounds.height > 0 ? (clientY - bounds.y) / bounds.height : 0.5;
+    if (relY < 0.38) return "head";
+    if (relY > 0.78) return "special";
+    return "body";
+  };
+
+  interface InteractOptions {
+    overrideTarget?: "head" | "body" | "special";
+    priority?: MotionPriority;
+  }
+
+  const handleModelInteract = (
+    model: L2DModel,
+    clientX: number,
+    clientY: number,
+    opts?: InteractOptions,
   ): void => {
+    const priority = opts?.priority ?? MotionPriority.NORMAL;
     boostActivity(5000);
-    // Focus head/eyes directly on tap location
     focusModel(model, clientX, clientY);
 
-    // Trigger internal tap hit-test
     try {
       model.tap(clientX, clientY);
     } catch {
       /* ignore */
     }
 
-    // Determine target region: check hit areas first, then model bounds geometry
-    let target: "head" | "body" | "special" = overrideTarget || "body";
-    if (!overrideTarget) {
-      let hitAreas: string[] = [];
-      try {
-        hitAreas = model.hitTest(clientX, clientY) || [];
-      } catch {
-        /* ignore */
-      }
-
-      if (hitAreas.length > 0) {
-        const joined = hitAreas.join(" ").toLowerCase();
-        if (/head|face|hair|ear|hat|eye|mouth/.test(joined)) {
-          target = "head";
-        } else if (/special|star|acc/.test(joined)) {
-          target = "special";
-        } else {
-          target = "body";
-        }
-      } else {
-        const bounds = model.getBounds();
-        const relY = bounds.height > 0 ? (clientY - bounds.y) / bounds.height : 0.5;
-        if (relY < 0.38) {
-          target = "head";
-        } else if (relY > 0.78) {
-          target = "special";
-        } else {
-          target = "body";
-        }
-      }
-    }
+    const target = resolveTargetRegion(model, clientX, clientY, opts?.overrideTarget);
 
     invoke("floaty_log", {
       msg: `[live2d/${id}] interact: target=${target} prio=${priority} pos=(${Math.round(clientX)},${Math.round(clientY)})`,
     }).catch(() => undefined);
 
-    // Play corresponding motion
     void playInteractMotion(model, target, priority);
 
-    // Trigger random expression change if expressions exist
     try {
       void model.expression().catch(() => undefined);
     } catch {
@@ -549,6 +540,29 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         focusModel(currentModel, localX, localY);
       });
 
+      const updateCursorTracking = (
+        model: L2DModel,
+        pos: { x: number; y: number },
+        dist: number,
+        isNear: boolean,
+      ) => {
+        if (isNear) {
+          if (dist < 3) return;
+          lastRelX = pos.x;
+          lastRelY = pos.y;
+          focusModel(model, pos.x, pos.y);
+          wakeFor(1500);
+          return;
+        }
+        const now = performance.now();
+        if (dist < 60 || now - lastFarGlance < 2500) return;
+        lastFarGlance = now;
+        lastRelX = pos.x;
+        lastRelY = pos.y;
+        focusModel(model, pos.x, pos.y);
+        wakeFor(600);
+      };
+
       const pollDesktopCursor = async (): Promise<void> => {
         if (document.hidden || dragging || !currentModel || performance.now() < interactUntil) return;
         try {
@@ -562,34 +576,14 @@ export function mountLive2D(root: HTMLElement, id: string): void {
           const slotY = slot ? slot.y : wrap.getBoundingClientRect().top;
           const relX = isOverlayMode() ? pos.rel_x - slotX : pos.rel_x;
           const relY = isOverlayMode() ? pos.rel_y - slotY : pos.rel_y;
-          const dx = relX - lastRelX;
-          const dy = relY - lastRelY;
-          const dist = Math.hypot(dx, dy);
+          const dist = Math.hypot(relX - lastRelX, relY - lastRelY);
 
           // Check proximity to Live2D window (300x400)
           const targetW = wrap.clientWidth || 300;
           const targetH = wrap.clientHeight || 400;
-          const nearX = relX >= -160 && relX <= targetW + 160;
-          const nearY = relY >= -160 && relY <= targetH + 160;
-          const isNear = nearX && nearY;
+          const isNear = relX >= -160 && relX <= targetW + 160 && relY >= -160 && relY <= targetH + 160;
 
-          if (isNear) {
-            // Near cursor: fluid 30fps tracking
-            if (dist < 3) return;
-            lastRelX = relX;
-            lastRelY = relY;
-            focusModel(currentModel, relX, relY);
-            wakeFor(1500);
-          } else {
-            // Far cursor across desktop: glance toward cursor when it moves significantly
-            const now = performance.now();
-            if (dist < 60 || now - lastFarGlance < 2500) return;
-            lastFarGlance = now;
-            lastRelX = relX;
-            lastRelY = relY;
-            focusModel(currentModel, relX, relY);
-            wakeFor(600);
-          }
+          updateCursorTracking(currentModel, { x: relX, y: relY }, dist, isNear);
         } catch {
           /* ignore */
         }
@@ -718,28 +712,29 @@ export function mountLive2D(root: HTMLElement, id: string): void {
           dragging = false;
           notifyDragging(false);
         }, 60);
-      } else {
-        dragging = false;
-        notifyDragging(false);
-        const elapsed = performance.now() - startTime;
-        if (elapsed < 600 && currentModel) {
-          const r = wrap.getBoundingClientRect();
-          const localX = isOverlay ? ev.clientX - r.left : ev.clientX;
-          const localY = isOverlay ? ev.clientY - r.top : ev.clientY;
-          interactUntil = performance.now() + 1500;
-          const now = performance.now();
-          const isDouble =
-            now - lastTapTime < 380 &&
-            Math.hypot(localX - lastTapPos.x, localY - lastTapPos.y) < 30;
-          lastTapTime = now;
-          lastTapPos = { x: localX, y: localY };
+        return;
+      }
 
-          if (isDouble) {
-            handleModelInteract(currentModel, localX, localY, "special", MotionPriority.FORCE);
-          } else {
-            handleModelInteract(currentModel, localX, localY, undefined, MotionPriority.NORMAL);
-          }
-        }
+      dragging = false;
+      notifyDragging(false);
+      const elapsed = performance.now() - startTime;
+      if (elapsed >= 600 || !currentModel) return;
+
+      const r = wrap.getBoundingClientRect();
+      const localX = isOverlay ? ev.clientX - r.left : ev.clientX;
+      const localY = isOverlay ? ev.clientY - r.top : ev.clientY;
+      interactUntil = performance.now() + 1500;
+      const now = performance.now();
+      const isDouble =
+        now - lastTapTime < 380 &&
+        Math.hypot(localX - lastTapPos.x, localY - lastTapPos.y) < 30;
+      lastTapTime = now;
+      lastTapPos = { x: localX, y: localY };
+
+      if (isDouble) {
+        handleModelInteract(currentModel, localX, localY, { overrideTarget: "special", priority: MotionPriority.FORCE });
+      } else {
+        handleModelInteract(currentModel, localX, localY);
       }
     };
 

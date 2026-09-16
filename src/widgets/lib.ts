@@ -215,9 +215,13 @@ export async function logicalPos(id?: string): Promise<{ x: number; y: number }>
     }
     return { x: 0, y: 0 };
   }
-  const s = await scaleFactor();
-  const p = await appWin.outerPosition();
-  return { x: p.x / s, y: p.y / s };
+  try {
+    const s = await scaleFactor();
+    const p = await appWin.outerPosition();
+    return { x: p.x / s, y: p.y / s };
+  } catch {
+    return { x: 0, y: 0 };
+  }
 }
 
 export async function setLogicalPos(x: number, y: number, id?: string): Promise<void> {
@@ -225,8 +229,14 @@ export async function setLogicalPos(x: number, y: number, id?: string): Promise<
     setWidgetPos(id, x, y);
     return;
   }
-  const s = await scaleFactor();
-  await appWin.setPosition(new PhysicalPosition(Math.round(x * s), Math.round(y * s)));
+  try {
+    const s = await scaleFactor();
+    await appWin.setPosition(new PhysicalPosition(Math.round(x * s), Math.round(y * s)));
+  } catch (err) {
+    void invoke("floaty_log", {
+      msg: `[lib] setLogicalPos failed: ${String(err)}`,
+    }).catch(() => undefined);
+  }
 }
 
 export interface MonitorArea {
@@ -266,11 +276,24 @@ export async function monitorArea(): Promise<MonitorArea> {
 export async function loadRecord(id: string): Promise<WidgetRecord | undefined> {
   // One record per widget, never the whole store: `floaty_list` carries every
   // icon inlined (~8.5MB) and this runs once per widget on a page load.
-  return await invoke<WidgetRecord | null>("floaty_get_record", { id }).then((r) => r ?? undefined);
+  try {
+    return await invoke<WidgetRecord | null>("floaty_get_record", { id }).then((r) => r ?? undefined);
+  } catch (err) {
+    void invoke("floaty_log", {
+      msg: `[lib] loadRecord(${id}) failed: ${String(err)}`,
+    }).catch(() => undefined);
+    return undefined;
+  }
 }
 
 export async function saveRecord(rec: WidgetRecord): Promise<void> {
-  await invoke("floaty_save", { record: rec });
+  try {
+    await invoke("floaty_save", { record: rec });
+  } catch (err) {
+    void invoke("floaty_log", {
+      msg: `[lib] saveRecord(${rec.id}) failed: ${String(err)}`,
+    }).catch(() => undefined);
+  }
 }
 
 /** Clamp helper used by the float-parameter plumbing (keeps NaN out of CSS). */
@@ -339,15 +362,113 @@ export function trackPosition(rec: WidgetRecord): void {
  * Anti-collision helper: ensures a widget placed at (x, y) does not overlap
  * any existing widget in the overlay, nudging it to the nearest collision-free position.
  */
+export interface PreventOverlapOptions {
+  mon?: MonitorArea;
+  gap?: number;
+}
+
+export interface PreventOverlapTarget {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  mon?: MonitorArea;
+  gap?: number;
+}
+
+interface ShiftContext {
+  curX: number;
+  curY: number;
+  w: number;
+  h: number;
+  gap: number;
+  clampX: (val: number) => number;
+  clampY: (val: number) => number;
+}
+
+function findShiftCandidate(
+  colliding: OverlaySlot[],
+  ctx: ShiftContext,
+  collidesWithAny: (cx: number, cy: number) => boolean,
+): { x: number; y: number } | null {
+  const { curX, curY, w, h, gap, clampX, clampY } = ctx;
+  type Candidate = { x: number; y: number; dist: number };
+  const candidates: Candidate[] = [];
+
+  for (const o of colliding) {
+    const shifts = [
+      { x: clampX(o.x + o.w + gap + 4), y: clampY(curY) },
+      { x: clampX(o.x - w - gap - 4), y: clampY(curY) },
+      { x: clampX(curX), y: clampY(o.y + o.h + gap + 4) },
+      { x: clampX(curX), y: clampY(o.y - h - gap - 4) },
+      { x: clampX(o.x + o.w + gap + 4), y: clampY(o.y) },
+      { x: clampX(o.x - w - gap - 4), y: clampY(o.y) },
+    ];
+    for (const s of shifts) {
+      if (!collidesWithAny(s.x, s.y)) {
+        candidates.push({ x: s.x, y: s.y, dist: Math.hypot(s.x - curX, s.y - curY) });
+      }
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => a.dist - b.dist);
+  return { x: candidates[0].x, y: candidates[0].y };
+}
+
+interface GridContext {
+  curX: number;
+  curY: number;
+  minX: number;
+  minY: number;
+  clampX: (val: number) => number;
+  clampY: (val: number) => number;
+}
+
+function findGridCandidate(
+  ctx: GridContext,
+  collidesWithAny: (cx: number, cy: number) => boolean,
+): { x: number; y: number } | null {
+  const { curX, curY, minX, minY, clampX, clampY } = ctx;
+  const CELL_W = 100;
+  const CELL_H = 116;
+  const baseCol = Math.round((curX - minX) / CELL_W);
+  const baseRow = Math.round((curY - minY) / CELL_H);
+
+  for (let r = 1; r <= 15; r++) {
+    for (let dc = -r; dc <= r; dc++) {
+      for (let dr = -r; dr <= r; dr++) {
+        if (Math.max(Math.abs(dc), Math.abs(dr)) !== r) continue;
+        const gx = clampX(minX + (baseCol + dc) * CELL_W);
+        const gy = clampY(minY + (baseRow + dr) * CELL_H);
+        if (!collidesWithAny(gx, gy)) {
+          return { x: gx, y: gy };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * When a fresh widget drops on desktop without a stored position, check for
+ * any existing widget in the overlay, nudging it to the nearest collision-free position.
+ */
 export function preventOverlap(
-  id: string,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  mon?: MonitorArea,
-  gap = 8,
+  targetOrId: string | PreventOverlapTarget,
+  ...args: [optX?: number, optY?: number, optW?: number, optH?: number, options?: PreventOverlapOptions]
 ): { x: number; y: number } {
+  const [optX, optY, optW, optH, options] = args;
+  const isObj = typeof targetOrId !== "string";
+  const id = isObj ? targetOrId.id : targetOrId;
+  const x = isObj ? targetOrId.x : (optX ?? 0);
+  const y = isObj ? targetOrId.y : (optY ?? 0);
+  const w = isObj ? targetOrId.w : (optW ?? 0);
+  const h = isObj ? targetOrId.h : (optH ?? 0);
+  const mon = isObj ? targetOrId.mon : options?.mon;
+  const gap = isObj ? (targetOrId.gap ?? 8) : (options?.gap ?? 8);
+
   if (!isOverlayMode()) {
     return { x, y };
   }
@@ -363,25 +484,19 @@ export function preventOverlap(
 
   const clampX = (val: number) => Math.max(minX, Math.min(maxX, val));
   const clampY = (val: number) => Math.max(minY, Math.min(maxY, val));
-
   const curX = clampX(x);
   const curY = clampY(y);
 
-  // Collect other slots
   const others: OverlaySlot[] = [];
   for (const slot of overlaySlots.values()) {
-    if (slot.id !== id) {
-      others.push(slot);
-    }
+    if (slot.id !== id) others.push(slot);
   }
 
   const collidesWithAny = (cx: number, cy: number): boolean => {
     for (const o of others) {
       const ox = Math.min(cx + w, o.x + o.w) - Math.max(cx, o.x);
       const oy = Math.min(cy + h, o.y + o.h) - Math.max(cy, o.y);
-      if (ox > 12 && oy > 12) {
-        return true;
-      }
+      if (ox > 12 && oy > 12) return true;
     }
     return false;
   };
@@ -390,60 +505,24 @@ export function preventOverlap(
     return { x: curX, y: curY };
   }
 
-  // Collision detected: find candidate positions adjacent to the colliding slots
   const colliding = others.filter((o) => {
     const ox = Math.min(curX + w, o.x + o.w) - Math.max(curX, o.x);
     const oy = Math.min(curY + h, o.y + o.h) - Math.max(curY, o.y);
     return ox > 12 && oy > 12;
   });
 
-  type Candidate = { x: number; y: number; dist: number };
-  const candidates: Candidate[] = [];
+  const shifted = findShiftCandidate(
+    colliding,
+    { curX, curY, w, h, gap, clampX, clampY },
+    collidesWithAny,
+  );
+  if (shifted) return shifted;
 
-  for (const o of colliding) {
-    const shifts = [
-      { x: clampX(o.x + o.w + gap + 4), y: clampY(curY) }, // right
-      { x: clampX(o.x - w - gap - 4), y: clampY(curY) },   // left
-      { x: clampX(curX), y: clampY(o.y + o.h + gap + 4) }, // below
-      { x: clampX(curX), y: clampY(o.y - h - gap - 4) },   // above
-      { x: clampX(o.x + o.w + gap + 4), y: clampY(o.y) },
-      { x: clampX(o.x - w - gap - 4), y: clampY(o.y) },
-    ];
-    for (const s of shifts) {
-      if (!collidesWithAny(s.x, s.y)) {
-        candidates.push({
-          x: s.x,
-          y: s.y,
-          dist: Math.hypot(s.x - curX, s.y - curY),
-        });
-      }
-    }
-  }
-
-  if (candidates.length > 0) {
-    candidates.sort((a, b) => a.dist - b.dist);
-    return { x: candidates[0].x, y: candidates[0].y };
-  }
-
-  // If immediate directional shifts failed, search nearby desktop grid positions
-  const CELL_W = 100;
-  const CELL_H = 116;
-  const baseCol = Math.round((curX - minX) / CELL_W);
-  const baseRow = Math.round((curY - minY) / CELL_H);
-
-  for (let r = 1; r <= 15; r++) {
-    for (let dc = -r; dc <= r; dc++) {
-      for (let dr = -r; dr <= r; dr++) {
-        if (Math.max(Math.abs(dc), Math.abs(dr)) === r) {
-          const gx = clampX(minX + (baseCol + dc) * CELL_W);
-          const gy = clampY(minY + (baseRow + dr) * CELL_H);
-          if (!collidesWithAny(gx, gy)) {
-            return { x: gx, y: gy };
-          }
-        }
-      }
-    }
-  }
+  const gridPos = findGridCandidate(
+    { curX, curY, minX, minY, clampX, clampY },
+    collidesWithAny,
+  );
+  if (gridPos) return gridPos;
 
   return { x: curX, y: curY };
 }

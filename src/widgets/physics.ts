@@ -105,6 +105,103 @@ const MAX_PUSH = 14;
  */
 const MAX_BOUNCES = 6;
 
+interface MotionState {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  w: number;
+  h: number;
+}
+
+function resolveSolidCollisions(
+  state: MotionState,
+  others: Solid[],
+  restitution: number,
+  bounceFn: (speed: number, rest: number) => number,
+): { x: number; y: number; vx: number; vy: number; supported: boolean; restingOn: string | null } {
+  let { x, y, vx, vy, w, h } = state;
+  let supported = false;
+  let restingOn: string | null = null;
+
+  for (const o of others) {
+    const overlapX = Math.min(x + w, o.x + o.w) - Math.max(x, o.x);
+    const overlapY = Math.min(y + h, o.y + o.h) - Math.max(y, o.y);
+    if (overlapX <= 0 || overlapY <= 0) continue;
+
+    if (overlapY <= overlapX && overlapY <= h / 2) {
+      if (y + h / 2 <= o.y + o.h / 2) {
+        // we are above: land on it
+        y = o.y - h;
+        supported = true;
+        restingOn = o.id;
+        vy = vy > 0 ? -bounceFn(vy, restitution) : 0;
+      } else {
+        // we are under it: bump our head
+        y = o.y + o.h;
+        vy = vy < 0 ? bounceFn(vy, restitution) : 0;
+      }
+    } else {
+      // side contact: slide out of the overlap and lose horizontal speed
+      const push = Math.min(overlapX + 0.5, MAX_PUSH);
+      if (x + w / 2 <= o.x + o.w / 2) {
+        x = Math.max(o.x - w, x - push);
+        vx = -bounceFn(vx, restitution * 0.8);
+      } else {
+        x = Math.min(o.x + o.w, x + push);
+        vx = bounceFn(vx, restitution * 0.8);
+      }
+      vy *= SIDE_FRICTION;
+    }
+  }
+
+  return { x, y, vx, vy, supported, restingOn };
+}
+
+function resolveBoundaries(
+  state: { x: number; y: number; vx: number; vy: number; w: number },
+  bounds: WorldBounds,
+  bounceFn: (speed: number, rest: number) => number,
+): { x: number; y: number; vx: number; vy: number } {
+  let { x: nx, y: ny, vx: nvx, vy: nvy, w } = state;
+
+  if (nx < bounds.x) {
+    nx = bounds.x;
+    if (nvx < 0) nvx = bounceFn(nvx, WALL_RESTITUTION);
+  }
+  if (nx > bounds.x + bounds.w - w) {
+    nx = bounds.x + bounds.w - w;
+    if (nvx > 0) nvx = -bounceFn(nvx, WALL_RESTITUTION);
+  }
+  if (ny < bounds.y) {
+    ny = bounds.y;
+    if (nvy < 0) nvy = bounceFn(nvy, CEILING_RESTITUTION);
+  }
+
+  return { x: nx, y: ny, vx: nvx, vy: nvy };
+}
+
+function applySupportFriction(
+  pos: { x: number; vx: number; w: number; restingOn: string | null },
+  others: Solid[],
+  dt: number,
+): { vx: number; tipping: boolean } {
+  const { x, restingOn, w } = pos;
+  let nvx = pos.vx * (1 - Math.min(1, SURFACE_FRICTION * dt));
+  let tipping = false;
+  if (restingOn) {
+    const o = others.find((it) => it.id === restingOn);
+    if (o) {
+      const lean = (x + w / 2 - (o.x + o.w / 2)) / ((w + o.w) / 2);
+      if (Math.abs(lean) > TIP_LEAN) {
+        nvx += Math.sign(lean) * TIP_ACCEL * dt;
+        tipping = true;
+      }
+    }
+  }
+  return { vx: nvx, tipping };
+}
+
 export function stepBody(input: StepInput): StepOutput {
   const { body, gravity, restitution, bounds, others, dt } = input;
   const { w, h } = body;
@@ -118,15 +215,11 @@ export function stepBody(input: StepInput): StepOutput {
   x += vx * dt;
   y += vy * dt;
 
-  /**
-   * Undo an approaching velocity: bounce above the threshold (and while the
-   * bounce budget lasts), otherwise come to rest on that axis.
-   */
   const reflected = (speed: number, rest: number): number => {
     const a = Math.abs(speed);
     if (a <= IMPACT_MIN || bounces >= MAX_BOUNCES) return 0;
-    const bounced = a * rest - CONTACT_LOSS;
-    return bounced > IMPACT_MIN ? bounced : 0;
+    const bouncedVal = a * rest - CONTACT_LOSS;
+    return bouncedVal > IMPACT_MIN ? bouncedVal : 0;
   };
   const bounced = (speed: number, rest: number): number => {
     const v = reflected(speed, rest);
@@ -137,10 +230,9 @@ export function stepBody(input: StepInput): StepOutput {
     return v;
   };
 
+  // 2. floor
   let supported = false;
   let restingOn: string | null = null;
-
-  // 2. floor
   const floorY = bounds.y + bounds.h - h - FLOOR_GAP;
   if (y >= floorY) {
     y = floorY;
@@ -148,90 +240,36 @@ export function stepBody(input: StepInput): StepOutput {
     if (vy > 0) vy = -bounced(vy, restitution);
   }
 
-  // 3. other icons: least-penetration axis decides whether this is a landing
-  //    on top, a hit from below, or a side bump. Any positive penetration
-  //    counts — requiring more than a pixel let a resting icon hover a
-  //    fraction inside its support, which reset the sleep timer every frame.
-  for (const o of others) {
-    const overlapX = Math.min(x + w, o.x + o.w) - Math.max(x, o.x);
-    const overlapY = Math.min(y + h, o.y + o.h) - Math.max(y, o.y);
-    if (overlapX <= 0 || overlapY <= 0) continue;
-
-    // Horizontal unless the vertical penetration is shallow: two icons standing
-    // on the floor overlap almost their whole height, and reading that as a
-    // "landing" would make one climb onto the other.
-    if (overlapY <= overlapX && overlapY <= h / 2) {
-      if (y + h / 2 <= o.y + o.h / 2) {
-        // we are above: land on it
-        y = o.y - h;
-        supported = true;
-        restingOn = o.id;
-        if (vy > 0) {
-          vy = -bounced(vy, restitution);
-        } else {
-          vy = 0;
-        }
-      } else {
-        // we are under it: bump our head
-        y = o.y + o.h;
-        if (vy < 0) {
-          vy = bounced(vy, restitution);
-        } else {
-          vy = 0;
-        }
-      }
-    } else {
-      // side contact: slide out of the overlap and lose most of the horizontal
-      // speed. Capped so a deep overlap separates over a few frames instead of
-      // jumping a tile in one step.
-      const push = Math.min(overlapX + 0.5, MAX_PUSH);
-      if (x + w / 2 <= o.x + o.w / 2) {
-        x = Math.max(o.x - w, x - push);
-        vx = -bounced(vx, restitution * 0.8);
-      } else {
-        x = Math.min(o.x + o.w, x + push);
-        vx = bounced(vx, restitution * 0.8);
-      }
-      vy *= SIDE_FRICTION;
-    }
+  // 3. other icons
+  const contact = resolveSolidCollisions({ x, y, vx, vy, w, h }, others, restitution, bounced);
+  x = contact.x;
+  y = contact.y;
+  vx = contact.vx;
+  vy = contact.vy;
+  if (contact.supported) {
+    supported = true;
+    restingOn = contact.restingOn;
   }
 
   // 4. walls and ceiling
-  if (x < bounds.x) {
-    x = bounds.x;
-    if (vx < 0) vx = bounced(vx, WALL_RESTITUTION);
-  }
-  if (x > bounds.x + bounds.w - w) {
-    x = bounds.x + bounds.w - w;
-    if (vx > 0) vx = -bounced(vx, WALL_RESTITUTION);
-  }
-  if (y < bounds.y) {
-    y = bounds.y;
-    if (vy < 0) vy = bounced(vy, CEILING_RESTITUTION);
-  }
+  const bounded = resolveBoundaries({ x, y, vx, vy, w }, bounds, bounced);
+  x = bounded.x;
+  y = bounded.y;
+  vx = bounded.vx;
+  vy = bounded.vy;
 
   // 5. friction on the support, and tipping off an unstable pile
   let tipping = false;
   if (supported) {
-    vx *= 1 - Math.min(1, SURFACE_FRICTION * dt);
-    if (restingOn) {
-      const o = others.find((it) => it.id === restingOn);
-      if (o) {
-        const lean = (x + w / 2 - (o.x + o.w / 2)) / ((w + o.w) / 2);
-        if (Math.abs(lean) > TIP_LEAN) {
-          vx += Math.sign(lean) * TIP_ACCEL * dt;
-          tipping = true;
-        }
-      }
-    }
+    const fric = applySupportFriction({ x, vx, w, restingOn }, others, dt);
+    vx = fric.vx;
+    tipping = fric.tipping;
   }
 
-  // 6. sleep: slow *and* supported for long enough. An icon that is still
-  //    tipping off an edge is not at rest, however slow it looks.
+  // 6. sleep: slow *and* supported for long enough
   const slow = Math.abs(vx) < SLEEP_SPEED && Math.abs(vy) < SLEEP_SPEED;
   const atRest = supported && slow && !tipping;
   const restTime = atRest ? body.restTime + dt : 0;
-  // a body that has actually come to rest gets a fresh bounce budget
   if (atRest && restTime > SLEEP_TIME) bounces = 0;
 
   return {
