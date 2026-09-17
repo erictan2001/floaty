@@ -8,9 +8,12 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 
 mod audio;
 mod fs_watch;
+mod icons;
+mod plugin_install;
 mod plugins;
 mod shell_ops;
 mod sysmon;
+mod undo;
 use plugins::PluginInfo;
 
 // ---------- logging ----------
@@ -86,13 +89,25 @@ struct StoreData {
 
 struct AppState(Mutex<StoreData>);
 
-fn store_file(app: &AppHandle) -> std::path::PathBuf {
+/// The app's own data folder (`%APPDATA%\com.floaty.app`), created if missing.
+/// The store, the settings and the icons folder all live here, so they must all
+/// agree on where that is.
+fn app_data_dir(app: &AppHandle) -> std::path::PathBuf {
     let dir = app
         .path()
         .app_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("floaty"));
     fs::create_dir_all(&dir).ok();
-    dir.join("floaty-store.json")
+    dir
+}
+
+fn store_file(app: &AppHandle) -> std::path::PathBuf {
+    app_data_dir(app).join("floaty-store.json")
+}
+
+/// Where stored icons live: a PNG per distinct icon, addressed by content.
+fn icons_dir(app: &AppHandle) -> std::path::PathBuf {
+    app_data_dir(app).join("icons")
 }
 
 /// Write a text file atomically, keeping the previous contents as `<name>.bak`.
@@ -389,12 +404,7 @@ fn default_double_click() -> String {
 }
 
 fn settings_file(app: &AppHandle) -> std::path::PathBuf {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("floaty"));
-    fs::create_dir_all(&dir).ok();
-    dir.join("floaty-settings.json")
+    app_data_dir(app).join("floaty-settings.json")
 }
 
 /// Fold the settings a file written before the float sliders were made honest.
@@ -2642,105 +2652,6 @@ async fn floaty_scan_apps(app: AppHandle) -> Vec<DiscoveredApp> {
     out
 }
 
-/// Minimal base64 decoder for the first bytes of a data url (no deps needed).
-fn base64_decode_prefix(text: &str, max_bytes: usize) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
-    let take = (max_bytes.div_ceil(3) * 4).max(4);
-    let chars: Vec<u8> = text.bytes().take(take).collect();
-    let mut out = Vec::with_capacity(max_bytes);
-    for chunk in chars.chunks(4) {
-        if chunk.len() < 4 {
-            break;
-        }
-        let mut v = [0u8; 4];
-        for (i, &c) in chunk.iter().enumerate() {
-            v[i] = if c == b'=' { 0 } else { val(c)? };
-        }
-        out.push((v[0] << 2) | (v[1] >> 4));
-        let pad = chunk.iter().filter(|&&c| c == b'=').count();
-        if pad < 2 {
-            out.push((v[1] << 4) | (v[2] >> 2));
-        }
-        if pad < 1 {
-            out.push((v[2] << 6) | v[3]);
-        }
-        if out.len() >= max_bytes {
-            break;
-        }
-    }
-    out.truncate(max_bytes);
-    Some(out)
-}
-
-/// Pixel size of a stored icon data url. Reads the PNG header instead of
-/// pattern-matching base64 (the old substring test both missed icons and
-/// flagged crisp ones, which made the upgrade pass churn).
-fn icon_pixel_size(s: &str) -> Option<(u32, u32)> {
-    let body = s.strip_prefix("data:image/png;base64,").unwrap_or(s);
-    let head = base64_decode_prefix(body, 24)?;
-    if head.len() < 24 || &head[..8] != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
-    let w = u32::from_be_bytes([head[16], head[17], head[18], head[19]]);
-    let h = u32::from_be_bytes([head[20], head[21], head[22], head[23]]);
-    Some((w, h))
-}
-
-/// Nothing usable stored: empty, the literal "none", or an icon we cannot read.
-/// This — not "small" — is what forces a re-resolution, so a widget never
-/// re-runs the (expensive) resolver just because its icon is 32px.
-fn icon_is_missing(s: &str) -> bool {
-    if s.is_empty() || s == "none" {
-        return true;
-    }
-    icon_pixel_size(s).is_none()
-}
-
-/// Smaller than the shell's jumbo size, so the background upgrade pass may try
-/// for a crisper one. Never a reason to throw a stored icon away.
-fn is_low_res_icon(s: &str) -> bool {
-    if s.is_empty() || s == "none" {
-        return true;
-    }
-    match icon_pixel_size(s) {
-        Some((w, h)) => w < 64 || h < 64,
-        None => true,
-    }
-}
-
-/// Standalone base64 encoder with zero external dependencies
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        result.push(CHARS[(b0 >> 2) as usize] as char);
-        result.push(CHARS[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(CHARS[(((b1 & 0xF) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(CHARS[(b2 & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
 /// Parse ICO binary format directly in Rust and extract the largest embedded PNG frame if available
 fn try_extract_png_from_ico_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.len() < 22 {
@@ -2798,7 +2709,7 @@ fn try_extract_fast_ico(ico_path: &str) -> Option<String> {
     }
     let bytes = std::fs::read(p).ok()?;
     let png = try_extract_png_from_ico_bytes(&bytes)?;
-    Some(format!("data:image/png;base64,{}", base64_encode(&png)))
+    Some(icons::store_or_inline(&png))
 }
 
 /// Instantly extract Steam game and internet shortcut (.url) icons in Rust (sub-millisecond)
@@ -3276,7 +3187,7 @@ $writer.Flush()
                             let val = if b64 == "none" {
                                 "none".to_string()
                             } else {
-                                format!("data:image/png;base64,{b64}")
+                                icons::store_b64_or_inline(b64)
                             };
                             results.insert(p.to_string(), val.clone());
                             cache_icon(p, &val);
@@ -3290,7 +3201,7 @@ $writer.Flush()
     results
 }
 
-fn resolve_icon_data_url(lnk_path: &str) -> Option<String> {
+fn resolve_icon_url(lnk_path: &str) -> Option<String> {
     // resolve_icons_batch consults ICON_CACHE (with its file stamp) for us.
     let map = resolve_icons_batch(&[lnk_path.to_string()], false);
     let res = map.get(lnk_path)?;
@@ -3312,7 +3223,7 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
                 // Serve whatever we already have: only a *missing* icon is worth
                 // another PowerShell round-trip (size-based "low-res" is the
                 // background upgrade pass's business, not every mount's).
-                if !icon_is_missing(s) {
+                if !icons::is_missing(s) {
                     return Ok(s.to_string());
                 }
             }
@@ -3337,7 +3248,7 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
         return Err("launcher has no target".into());
     }
     let target_clone = target.clone();
-    let data_url = tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&target_clone))
+    let icon_url = tauri::async_runtime::spawn_blocking(move || resolve_icon_url(&target_clone))
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "none".to_string());
@@ -3355,20 +3266,20 @@ async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
                 .to_string();
             let keep_existing = !existing.is_empty()
                 && existing != "none"
-                && !is_low_res_icon(&existing)
-                && is_low_res_icon(&data_url);
+                && !icons::is_low_res(&existing)
+                && icons::is_low_res(&icon_url);
             if !keep_existing {
                 if let Some(obj) = r.data.as_object_mut() {
                     obj.insert(
                         "icon".to_string(),
-                        serde_json::Value::String(data_url.clone()),
+                        serde_json::Value::String(icon_url.clone()),
                     );
                 }
             }
         }
     }
     persist(&app);
-    Ok(data_url)
+    Ok(icon_url)
 }
 
 /// Background task that automatically detects any legacy 32x32 icons in saved app launchers
@@ -3389,7 +3300,7 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
             .filter_map(|(id, r)| {
                 let target = r.data.get("target")?.as_str()?.to_string();
                 let icon = r.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
-                if (migrate || is_low_res_icon(icon)) && !target.trim().is_empty() {
+                if (migrate || icons::is_low_res(icon)) && !target.trim().is_empty() {
                     Some((id.clone(), target))
                 } else {
                     None
@@ -3411,7 +3322,7 @@ async fn upgrade_low_res_icons(app: &AppHandle) {
                     .filter(|it| {
                         // directories included: the shell has a jumbo folder glyph,
                         // and skipping them left every subfolder blank
-                        (migrate || is_low_res_icon(&it.icon)) && !it.target.trim().is_empty()
+                        (migrate || icons::is_low_res(&it.icon)) && !it.target.trim().is_empty()
                     })
                     .map(|it| it.target)
                     .collect();
@@ -3526,7 +3437,7 @@ async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Resul
             .into_iter()
             // directories included: skipping them left every subfolder inside a
             // folder widget blank (only the startup pass ever filled those in)
-            .filter(|it| icon_is_missing(&it.icon) && !it.target.trim().is_empty())
+            .filter(|it| icons::is_missing(&it.icon) && !it.target.trim().is_empty())
             .map(|it| it.target)
             .collect()
     };
@@ -3618,6 +3529,66 @@ fn floaty_open_plugins_dir(app: AppHandle) -> Result<(), String> {
     shell_ops::reveal(&dir.to_string_lossy())
 }
 
+/// Make both windows pick up plugin changes without a restart.
+///
+/// The overlay and settings each cache the manifest *and* the modules they have
+/// imported, so a new plugin is only real once both reload — which is why every
+/// path that changes the plugins folder ends here.
+fn reload_plugin_windows(app: &AppHandle) {
+    for label in ["desktop-overlay", "settings"] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.eval("location.reload()");
+        }
+    }
+    app.emit("floaty-plugins-changed", &plugins::manifest(&load_settings(app).disabled))
+        .ok();
+}
+
+/// Install a plugin from a `.zip` (or from a folder the user picked).
+///
+/// The archive is unpacked and validated in a scratch folder before anything
+/// reaches the plugins folder, so the two failures worth distinguishing — "that
+/// zip is not a plugin" and "that plugin is already installed" — both arrive as
+/// a message in settings instead of a folder name every later launch rejects.
+#[tauri::command]
+async fn floaty_install_plugin(
+    path: String,
+    replace: bool,
+    app: AppHandle,
+) -> Result<plugin_install::PluginInstall, String> {
+    let archive = std::path::PathBuf::from(&path);
+    let dir = plugins_dir(&app);
+    // Unpacking runs PowerShell and copies files: off the main thread, like
+    // every other command that touches the disk for a second.
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        plugin_install::install_archive(&archive, &dir, replace)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let (installed, rejected) = plugins::install_from(&plugins_dir(&app));
+    log_line(
+        &app,
+        &format!(
+            "plugins: {} {} v{} from {} ({} files, {} installed [{}]{})",
+            if report.replaced { "replaced" } else { "installed" },
+            report.id,
+            report.version,
+            path,
+            report.files,
+            installed.len(),
+            installed.join(", "),
+            if rejected.is_empty() {
+                String::new()
+            } else {
+                format!(", {} rejected [{}]", rejected.len(), rejected.join("; "))
+            }
+        ),
+    );
+    reload_plugin_windows(&app);
+    Ok(report)
+}
+
 /// Re-scan the plugins folder without restarting: what authors do after editing
 /// a manifest. Returns the rejections so the settings window can show them.
 #[tauri::command]
@@ -3636,15 +3607,7 @@ fn floaty_rescan_plugins(app: AppHandle) -> Result<Vec<String>, String> {
             }
         ),
     );
-    // Both windows cache the plugin list and the loaded modules, so pick the new
-    // ones up by reloading them: a plugin author should not need a restart.
-    for label in ["desktop-overlay", "settings"] {
-        if let Some(w) = app.get_webview_window(label) {
-            let _ = w.eval("location.reload()");
-        }
-    }
-    app.emit("floaty-plugins-changed", &plugins::manifest(&load_settings(&app).disabled))
-        .ok();
+    reload_plugin_windows(&app);
     Ok(rejected)
 }
 
@@ -4243,6 +4206,10 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
         }
     }
     let (target_id, target_kind) = hit?;
+    // Everything above is a read; from here on real files move, so this is the
+    // point where a merge becomes undoable. The folder the merge may create is
+    // noted by id below (`undo::add_created`), since it does not exist yet.
+    checkpoint(&app, "merge", &[&id, &target_id]);
 
     // snapshot the dragged item, then remove it (tombstone blocks its late
     // saves from resurrecting it)
@@ -4278,6 +4245,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             if let Some(ref fpath) = folder_path {
                 let dest_dir = std::path::Path::new(fpath);
                 if dest_dir.is_dir() {
+                    let moved_from = dragged.target.clone();
                     // bound to a local first: the borrow of `dragged` must end
                     // before it is rebound
                     let placed = match place_item_in_dir(dest_dir, &dragged, root.as_deref()) {
@@ -4292,6 +4260,16 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
                     };
                     if let Some(placed) = placed {
                         dragged = placed;
+                        // Either the file moved into the folder (undo moves it
+                        // back) or a shortcut was written into it because the
+                        // original lives outside the root (undo takes the new
+                        // file away and leaves the original where it is). Which
+                        // one happened is a question about the disk, not a guess.
+                        if !std::path::Path::new(&moved_from).exists() {
+                            undo::add_disk(undo::DiskOp::moved(&moved_from, &dragged.target));
+                        } else if dragged.target != moved_from {
+                            undo::add_disk(undo::DiskOp::discard(&dragged.target));
+                        }
                     }
                 }
             }
@@ -4299,7 +4277,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             let mut items = folder_items(rec);
             if !items.iter().any(|it| it.target == dragged.target) {
                 if dragged.icon.is_empty() && !dragged.is_dir {
-                    dragged.icon = resolve_icon_data_url(&dragged.target).unwrap_or_default();
+                    dragged.icon = resolve_icon_url(&dragged.target).unwrap_or_default();
                 }
                 items.push(dragged);
                 set_folder_items(rec, &items);
@@ -4329,14 +4307,31 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             None
         }
     }) {
+        // The folder is new on disk, so undoing this grouping has to take it
+        // away again — after the items inside it have been moved back out.
+        undo::add_disk(undo::DiskOp::discard(&dir.to_string_lossy()));
+        let sources = [titem.target.clone(), dragged.target.clone()];
         let mut placed: Vec<FolderItem> = Vec::new();
-        for it in [&titem, &dragged] {
+        let mut moved: Vec<(String, String)> = Vec::new();
+        for (it, source) in [&titem, &dragged].into_iter().zip(sources.iter()) {
             match place_item_in_dir(&dir, it, root.as_deref()) {
                 Ok((item, log)) => {
                     log_line(&app, &log);
+                    moved.push((source.clone(), item.target.clone()));
                     placed.push(item);
                 }
                 Err(log) => log_line(&app, &log),
+            }
+        }
+        // One op per item that landed: the file moved into the folder (undo
+        // moves it back) or a shortcut was written because the original lives
+        // outside the root (undo takes the new file away and leaves the original
+        // alone). Which one happened is a question about the disk.
+        for (source, target) in &moved {
+            if !std::path::Path::new(source).exists() {
+                undo::add_disk(undo::DiskOp::moved(source, target));
+            } else if target != source {
+                undo::add_disk(undo::DiskOp::discard(target));
             }
         }
         if !placed.is_empty() {
@@ -4366,6 +4361,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
             data["pinned"] = serde_json::Value::Bool(true);
             return match create_record_with(&app, "folder", data, Some((tx, ty))) {
                 Ok(rec) => {
+                    undo::add_created(&rec.id);
                     log_line(
                         &app,
                         &format!(
@@ -4391,7 +4387,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
     let mut items = vec![titem, dragged];
     for it in items.iter_mut() {
         if it.icon.is_empty() && !it.is_dir {
-            it.icon = resolve_icon_data_url(&it.target).unwrap_or_default();
+            it.icon = resolve_icon_url(&it.target).unwrap_or_default();
         }
     }
     let (tx, ty) = {
@@ -4406,6 +4402,7 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
     let data = serde_json::json!({ "name": "Folder", "items": items });
     match create_record_with(&app, "folder", data, Some((tx, ty))) {
         Ok(rec) => {
+            undo::add_created(&rec.id);
             log_line(&app, &format!("grouped {id} + {target_id} into {}", rec.id));
             Some(rec.id)
         }
@@ -4442,6 +4439,7 @@ fn ungroup_dest_dir(
 /// to the parent directory (relative path change), and float it as its own widget.
 #[tauri::command]
 fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandle) -> Result<WidgetRecord, String> {
+    checkpoint(&app, "ungroup", &[&folder_id]);
     let (mut item, folder_path) = {
         let state = app.state::<AppState>();
         let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -4476,6 +4474,10 @@ fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandl
                     if dest_path != src_path {
                         if let Ok(_) = std::fs::rename(&src_path, &dest_path) {
                             log_line(&app, &format!("moved out of folder on disk: {} -> {}", src_path.display(), dest_path.display()));
+                            undo::add_disk(undo::DiskOp::moved(
+                                &src_path.to_string_lossy(),
+                                &dest_path.to_string_lossy(),
+                            ));
                             item.target = dest_path.to_string_lossy().to_string();
                             item.name = dest_path.file_name().unwrap_or(file_name).to_string_lossy().to_string();
                             item.is_dir = dest_path.is_dir();
@@ -4509,6 +4511,8 @@ fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandl
         create_record_with(&app, kind_for_path(&target_path, false), data, Some((x, y)))?
     };
 
+    // the record this made is the other half of the undo
+    undo::add_created(&rec.id);
     log_line(&app, &format!("ungrouped {} from {folder_id} as {} (kind: {})", item.name, rec.id, rec.kind));
     Ok(rec)
 }
@@ -5306,9 +5310,9 @@ async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
         if let Some(existing) = guard.widgets.get(&record.id) {
             if let Some(existing_icon) = existing.data.get("icon").and_then(|v| v.as_str()) {
                 let incoming_icon = record.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
-                let would_lose = icon_is_missing(incoming_icon) && !icon_is_missing(existing_icon);
+                let would_lose = icons::is_missing(incoming_icon) && !icons::is_missing(existing_icon);
                 let would_downgrade =
-                    is_low_res_icon(incoming_icon) && !is_low_res_icon(existing_icon);
+                    icons::is_low_res(incoming_icon) && !icons::is_low_res(existing_icon);
                 if would_lose || would_downgrade {
                     if let Some(obj) = record.data.as_object_mut() {
                         obj.insert(
@@ -5323,9 +5327,9 @@ async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
                 let mut incoming_items = folder_items(&record);
                 for in_it in incoming_items.iter_mut() {
                     if let Some(ex) = existing_items.iter().find(|e| e.target == in_it.target) {
-                        let would_lose = icon_is_missing(&in_it.icon) && !icon_is_missing(&ex.icon);
+                        let would_lose = icons::is_missing(&in_it.icon) && !icons::is_missing(&ex.icon);
                         let would_downgrade =
-                            is_low_res_icon(&in_it.icon) && !is_low_res_icon(&ex.icon);
+                            icons::is_low_res(&in_it.icon) && !icons::is_low_res(&ex.icon);
                         if would_lose || would_downgrade {
                             in_it.icon = ex.icon.clone();
                         }
@@ -5371,9 +5375,237 @@ fn floaty_refresh(ids: Vec<String>, app: AppHandle) {
     }
 }
 
+// ---------- undo ----------
+
+/// Remember the records an action is about to change, so one press can put them
+/// back. Call it *before* the change: `undo::add_disk` and `undo::add_created`
+/// fill in the rest while the action runs.
+fn checkpoint(app: &AppHandle, label: &str, ids: &[&str]) {
+    let restore: Vec<undo::Restore> = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        ids.iter()
+            .map(|id| undo::Restore {
+                id: (*id).to_string(),
+                record: guard
+                    .widgets
+                    .get(*id)
+                    .and_then(|r| serde_json::to_value(r).ok()),
+            })
+            .collect()
+    };
+    let depth = undo::push(label, restore);
+    log_line(
+        app,
+        &format!("undo: '{label}' can be undone ({depth} on the stack)"),
+    );
+}
+
+/// Would this step change anything?
+///
+/// A command that pushed a checkpoint and then refused before touching the store
+/// leaves a step that would make the undo button look dead — it would be applied
+/// and do nothing. Those are dropped instead, and the press moves on to the next
+/// step, so "undo" never means "nothing happened".
+fn step_changes_anything(guard: &StoreData, step: &undo::Step) -> bool {
+    if !step.disk.is_empty() {
+        return true;
+    }
+    step.restore.iter().any(|r| {
+        let now = guard
+            .widgets
+            .get(&r.id)
+            .and_then(|rec| serde_json::to_value(rec).ok());
+        now != r.record
+    })
+}
+
+/// Reverse one thing an action did to the disk.
+fn reverse_disk(op: &undo::DiskOp) -> Result<String, String> {
+    match op.action {
+        undo::DiskAction::Unrecycle => {
+            shell_ops::restore_from_bin(&op.from)?;
+            Ok(format!("'{}' back from the Recycle Bin", op.from))
+        }
+        undo::DiskAction::Move => {
+            let from = std::path::Path::new(&op.from);
+            let to = std::path::Path::new(&op.to);
+            if !to.exists() {
+                return Err(format!("'{}' is not there to move back", op.to));
+            }
+            if from.exists() {
+                return Err(format!("'{}' is in the way", op.from));
+            }
+            std::fs::rename(to, from)
+                .map_err(|e| format!("'{}' -> '{}': {e}", op.to, op.from))?;
+            Ok(format!("'{}' back to '{}'", op.to, op.from))
+        }
+        undo::DiskAction::Discard => {
+            let path = std::path::Path::new(&op.from);
+            if !path.exists() {
+                return Ok(format!("'{}' was already gone", op.from));
+            }
+            if path.is_dir() {
+                // Only if it is empty: an item that could not be moved back is a
+                // reason to leave the folder alone, not to lose it.
+                if std::fs::remove_dir(path).is_err() {
+                    return Ok(format!("'{}' left in place (not empty)", op.from));
+                }
+            } else {
+                std::fs::remove_file(path).map_err(|e| format!("'{}': {e}", op.from))?;
+            }
+            Ok(format!("'{}' taken away again", op.from))
+        }
+    }
+}
+
+/// Undo the last change: the records, and the files they stand for.
+///
+/// The files go first. If one of them cannot be put back — the Recycle Bin was
+/// emptied in the meantime — the records are left exactly as they are and the
+/// step stays on the stack, so restoring the file by hand in Explorer and
+/// pressing undo again still works.
+#[tauri::command]
+async fn floaty_undo(app: AppHandle) -> Result<undo::UndoReport, String> {
+    loop {
+        let Some(step) = undo::pop() else {
+            return Err("nothing left to undo".into());
+        };
+        {
+            let state = app.state::<AppState>();
+            let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            if !step_changes_anything(&guard, &step) {
+                log_line(
+                    &app,
+                    &format!("undo: '{}' would change nothing; skipped", step.label),
+                );
+                continue;
+            }
+        }
+
+        let mut files: Vec<String> = Vec::new();
+        for op in step.disk.iter().rev() {
+            match reverse_disk(op) {
+                Ok(what) => files.push(what),
+                Err(err) => {
+                    log_line(&app, &format!("undo: '{}' FAILED: {err}", step.label));
+                    undo::restore_top(step);
+                    return Err(err);
+                }
+            }
+        }
+
+        let mut restored = 0usize;
+        let mut removed = 0usize;
+        let mut touched: Vec<String> = Vec::new();
+        {
+            let state = app.state::<AppState>();
+            let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            for entry in &step.restore {
+                match &entry.record {
+                    Some(json) => match serde_json::from_value::<WidgetRecord>(json.clone()) {
+                        Ok(rec) => {
+                            // A restored record has to be allowed to live again:
+                            // the tombstone is there to stop dying windows from
+                            // resurrecting a removed widget, and this one is not
+                            // dying, it is coming home.
+                            guard.dead.remove(&rec.id);
+                            guard.widgets.insert(rec.id.clone(), rec);
+                            restored += 1;
+                            touched.push(entry.id.clone());
+                        }
+                        Err(err) => log_line(
+                            &app,
+                            &format!("undo: {} could not be read back: {err}", entry.id),
+                        ),
+                    },
+                    None => {
+                        if guard.widgets.remove(&entry.id).is_some() {
+                            removed += 1;
+                        }
+                        guard.dead.insert(entry.id.clone());
+                        touched.push(entry.id.clone());
+                    }
+                }
+            }
+        }
+        persist(&app);
+
+        // Rebuild exactly what changed. A remount covers both cases — a widget
+        // that was never on screen and one that is, since the page unmounts
+        // first — and a folder takes its item list with it.
+        let (now_here, now_gone): (Vec<WidgetRecord>, Vec<String>) = {
+            let state = app.state::<AppState>();
+            let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            touched.iter().fold(
+                (Vec::new(), Vec::new()),
+                |(mut here, mut gone), id| {
+                    match guard.widgets.get(id).cloned() {
+                        Some(rec) => here.push(rec),
+                        None => gone.push(id.clone()),
+                    }
+                    (here, gone)
+                },
+            )
+        };
+        for rec in &now_here {
+            app.emit("floaty-widget-updated", rec).ok();
+        }
+        for id in &now_gone {
+            hide_widget(&app, id);
+        }
+
+        let remaining = undo::depth();
+        log_line(
+            &app,
+            &format!(
+                "undo: '{}' — {restored} record(s) back, {removed} removed, {} file move(s){}; {remaining} left to undo",
+                step.label,
+                files.len(),
+                if files.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", files.join("; "))
+                },
+            ),
+        );
+        return Ok(undo::UndoReport {
+            label: step.label,
+            restored,
+            removed,
+            files,
+            remaining,
+        });
+    }
+}
+
+/// What the next undo would reverse, for the settings window's button.
+#[tauri::command]
+fn floaty_undo_state() -> undo::UndoState {
+    undo::UndoState {
+        depth: undo::depth(),
+        label: undo::last_label(),
+    }
+}
+
+/// Let a page that is about to move widgets in bulk record a restore point —
+/// how "tidy the desktop" and a trail arrangement get an undo. The records come
+/// from the page because that is where the positions it is about to overwrite
+/// are already in hand.
+#[tauri::command]
+fn floaty_undo_checkpoint(label: String, restore: Vec<undo::Restore>, app: AppHandle) -> usize {
+    let depth = undo::push(&label, restore);
+    log_line(
+        &app,
+        &format!("undo: checkpoint '{label}' from the desktop ({depth} on the stack)"),
+    );
+    depth
+}
+
 #[tauri::command]
 fn floaty_remove(id: String, app: AppHandle) {
     log_line(&app, &format!("remove {id}"));
+    checkpoint(&app, "remove", &[&id]);
     let state: State<'_, AppState> = app.state::<AppState>();
     if let Ok(mut guard) = state.0.lock() {
         guard.widgets.remove(&id);
@@ -5428,8 +5660,11 @@ fn floaty_delete(id: String, app: AppHandle) -> Result<String, String> {
     let (kind, path) = widget_path(&app, &id)?;
     let managed = is_desktop_item(&app, &path)
         && (kind == "file" || kind == "folder" || kind == "app");
+    checkpoint(&app, "delete", &[&id]);
     let note = if managed {
         shell_ops::recycle(std::path::Path::new(&path))?;
+        // one press puts the file back out of the bin and the floatie with it
+        undo::add_disk(undo::DiskOp::recycled(&path));
         format!("moved '{}' to the recycle bin", path)
     } else {
         format!("removed the floatie; '{}' stays on disk", path)
@@ -5506,7 +5741,7 @@ fn floaty_rename(id: String, name: String, app: AppHandle) -> Result<WidgetRecor
         tauri::async_runtime::spawn(async move {
             let resolved = {
                 let t = target.clone();
-                tauri::async_runtime::spawn_blocking(move || resolve_icon_data_url(&t))
+                tauri::async_runtime::spawn_blocking(move || resolve_icon_url(&t))
                     .await
                     .ok()
                     .flatten()
@@ -5652,6 +5887,10 @@ pub fn run() {
         .manage(AppState(Mutex::new(StoreData::default())))
         .setup(|app| {
             let _ = SHARED_APP.set(app.handle().clone());
+            // Icons are files (`<app data>/icons/<hash>.png`) that records point
+            // at with an asset url. Install the folder here, before any resolver
+            // runs: the resolver works on threads that have no AppHandle.
+            icons::set_dir(icons_dir(app.handle()));
             // the hidden manager window outlives the overlay: it is the most
             // stable place to hang the display-state notification
             if let Some(m) = app.get_webview_window("manager") {
@@ -5677,7 +5916,26 @@ pub fn run() {
             }
 
             // restore persisted widgets into state
-            let saved = load_all(&handle);
+            let mut saved = load_all(&handle);
+            // A store written before icons were files carries every icon inlined
+            // as base64 — 97% of its bytes. Move them out (idempotent, so this is
+            // free on a store that has already been through it) and remember
+            // whether the store loaded at all, which is what licenses the sweep
+            // further down.
+            let store_loaded = !saved.is_empty();
+            let mut icons_moved = 0usize;
+            for rec in saved.iter_mut() {
+                icons_moved += icons::migrate_json(&mut rec.data);
+            }
+            if icons_moved > 0 {
+                log_line(
+                    &handle,
+                    &format!(
+                        "icons: moved {icons_moved} inlined icons into {}",
+                        icons_dir(&handle).display()
+                    ),
+                );
+            }
             // the store we just loaded is known good: pin it as the backup
             refresh_backup(&store_file(&handle), true);
             let mut reclassified = 0usize;
@@ -5714,8 +5972,34 @@ pub fn run() {
                 }
                 guard.next = max_n;
             }
-            if reclassified > 0 {
+            if reclassified > 0 || icons_moved > 0 {
                 persist(&handle);
+            }
+
+            // Drop icon files no record mentions any more (a removed widget, or
+            // the inlined copies the migration above just replaced). Only ever on
+            // a store that loaded: a damaged or first-run store references
+            // nothing, and sweeping then would delete the whole desktop's icons.
+            if store_loaded {
+                let mut referenced = HashSet::new();
+                {
+                    let state = handle.state::<AppState>();
+                    let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                    for rec in guard.widgets.values() {
+                        icons::collect_referenced(&rec.data, &mut referenced);
+                    }
+                }
+                let (removed, freed) = icons::sweep(&referenced);
+                if removed > 0 {
+                    log_line(
+                        &handle,
+                        &format!(
+                            "icons: swept {removed} unused files ({:.1} MB) — {} still in use",
+                            freed as f64 / 1048576.0,
+                            referenced.len()
+                        ),
+                    );
+                }
             }
 
             // Start on boot is a registry entry, so reconcile it with the setting
@@ -5845,6 +6129,9 @@ pub fn run() {
             floaty_refresh,
             floaty_remove,
             floaty_delete,
+            floaty_undo,
+            floaty_undo_state,
+            floaty_undo_checkpoint,
             floaty_open_with,
             floaty_reveal,
             floaty_properties,
@@ -5855,6 +6142,7 @@ pub fn run() {
             floaty_plugins_dir,
             floaty_open_plugins_dir,
             floaty_rescan_plugins,
+            floaty_install_plugin,
             floaty_set_plugin_enabled,
             floaty_get_settings,
             floaty_set_settings,
@@ -6374,34 +6662,6 @@ mod tests {
     }
 
     #[test]
-    fn icons_are_measured_from_the_png_header() {
-        // 24 bytes: PNG signature + IHDR length/type + width/height, which is all
-        // icon_pixel_size reads. Built by hand so the test needs no image file.
-        fn png(w: u32, h: u32) -> String {
-            let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-            bytes.extend_from_slice(&13u32.to_be_bytes());
-            bytes.extend_from_slice(b"IHDR");
-            bytes.extend_from_slice(&w.to_be_bytes());
-            bytes.extend_from_slice(&h.to_be_bytes());
-            format!("data:image/png;base64,{}", base64_encode(&bytes))
-        }
-
-        assert_eq!(icon_pixel_size(&png(32, 32)), Some((32, 32)));
-        assert_eq!(icon_pixel_size(&png(256, 256)), Some((256, 256)));
-        assert_eq!(icon_pixel_size("data:image/png;base64,not-base64!!"), None);
-
-        // A 32px icon is low-res (an upgrade may do better) but it is NOT missing:
-        // calling it missing is what re-ran the resolver on every mount.
-        assert!(is_low_res_icon(&png(32, 32)));
-        assert!(!icon_is_missing(&png(32, 32)));
-        assert!(icon_is_missing(""));
-        assert!(icon_is_missing("none"));
-        assert!(icon_is_missing("data:image/png;base64,not-base64!!"));
-        assert!(!is_low_res_icon(&png(256, 256)));
-        assert!(!icon_is_missing(&png(256, 256)));
-    }
-
-    #[test]
     fn rescans_keep_the_icons_already_resolved() {
         let item = |name: &str, target: &str, icon: &str| FolderItem {
             name: name.to_string(),
@@ -6465,16 +6725,21 @@ mod tests {
 
     #[test]
     fn test_fast_ico_and_url_extraction() {
-        assert_eq!(base64_encode(b"hello world"), "aGVsbG8gd29ybGQ=");
-
         // Test with real Steam game url if present
         let test_url = r"C:\Users\erict\OneDrive\Desktop\games\Magical Princess.url";
         if std::path::Path::new(test_url).exists() {
-            let res = try_extract_fast_url(test_url);
-            assert!(res.is_some(), "try_extract_fast_url should successfully extract Steam icon");
-            let data_url = res.unwrap();
-            assert!(data_url.starts_with("data:image/png;base64,"), "should produce valid png data url");
-            assert!(data_url.len() > 1000, "should produce high-res icon data");
+            let icon = try_extract_fast_url(test_url)
+                .expect("try_extract_fast_url should successfully extract Steam icon");
+            // Whichever form it comes back in — a stored file url, or an inlined
+            // data url when there is no icons folder to write to — it has to be a
+            // real, readable icon, because that is what the tile renders.
+            let (w, h) = icons::pixel_size(&icon).expect("a readable png");
+            assert!(w >= 32 && h >= 32, "{w}x{h}");
+            assert!(!icons::is_missing(&icon));
+            assert!(
+                icons::read(&icon).unwrap().len() > 1000,
+                "should produce high-res icon data"
+            );
         }
     }
 
@@ -6587,4 +6852,134 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn a_disk_op_reverses_what_the_action_did_to_the_files() {
+        let dir = std::env::temp_dir().join(format!("floaty-undo-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sub = dir.join("New folder");
+        std::fs::create_dir_all(&sub).unwrap();
+        let original = dir.join("a.txt");
+        let moved = sub.join("a.txt");
+        std::fs::write(&original, b"the file").unwrap();
+
+        // what a merge does, then the undo of it
+        std::fs::rename(&original, &moved).unwrap();
+        assert!(!original.exists());
+        let what = reverse_disk(&undo::DiskOp::moved(
+            &original.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ))
+        .unwrap();
+        assert!(what.contains("back to"), "{what}");
+        assert_eq!(std::fs::read(&original).unwrap(), b"the file");
+        assert!(!moved.exists());
+
+        // a file that came back by hand first is not overwritten
+        std::fs::rename(&original, &moved).unwrap();
+        std::fs::write(&original, b"something else").unwrap();
+        let err = reverse_disk(&undo::DiskOp::moved(
+            &original.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ))
+        .unwrap_err();
+        assert!(err.contains("in the way"), "{err}");
+        assert_eq!(std::fs::read(&original).unwrap(), b"something else");
+        // and one that is not there to move back says so
+        std::fs::remove_file(&moved).unwrap();
+        let err = reverse_disk(&undo::DiskOp::moved(
+            &original.to_string_lossy(),
+            &moved.to_string_lossy(),
+        ))
+        .unwrap_err();
+        assert!(err.contains("not there"), "{err}");
+
+        // a folder the grouping created goes again — unless something is in it
+        let made = dir.join("Grouped");
+        std::fs::create_dir_all(&made).unwrap();
+        reverse_disk(&undo::DiskOp::discard(&made.to_string_lossy())).unwrap();
+        assert!(!made.exists());
+        std::fs::create_dir_all(&made).unwrap();
+        std::fs::write(made.join("kept.txt"), b"still wanted").unwrap();
+        let what = reverse_disk(&undo::DiskOp::discard(&made.to_string_lossy())).unwrap();
+        assert!(what.contains("left in place"), "{what}");
+        assert!(made.join("kept.txt").exists());
+        // a shortcut written into a folder is just a file
+        let lnk = dir.join("shortcut.lnk");
+        std::fs::write(&lnk, b"x").unwrap();
+        reverse_disk(&undo::DiskOp::discard(&lnk.to_string_lossy())).unwrap();
+        assert!(!lnk.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checkpoint_that_changed_nothing_is_not_worth_an_undo_press() {
+        let mut store = StoreData::default();
+        let rec = WidgetRecord {
+            id: "app-1".to_string(),
+            kind: "app".to_string(),
+            x: 40,
+            y: 50,
+            data: serde_json::json!({ "name": "Arc" }),
+        };
+        store.widgets.insert(rec.id.clone(), rec.clone());
+
+        let step = |restore: Vec<undo::Restore>, disk: Vec<undo::DiskOp>| undo::Step {
+            label: "test".to_string(),
+            restore,
+            disk,
+        };
+        let same = |store: &StoreData| {
+            vec![undo::Restore {
+                id: "app-1".to_string(),
+                record: store
+                    .widgets
+                    .get("app-1")
+                    .and_then(|r| serde_json::to_value(r).ok()),
+            }]
+        };
+
+        // nothing touched: the store is exactly what the checkpoint recorded
+        assert!(!step_changes_anything(&store, &step(same(&store), vec![])));
+        // a moved widget, a removed one, and a file move all count
+        let mut moved = store.widgets.get("app-1").unwrap().clone();
+        moved.x = 999;
+        store.widgets.insert(moved.id.clone(), moved);
+        assert!(step_changes_anything(&store, &step(same(&store), vec![])) == false);
+        let before = step(
+            vec![undo::Restore {
+                id: "app-1".to_string(),
+                record: Some(serde_json::to_value(&rec).unwrap()),
+            }],
+            vec![],
+        );
+        assert!(step_changes_anything(&store, &before), "the position differs");
+        assert!(step_changes_anything(
+            &store,
+            &step(vec![], vec![undo::DiskOp::recycled("C:\\gone.txt")])
+        ));
+        // a record the action created is a change: it is gone from the store
+        assert!(step_changes_anything(
+            &store,
+            &step(
+                vec![undo::Restore {
+                    id: "app-1".to_string(),
+                    record: None
+                }],
+                vec![]
+            )
+        ));
+        // ... and one it created that is somehow still there is not
+        assert!(!step_changes_anything(
+            &store,
+            &step(
+                vec![undo::Restore {
+                    id: "folder-99".to_string(),
+                    record: None
+                }],
+                vec![]
+            )
+        ));
+    }
+
 }

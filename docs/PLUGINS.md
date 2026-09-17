@@ -26,20 +26,41 @@ a special case.
 
 ## Installing a plugin
 
+**From a `.zip`** — the usual way to receive one:
+
+1. Settings → **Plugins** → **install from .zip…** and pick the archive.
+2. Floaty unpacks it into a scratch folder, checks that it *is* a plugin (one
+   `plugin.json`, a valid id that does not clash with a built-in, an entry file
+   inside the folder), and only then moves it into
+   `%APPDATA%\com.floaty.app\plugins\<id>`. Both windows reload and the plugin
+   is in the list.
+3. An archive whose id is already installed is refused, with both versions named —
+   asking again replaces the installed copy, files and all. The old copy is moved
+   aside first and only dropped once the new one is in place, so a failure
+   halfway through leaves you with the plugin you had.
+
+The archive may hold the plugin folder (`countdown/plugin.json`, which is what
+zipping a folder gives you) or its files at the top level. A zip that is not a
+plugin, is not a zip at all, or holds several plugins is refused by name, with the
+reason, *before* anything is written to the plugins folder.
+
+**By hand** — the same thing, one folder at a time:
+
 1. Open floaty's settings → **Plugins** → **open plugin folder**. That is
    `%APPDATA%\com.floaty.app\plugins`.
 2. Put the plugin's folder there, so you have
    `…\plugins\countdown\plugin.json` and `…\plugins\countdown\index.js`.
-3. Press **rescan plugins**. Both windows reload and the plugin shows up in the
-   plugin list, with a button in **+ New floatie** if it asked for one.
+3. Press **rescan plugins**.
 
 A folder floaty cannot use is named in settings under the buttons, with the
 reason — a broken plugin never takes the desktop down with it. The plugins folder
-is read at startup and on rescan.
+is read at startup, on rescan, and after an install.
 
 **Plugins are trusted code.** They run inside floaty's windows with the same
 access floaty has. There is no sandbox and no marketplace: read a plugin before
-you install it, exactly as you would a browser extension.
+you install it, exactly as you would a browser extension. Installing a `.zip`
+changes nothing about that — it is a copy with the checks above, not a review. Installing a `.zip`
+changes nothing about that — it is a copy with the checks above, not a review.
 
 ## Writing a plugin
 

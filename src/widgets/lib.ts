@@ -1030,9 +1030,18 @@ function iconSize(url: string): { w: number; h: number } | undefined {
   }
 }
 
-/** Nothing renderable stored yet: empty, "none", or a data url we cannot read. */
+/**
+ * Whether an icon still needs resolving.
+ *
+ * A stored icon is a file the backend owns, pointed at with an
+ * `http://asset.localhost/…` url, so the only honest answer for one of those is
+ * the backend's — `floaty_icon` looks for the file itself and re-resolves when
+ * it is gone. A legacy data url can still be judged right here, by its PNG
+ * header, which is what this used to do for every icon.
+ */
 export function iconIsMissing(url: string | undefined): boolean {
   if (!url || url === "none") return true;
+  if (!url.startsWith("data:")) return false;
   return iconSize(url) === undefined;
 }
 

@@ -153,14 +153,8 @@ export function mountFolder(root: HTMLElement, id: string): void {
     render();
   };
 
-  const createItemVisual = (it: FolderItem, mini: boolean): HTMLElement => {
-    if (it.icon) {
-      const img = document.createElement("img");
-      img.src = it.icon;
-      img.alt = "";
-      img.draggable = false;
-      return img;
-    }
+  /** What an item shows when it has no icon, or the one it has will not load. */
+  const fallbackVisual = (it: FolderItem, mini: boolean): HTMLElement => {
     if (it.is_dir) {
       const glyph = document.createElement("div");
       glyph.className = mini ? "ffolder fmini-dir" : "ffolder";
@@ -171,6 +165,21 @@ export function mountFolder(root: HTMLElement, id: string): void {
     ch.className = mini ? "fmini-letter" : "fletter";
     ch.textContent = (it.name.trim()[0] ?? "?").toUpperCase();
     return ch;
+  };
+
+  const createItemVisual = (it: FolderItem, mini: boolean): HTMLElement => {
+    if (it.icon) {
+      const img = document.createElement("img");
+      img.src = it.icon;
+      img.alt = "";
+      img.draggable = false;
+      // An icon is a file; if it is gone the item keeps its place with the
+      // letter (or the folder glyph) rather than an image that never loads.
+      // `floaty_resolve_folder_icons` re-resolves it on the folder's next open.
+      img.onerror = () => img.replaceWith(fallbackVisual(it, mini));
+      return img;
+    }
+    return fallbackVisual(it, mini);
   };
 
   const createGhostElement = (it: FolderItem, clientX: number, clientY: number): HTMLElement => {
