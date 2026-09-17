@@ -34,15 +34,29 @@ a special case.
    inside the folder), and only then moves it into
    `%APPDATA%\com.floaty.app\plugins\<id>`. Both windows reload and the plugin
    is in the list.
-3. An archive whose id is already installed is refused, with both versions named —
-   asking again replaces the installed copy, files and all. The old copy is moved
-   aside first and only dropped once the new one is in place, so a failure
-   halfway through leaves you with the plugin you had.
+3. Floaty reads the archive *first* and says what it is before writing anything:
+   the id, name, version, author, how many files and bytes, which plugin api it
+   was written against, and — when you already have that plugin — both versions
+   and whether this is an upgrade, a downgrade or the same version again. Only
+   then does it ask.
+4. Replacing moves the installed copy aside first and drops it once the new one is
+   in place, so a failure halfway through leaves you with the plugin you had.
 
 The archive may hold the plugin folder (`countdown/plugin.json`, which is what
 zipping a folder gives you) or its files at the top level. A zip that is not a
 plugin, is not a zip at all, or holds several plugins is refused by name, with the
 reason, *before* anything is written to the plugins folder.
+
+**Updating** a plugin is installing it again: the same button, the same archive,
+and the confirm says `replaces the installed v1.0.0 — upgrade`. A downgrade is
+called out in those words rather than installed quietly, because an older archive
+is usually the wrong file.
+
+**Removing** one is the `remove plugin` button on its card: the plugin's folder
+goes to the Recycle Bin (recoverable, like every other removal in floaty), and its
+floaties on the desktop go with it — a record whose kind is no longer in the
+manifest would be drawn by a build that has no idea what it is. The confirm says
+how many floaties that is before you answer.
 
 **By hand** — the same thing, one folder at a time:
 

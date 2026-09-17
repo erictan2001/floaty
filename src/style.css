@@ -1312,3 +1312,122 @@ body.settings-page {
   z-index: 200;
 }
 
+/* ---------- launcher palette ---------- */
+/* Its own window, about 560x380, and the same dark panel recipe as a widget:
+   the palette floats over whatever was on screen when the hotkey was pressed,
+   so it has to read as one card and not as a page. The panel owns the whole
+   viewport and clips, which is why nothing here scrolls except the list — a
+   page-level scrollbar in a 380px window would eat the last row. */
+.palette {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--card-shadow);
+  color: var(--panel-ink);
+}
+.palette-search {
+  flex: 0 0 auto;
+  padding: 11px 14px 10px;
+  border-bottom: 1px solid var(--panel-hairline);
+}
+.palette-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--panel-ink);
+  font-family: inherit;
+  font-size: 15px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.palette-input::placeholder { color: var(--panel-ink-faint); }
+.palette-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.palette-list::-webkit-scrollbar { width: 8px; }
+.palette-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
+.palette-list::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }
+.palette-hit {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+/* A fill plus an accent edge, because the text colour has nowhere to go on a
+   translucent panel: the row is what moves, not the ink. */
+.palette-hit.selected {
+  background: rgba(255, 255, 255, 0.11);
+  border-left-color: var(--accent);
+}
+.palette-hit-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  object-fit: contain;
+}
+.palette-hit-letter {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--panel-inset);
+  color: var(--panel-ink-faint);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.palette-hit-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.palette-hit-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-hit-sub {
+  font-size: 11px;
+  color: var(--panel-ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.palette-empty {
+  margin: 10px 12px;
+  font-size: 12.5px;
+  color: var(--panel-ink-faint);
+}
+.palette-note {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--panel-hairline);
+  font-size: 12px;
+  color: var(--panel-ink-soft);
+}
+/* the line only exists while it has something to say */
+.palette-note:empty { display: none; }
+

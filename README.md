@@ -143,9 +143,17 @@ tool. The thumbprint is per-machine, which is why this repository carries none.
 ```powershell
 npm run build              # plugin id check + tsc --noEmit + vite build
 npm run check:plugins      # only the backend/frontend plugin id agreement
-cargo test                 # 67 backend tests, run from src-tauri
+cargo test                 # 73 backend tests, run from src-tauri
 cargo check
+npm run verify:panes       # render every settings pane headlessly (needs npm run dev)
+npm run verify:app         # check the running app over its debug port
 ```
+
+`verify/` holds the probes for the two halves `cargo test` cannot reach: the pages,
+and the running app. They need no dependencies and they talk to the real thing — the
+pane probe drives the real pane code with the IPC stubbed, the app probe drives the
+real store through the real IPC. [verify/README.md](verify/README.md) says what each
+one catches and the four rules for writing another.
 
 The backend tests cover the watcher, the shortcut and grouping rules, the plugin
 manifests, the icon store (including a real recycle-and-restore round trip), undo
@@ -236,6 +244,20 @@ single handler out to its widgets so nothing reads a half-updated cache. Every
 change is logged (`[motion] …`) with the values it used and the decision each
 icon made.
 
+**The launcher.** One key — `Ctrl+Alt+Space` by default, changeable in General —
+opens a search over three things at once: the applications a scan finds, the entries
+in your pointed folder, and everything already floating on the desktop, so a note is
+findable by name as well as a program. Type, `Enter` opens the top row, arrows move
+down the list, `Escape` closes it — and a row that is a widget rather than a file
+says so instead of pretending it launched something. The ranking is the part that
+matters: an exact name beats a name that starts with what you typed, which beats a
+match at a word boundary (typing `code` reaches *Visual Studio Code* before
+*Barcode*), which beats a match inside a word, which beats initials (`vsc`). The app
+list is cached for five minutes, icons are only resolved for the rows actually
+shown, and the window is built once and then only shown and hidden. The tray's
+**Search…** opens the same thing: if another app already owns the key you chose,
+settings says so rather than leaving you with a launcher you cannot reach.
+
 **Tidy the desktop** (General tab) lines the icons up on a grid: a pinned icon
 holds the place it is given, and everything else is stacked up from the floor in
 even columns — a mid-screen slot for an icon that falls would be a place it left
@@ -303,11 +325,16 @@ Third-party plugins need no Floaty source: press **install from .zip** with a
 plugin archive somebody sent you, or drop a folder with `plugin.json` and
 `index.js` into `%APPDATA%\com.floaty.app\plugins` and press **rescan plugins**.
 Either way the widget is available with the same API and the same settings card as
-a built-in. An archive is unpacked and validated *before* anything reaches the
-plugins folder, so a bad zip is a sentence in settings rather than a folder name
-every later launch rejects; installing over a plugin you already have asks first,
-and says which versions are involved. Installation, the `plugin.json` reference
-and the module contract are in [docs/PLUGINS.md](docs/PLUGINS.md).
+a built-in. Installation, the `plugin.json` reference and the module contract are in
+[docs/PLUGINS.md](docs/PLUGINS.md).
+
+An archive is read *before* it is installed: the confirm names the plugin, its
+version, its author, how much of it there is, which plugin api it was written
+against, and — if you already have it — both versions and whether this is an
+upgrade or a downgrade. Anything that is not a plugin, or is not a zip at all, is
+refused by name with the reason, with nothing written to the plugins folder. The
+**remove plugin** button on a plugin's card takes it off again: the folder goes to
+the Recycle Bin and its floaties go with it, and it says how many that is first.
 
 Disabling a plugin closes its widgets and keeps their records; re-enabling brings
 them back. Nothing disabled is loaded, listed or creatable until it is turned back
@@ -325,7 +352,7 @@ arrive with, and the tab lives in the URL hash so a reload stays where you were:
 | Files | `#/files` | the root folder and its contents |
 | Motion | `#/motion` | the table above, plus click behaviour |
 | Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
-| General | `#/general` | stay on desktop, start with Windows, ask before removing, tidy the desktop, undo |
+| General | `#/general` | stay on desktop, start with Windows, ask before removing, the launcher key, tidy the desktop, undo |
 
 Edits are applied immediately; slider drags are debounced so a five-step drag is
 one save.
@@ -395,7 +422,8 @@ src/
 src-tauri/src/
   lib.rs        store, overlays and windows, watcher wiring, tray, apps, icons
   plugins.rs    backend plugin registry, manifests, sizing, installed plugins
-  plugin_install.rs  install a plugin from a .zip, or from a folder
+  plugin_install.rs  install, inspect and remove a plugin archive or folder
+  palette.rs    the launcher: its window, its hotkey, and how a query is ranked
   icons.rs      stored icons: files named by content, and the urls that point at them
   undo.rs       what the last few changes were, so one press can put them back
   fs_watch.rs   the root-folder watcher
@@ -407,6 +435,7 @@ docs/PLUGINS.md                 plugin authoring reference
 examples/plugins/               two worked example plugins, and their README
 scripts/check-plugins.mjs       backend/frontend plugin id agreement
 scripts/set-version.mjs         write the version into every file that carries one
+verify/                        headless probes: the settings panes, the running app
 .github/workflows/release.yml   tagged build → checked, published GitHub release
 ```
 

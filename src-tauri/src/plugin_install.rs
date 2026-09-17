@@ -32,6 +32,40 @@ pub struct PluginInstall {
     pub replaced: bool,
 }
 
+/// What an archive holds, read *before* anything is installed.
+///
+/// Every field here exists because a person is about to say yes or no to it: what
+/// it is, which contract it was written against, how much of it there is, and how
+/// its version compares to the copy already installed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveReport {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub description: String,
+    /// The plugin contract the archive declares.
+    pub api_version: u32,
+    pub add_label: Option<String>,
+    /// Files and bytes the install would write.
+    pub files: usize,
+    pub size_bytes: u64,
+    /// The version already installed, when there is one.
+    pub installed_version: Option<String>,
+    /// `new`, `same`, `upgrade`, `downgrade` or `unknown` — see
+    /// `plugins::version_relation`. Shown next to both versions, never alone.
+    pub relation: String,
+}
+
+/// What an uninstall did.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginUninstall {
+    pub id: String,
+    pub files: usize,
+    /// Where the folder went. The Recycle Bin, so this is reversible.
+    pub recycled_to: String,
+}
+
 /// A plugin folder is small: a manifest and a module, plus maybe some art.
 /// Anything past this is not a widget, and unpacking it is not our business.
 const MAX_FILES: usize = 4000;
@@ -68,19 +102,10 @@ fn install_into(
 ) -> Result<PluginInstall, String> {
     std::fs::create_dir_all(scratch).map_err(|e| format!("no scratch folder: {e}"))?;
 
-    // 1. Get the source folder: a folder taken as it is, a zip unpacked.
-    let source = if archive.is_dir() {
-        archive.to_path_buf()
-    } else {
-        let unpacked = scratch.join("unpacked");
-        std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
-        extract_zip(archive, &unpacked)?;
-        unpacked
-    };
-
-    // 2. Find the plugin inside it (a zip usually wraps the folder, so one level
-    //    down is the common shape) and validate it *before* it is installed.
-    let found = find_plugin_dir(&source)?;
+    // 1 and 2. Get the folder inside the archive — a zip wraps the plugin folder,
+    // so one level down is the common shape — and validate it *before* it is
+    // installed.
+    let found = unpack(archive, scratch)?;
     let plugin = read_plugin(&found)?;
 
     // 3. Stage a copy, then move it into place.
@@ -130,6 +155,118 @@ fn installed_version(dir: &Path) -> String {
         Ok(p) if !p.version.is_empty() => format!(" (v{})", p.version),
         _ => String::new(),
     }
+}
+
+/// Read an archive without installing it: what is in it, and how it compares to
+/// what is already there.
+///
+/// Same unpacking and validation as an install, into the same scratch folder, and
+/// then it is thrown away — so "is this the plugin I think it is?" is answered by
+/// the code that would install it rather than by a second, weaker parser.
+pub fn inspect_archive(archive: &Path, plugins_dir: &Path) -> Result<ArchiveReport, String> {
+    if !archive.exists() {
+        return Err(format!("{} does not exist", archive.display()));
+    }
+    let scratch = scratch_dir()?;
+    let result = inspect_into(archive, plugins_dir, &scratch);
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+fn inspect_into(
+    archive: &Path,
+    plugins_dir: &Path,
+    scratch: &Path,
+) -> Result<ArchiveReport, String> {
+    std::fs::create_dir_all(scratch).map_err(|e| format!("no scratch folder: {e}"))?;
+    let dir = unpack(archive, scratch)?;
+    let plugin = read_plugin(&dir)?;
+    let (files, size_bytes) = tree_size(&dir)?;
+
+    let installed = plugins_dir.join(&plugin.id);
+    let installed_version = if installed.is_dir() {
+        read_plugin(&installed).ok().map(|p| p.version)
+    } else {
+        None
+    };
+    Ok(ArchiveReport {
+        relation: crate::plugins::version_relation(installed_version.as_deref(), &plugin.version)
+            .to_string(),
+        installed_version,
+        id: plugin.id,
+        name: plugin.name,
+        version: plugin.version,
+        author: plugin.author,
+        description: plugin.description,
+        api_version: plugin.api_version,
+        add_label: plugin.add_label,
+        files,
+        size_bytes,
+    })
+}
+
+/// Take a plugin off the desktop: its folder goes to the Recycle Bin.
+///
+/// The manifest is *not* validated first, on purpose: a plugin whose `plugin.json`
+/// was broken by hand is exactly the one that needs removing, and refusing because
+/// it no longer parses would leave it there for ever.
+///
+/// The widgets of that kind are the caller's business — this owns the folder, and
+/// nothing else. A plugin's folder is never deleted outright: it is somebody's work
+/// and it is in the Recycle Bin if they want it back.
+pub fn uninstall(id: &str, plugins_dir: &Path) -> Result<PluginUninstall, String> {
+    if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") {
+        return Err(format!("'{id}' is not a plugin id"));
+    }
+    // `plugins::exists` is "built-in *or* installed", which is the wrong question
+    // here: the whole point is to remove something that is installed.
+    if crate::plugins::find(id).is_some() {
+        return Err(format!("{id} is one of floaty's own widgets"));
+    }
+    let dir = plugins_dir.join(id);
+    if !dir.is_dir() {
+        return Err(format!("{id} is not installed"));
+    }
+    let (files, _) = tree_size(&dir).unwrap_or((0, 0));
+    crate::shell_ops::recycle(&dir)?;
+    Ok(PluginUninstall {
+        id: id.to_string(),
+        files,
+        recycled_to: dir.to_string_lossy().to_string(),
+    })
+}
+
+/// How many files and bytes a folder holds. Refuses links, like everything else
+/// that walks an archive: a plugin is files.
+fn tree_size(dir: &Path) -> Result<(usize, u64), String> {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    for path in walk(dir)? {
+        let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.is_file() {
+            files += 1;
+            bytes += meta.len();
+        }
+    }
+    Ok((files, bytes))
+}
+
+/// The plugin folder inside `archive`: a folder taken as it is, or a zip unpacked
+/// into `scratch`, and then the folder holding `plugin.json` inside it.
+///
+/// Shared by installing and inspecting so that what a dry run reports is what an
+/// install would do — a second, weaker parser for the preview is how a confirm
+/// dialog ends up describing something other than what lands.
+fn unpack(archive: &Path, scratch: &Path) -> Result<PathBuf, String> {
+    let source = if archive.is_dir() {
+        archive.to_path_buf()
+    } else {
+        let unpacked = scratch.join("unpacked");
+        std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
+        extract_zip(archive, &unpacked)?;
+        unpacked
+    };
+    find_plugin_dir(&source)
 }
 
 /// The folder inside an unpacked archive that holds `plugin.json`: the root
@@ -454,6 +591,85 @@ mod tests {
         write(&source.join("plugin.json"), "{ not json");
         let err = install_archive(&source, &plugins, true).unwrap_err();
         assert!(err.contains("JSON"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_archive_is_described_before_it_is_installed() {
+        let dir = temp("inspect");
+        let source = dir.join("countdown");
+        make_plugin(&source, "countdown", "1.0.0");
+        let plugins = dir.join("plugins");
+
+        let report = inspect_archive(&source, &plugins).unwrap();
+        assert_eq!(report.id, "countdown");
+        assert_eq!(report.name, "Test countdown");
+        assert_eq!(report.version, "1.0.0");
+        assert_eq!(report.api_version, 1);
+        assert_eq!(report.files, 3, "manifest, module and the asset");
+        assert!(report.size_bytes > 0);
+        assert_eq!(report.relation, "new");
+        assert!(report.installed_version.is_none());
+        assert!(!plugins.join("countdown").exists(), "inspecting installs nothing");
+
+        install_archive(&source, &plugins, false).unwrap();
+        let same = inspect_archive(&source, &plugins).unwrap();
+        assert_eq!(same.relation, "same");
+        assert_eq!(same.installed_version.as_deref(), Some("1.0.0"));
+
+        write(&source.join("plugin.json"), &manifest("countdown", "2.0.0"));
+        assert_eq!(
+            inspect_archive(&source, &plugins).unwrap().relation,
+            "upgrade"
+        );
+        write(&source.join("plugin.json"), &manifest("countdown", "0.9.0"));
+        assert_eq!(
+            inspect_archive(&source, &plugins).unwrap().relation,
+            "downgrade",
+            "an older archive is usually a mistake, and worth saying out loud"
+        );
+
+        let junk = dir.join("junk");
+        write(&junk.join("readme.txt"), "hello");
+        let err = inspect_archive(&junk, &plugins).unwrap_err();
+        assert!(err.contains("no plugin.json"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn uninstalling_recycles_the_folder_and_refuses_what_is_not_a_plugin() {
+        let dir = temp("uninstall");
+        let source = dir.join("countdown");
+        make_plugin(&source, "countdown", "1.0.0");
+        let plugins = dir.join("plugins");
+        install_archive(&source, &plugins, false).unwrap();
+
+        let gone = uninstall("countdown", &plugins).unwrap();
+        assert_eq!(gone.id, "countdown");
+        assert_eq!(gone.files, 3);
+        assert!(!plugins.join("countdown").exists(), "the folder is gone");
+
+        // and it is recoverable, which is the whole reason it goes to the bin
+        crate::shell_ops::restore_from_bin(&gone.recycled_to).expect("the bin holds the folder");
+        assert!(plugins.join("countdown/plugin.json").is_file());
+        std::fs::remove_dir_all(plugins.join("countdown")).ok();
+
+        let missing = uninstall("countdown", &plugins).unwrap_err();
+        assert!(missing.contains("not installed"), "{missing}");
+        let builtin = uninstall("note", &plugins).unwrap_err();
+        assert!(builtin.contains("floaty's own"), "{builtin}");
+
+        // ...but a plugin that merely *has* a manifest is not one of floaty's own:
+        // refusing to remove an installed plugin is the bug this guards against
+        // (`plugins::exists` answers "built-in or installed", which is the wrong
+        // question here and was caught by removing a freshly installed plugin live).
+        install_archive(&source, &plugins, false).unwrap();
+        assert!(uninstall("countdown", &plugins).is_ok());
+        std::fs::remove_dir_all(plugins.join("countdown")).ok();
+        // an id is an id: nothing here may be talked into looking elsewhere
+        assert!(uninstall("../evil", &plugins).is_err());
+        assert!(uninstall("a/b", &plugins).is_err());
+        assert!(uninstall("a\\b", &plugins).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

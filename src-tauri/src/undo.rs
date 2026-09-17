@@ -181,6 +181,14 @@ pub struct UndoState {
 mod tests {
     use super::*;
 
+    /// The stack is process-wide, so these tests take turns: running them at the
+    /// same time is a race over `push`/`pop` that only ever passes by luck.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn restore(id: &str) -> Restore {
         Restore {
             id: id.to_string(),
@@ -190,6 +198,7 @@ mod tests {
 
     #[test]
     fn the_last_action_is_the_first_one_undone() {
+        let _turn = lock();
         clear();
         push("delete", vec![restore("app-1")]);
         push("tidy", vec![restore("app-2")]);
@@ -206,6 +215,7 @@ mod tests {
 
     #[test]
     fn disk_moves_and_created_ids_attach_to_the_step_that_asked_for_them() {
+        let _turn = lock();
         clear();
         push("merge", vec![restore("app-1"), restore("app-2")]);
         add_disk(DiskOp::moved("C:\\d\\a.lnk", "C:\\d\\New folder\\a.lnk"));
@@ -225,6 +235,7 @@ mod tests {
 
     #[test]
     fn the_stack_forgets_the_oldest_step_rather_than_growing_for_ever() {
+        let _turn = lock();
         clear();
         for i in 0..(MAX_STEPS + 5) {
             push(&format!("step {i}"), vec![restore("app-1")]);
@@ -235,6 +246,7 @@ mod tests {
 
     #[test]
     fn a_step_that_could_not_be_applied_stays_available() {
+        let _turn = lock();
         clear();
         push("delete", vec![restore("app-1")]);
         let step = pop().unwrap();
