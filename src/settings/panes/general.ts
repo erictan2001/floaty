@@ -6,9 +6,17 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { action, actionRow, el, group, note, toggleCard } from "../dom";
+import { action, actionRow, el, group, note, textBlock, toggleCard } from "../dom";
 import type { Pane } from "../pane";
 import { settings, updateSettings } from "../store";
+
+/** What the backend says about the launcher hotkey. */
+interface PaletteState {
+  accelerator: string;
+  /** false when another app already holds that key */
+  live: boolean;
+  visible: boolean;
+}
 
 /** What the next undo would reverse, as the backend reports it. */
 interface UndoState {
@@ -83,6 +91,54 @@ export const generalPane: Pane = {
       ),
     );
 
+    const launcher = group(
+      "Launcher",
+      "One key opens a search over your applications, the files in your pointed folder, and everything already floating on the desktop. Type, then Enter to open the top row — arrow keys move down the list, Escape closes it.",
+    );
+    const keyRow = el("div", "set-row");
+    const keyInput = el("input", "search");
+    keyInput.type = "text";
+    keyInput.spellcheck = false;
+    keyInput.value = settings().palette_shortcut;
+    keyInput.placeholder = "Ctrl+Alt+Space";
+    const keyStatus = note("");
+    const describeKey = (state: PaletteState | undefined): void => {
+      if (!state) {
+        keyStatus.textContent = "the launcher key could not be read";
+        return;
+      }
+      keyStatus.textContent = state.live
+        ? `${state.accelerator} is held by floaty — press it anywhere.`
+        : `${state.accelerator} is not registered: another app may already own it. The tray's “Search…” still opens the palette.`;
+    };
+    const commitKey = async (): Promise<void> => {
+      const wanted = keyInput.value.trim();
+      if (!wanted) {
+        keyInput.value = settings().palette_shortcut;
+        return;
+      }
+      // The backend keeps the working key when a combination does not parse, so
+      // read back what is actually in force rather than assuming.
+      await updateSettings({ palette_shortcut: wanted }, { now: true });
+      const state = await invoke<PaletteState>("floaty_palette_state").catch(() => undefined);
+      keyInput.value = state?.accelerator ?? settings().palette_shortcut;
+      describeKey(state);
+    };
+    keyInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void commitKey();
+      if (e.key === "Escape") keyInput.value = settings().palette_shortcut;
+    });
+    keyInput.addEventListener("blur", () => void commitKey());
+    keyRow.append(textBlock("Launcher key", "A key combination, like Ctrl+Alt+Space or Win+Shift+K."), keyInput);
+    void invoke<PaletteState>("floaty_palette_state")
+      .then(describeKey)
+      .catch(() => describeKey(undefined));
+    const launcherRow = actionRow();
+    launcherRow.append(
+      action("show the launcher", () => invoke("floaty_show_palette")),
+    );
+    launcher.body.append(keyRow, keyStatus, launcherRow);
+
     const arrange = group(
       "Arrange and undo",
       "Tidy lines the icons up on the grid — pinned ones in rows from the top, the rest stacked up from the floor, which is where gravity would leave them anyway. Panels and notes keep their places. Ctrl+Z on the desktop undoes the last change: a recycled file, an ungroup, a grouping, a tidy.",
@@ -122,6 +178,6 @@ export const generalPane: Pane = {
       row,
     );
 
-    node.append(desktop.root, startup.root, removal.root, arrange.root, app.root);
+    node.append(desktop.root, startup.root, removal.root, launcher.root, arrange.root, app.root);
   },
 };

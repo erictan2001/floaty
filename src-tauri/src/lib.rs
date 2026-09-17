@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 mod audio;
 mod fs_watch;
 mod icons;
+mod palette;
 mod plugin_install;
 mod plugins;
 mod shell_ops;
@@ -323,6 +324,9 @@ struct FloatSettings {
     /// visualizer redraw rate (frames per second, while audio plays)
     #[serde(default = "default_viz_fps")]
     viz_fps: f64,
+    /// The key that opens the launcher palette, e.g. "Ctrl+Alt+Space".
+    #[serde(default = "default_palette_shortcut")]
+    palette_shortcut: String,
     /// system monitor sample period (milliseconds)
     #[serde(default = "default_sysmon_interval")]
     sysmon_interval: f64,
@@ -337,6 +341,13 @@ struct FloatSettings {
 /// icons are refreshed once. v2: shell item image + alpha-preserving PNG.
 /// v3: pick the route whose artwork actually fills the frame.
 const ICON_PIPELINE: u32 = 3;
+
+/// The launcher key. Ctrl+Alt+Space is free on a stock Windows, and unlike
+/// Alt+Space (the window menu) or Ctrl+Space (the IME switcher on a CJK install)
+/// it is not spoken for.
+fn default_palette_shortcut() -> String {
+    "Ctrl+Alt+Space".to_string()
+}
 
 fn default_icon_pipeline() -> u32 {
     // Old settings files predate the field; 0 means "resolve everything once".
@@ -470,6 +481,11 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             } else {
                 s.animation_mode
             },
+            palette_shortcut: if s.palette_shortcut.trim().is_empty() {
+                default_palette_shortcut()
+            } else {
+                s.palette_shortcut
+            },
             ..s
         },
         None => FloatSettings {
@@ -492,6 +508,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             viz_gain: default_viz_gain(),
             viz_fps: default_viz_fps(),
             sysmon_interval: default_sysmon_interval(),
+            palette_shortcut: default_palette_shortcut(),
             icon_pipeline: default_icon_pipeline(),
         },
     }
@@ -538,6 +555,12 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
         viz_gain: settings.viz_gain.clamp(0.1, 4.0),
         viz_fps: settings.viz_fps.clamp(5.0, 60.0),
         sysmon_interval: settings.sysmon_interval.clamp(250.0, 10_000.0),
+        // A shortcut that does not parse is not saved: the alternative is a
+        // launcher that can never be opened again, and the typo would be invisible.
+        palette_shortcut: match palette::parse_shortcut(settings.palette_shortcut.trim()) {
+            Some(accelerator) => accelerator,
+            None => stored.palette_shortcut.clone(),
+        },
         icon_pipeline: stored_pipeline.max(settings.icon_pipeline),
     };
     // Start on boot is a registry entry, not a preference: write it now and, if
@@ -593,6 +616,11 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
     // than at the next launch.
     if stored.files_root.trim() != s.files_root.trim() {
         let _ = floaty_sync_files(None, app.clone());
+    }
+    // A new launcher key is registered now, so the settings row can say whether
+    // the key it just took is really held.
+    if stored.palette_shortcut.trim() != s.palette_shortcut.trim() {
+        apply_palette_shortcut(&app);
     }
     s
 }
@@ -3589,6 +3617,103 @@ async fn floaty_install_plugin(
     Ok(report)
 }
 
+/// What a plugin archive would do, without doing it.
+///
+/// The install confirm is built on this: an archive is described by the same code
+/// that would install it, so what is offered and what lands cannot disagree.
+#[tauri::command]
+async fn floaty_inspect_plugin(path: String, app: AppHandle) -> Result<plugin_install::ArchiveReport, String> {
+    let archive = std::path::PathBuf::from(&path);
+    let dir = plugins_dir(&app);
+    tauri::async_runtime::spawn_blocking(move || plugin_install::inspect_archive(&archive, &dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Take a plugin off the desktop, folder and all.
+///
+/// `remove_widgets` is the second half of a question, never an assumption: a plugin
+/// with floaties on the desktop cannot simply vanish, because its records would
+/// then be drawn by a build that has no idea what they are. So the caller asks —
+/// "remove its 3 floaties too?" — and either answer is honest.
+#[tauri::command]
+async fn floaty_uninstall_plugin(
+    id: String,
+    remove_widgets: bool,
+    app: AppHandle,
+) -> Result<plugin_install::PluginUninstall, String> {
+    // Floaty's own widgets come first: "you cannot remove this one" is a more
+    // fundamental answer than "it has floaties on the desktop", and letting the
+    // widget guard answer first hid it (measured: removing `note` complained about
+    // the note floatie instead of about `note` being built in).
+    if plugins::find(&id).is_some() {
+        return Err(format!("{id} is one of floaty's own widgets — it cannot be removed"));
+    }
+
+    let widgets: Vec<String> = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        guard
+            .widgets
+            .values()
+            .filter(|rec| rec.kind == id)
+            .map(|rec| rec.id.clone())
+            .collect()
+    };
+    if !widgets.is_empty() && !remove_widgets {
+        return Err(format!(
+            "{} floatie(s) of that kind are on the desktop — remove them with it, or none",
+            widgets.len()
+        ));
+    }
+
+    let dir = plugins_dir(&app);
+    let id_for_work = id.clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        plugin_install::uninstall(&id_for_work, &dir)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    // The records go the way any removal goes: out of the store, tombstoned so a
+    // dying window cannot put them back, and hidden.
+    {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+        for widget_id in &widgets {
+            guard.widgets.remove(widget_id);
+            guard.dead.insert(widget_id.clone());
+        }
+    }
+    for widget_id in &widgets {
+        hide_widget(&app, widget_id);
+    }
+    persist(&app);
+
+    // Its kind is no longer in the manifest, so the records that used it are gone
+    // too — and both windows have to be told.
+    let (installed, rejected) = plugins::install_from(&plugins_dir(&app));
+    log_line(
+        &app,
+        &format!(
+            "plugins: uninstalled {} ({} files -> {}) and removed {} floatie(s); {} still installed [{}]{}",
+            report.id,
+            report.files,
+            report.recycled_to,
+            widgets.len(),
+            installed.len(),
+            installed.join(", "),
+            if rejected.is_empty() {
+                String::new()
+            } else {
+                format!(", {} rejected [{}]", rejected.len(), rejected.join("; "))
+            }
+        ),
+    );
+    reload_plugin_windows(&app);
+    Ok(report)
+}
+
 /// Re-scan the plugins folder without restarting: what authors do after editing
 /// a manifest. Returns the rejections so the settings window can show them.
 #[tauri::command]
@@ -5375,6 +5500,342 @@ fn floaty_refresh(ids: Vec<String>, app: AppHandle) {
     }
 }
 
+// ---------- launcher palette ----------
+
+/// The apps the launcher searches, cached.
+///
+/// `scan_apps_blocking` walks two Start Menu trees and the desktops: fine once,
+/// when the Apps tab asks for it, and far too slow to repeat on every keystroke.
+/// Five minutes is the compromise between "a program installed a moment ago is not
+/// findable" and "the launcher hitches".
+static APP_SCAN: std::sync::LazyLock<Mutex<Option<(std::time::Instant, Vec<DiscoveredApp>)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+fn cached_apps() -> Vec<DiscoveredApp> {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(300);
+    if let Ok(guard) = APP_SCAN.lock() {
+        if let Some((at, list)) = guard.as_ref() {
+            if at.elapsed() < TTL {
+                return list.clone();
+            }
+        }
+    }
+    let fresh = scan_apps_blocking();
+    if let Ok(mut guard) = APP_SCAN.lock() {
+        *guard = Some((std::time::Instant::now(), fresh.clone()));
+    }
+    fresh
+}
+
+/// The caption rule for a launcher row: a shortcut reads as the app it launches,
+/// and a file keeps its extension, exactly as the desktop's captions do.
+fn palette_caption(name: &str, is_dir: bool) -> String {
+    if is_dir {
+        return name.to_string();
+    }
+    let lower = name.to_lowercase();
+    for extension in [".lnk", ".url"] {
+        if lower.ends_with(extension) {
+            return name[..name.len() - extension.len()].to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// Everything the launcher can find, ranked, with icons for the rows it returns.
+///
+/// Three sources: the applications a scan knows about (cached), the entries in the
+/// pointed root, and every floatie's record — so a note or a clock is reachable by
+/// name, not just a program. A floatie that stands for a file already listed from
+/// the root is skipped: one desktop entry, one row.
+fn palette_search(app: &AppHandle, query: &str) -> Vec<palette::PaletteHit> {
+    let started = std::time::Instant::now();
+    let settings = load_settings(app);
+    let mut candidates: Vec<(String, palette::PaletteHit)> = Vec::new();
+    // One desktop entry, one row: a floatie first claims its own path and name, and
+    // the same thing found two other ways (the root listing, the Start Menu) is
+    // skipped rather than drawn twice under two names.
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut seen_titles: HashSet<String> = HashSet::new();
+
+    {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        for rec in guard.widgets.values() {
+            if settings.disabled.iter().any(|d| d == &rec.kind) {
+                continue; // not on the desktop, so not in the launcher either
+            }
+            let path = plugins::path_key(&rec.kind)
+                .and_then(|key| rec.data.get(key).and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
+            if let Some(p) = &path {
+                if seen_paths.contains(&p.to_lowercase()) {
+                    continue;
+                }
+            }
+            let label = plugins::find(&rec.kind)
+                .map(|p| p.name.to_string())
+                .unwrap_or_else(|| rec.kind.clone());
+            let name = rec
+                .data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| label.clone());
+            let icon = rec
+                .data
+                .get("icon")
+                .and_then(|v| v.as_str())
+                .filter(|s| icons::is_stored_url(s))
+                .unwrap_or("")
+                .to_string();
+            // The same caption rule the desktop uses: a floatie standing for
+            // `Joplin.lnk` reads as `Joplin` here too, because it is the same thing
+            // under the same name — and it is what makes the dedupe below catch the
+            // Start Menu's copy of it.
+            let title = palette_caption(&name, rec.kind == "folder");
+            seen_paths.insert(path.clone().unwrap_or_default().to_lowercase());
+            seen_titles.insert(title.to_lowercase());
+            candidates.push((
+                title.clone(),
+                palette::PaletteHit {
+                    kind: "floatie".to_string(),
+                    title,
+                    subtitle: if label.is_empty() {
+                        "on your desktop".to_string()
+                    } else {
+                        label
+                    },
+                    icon,
+                    id: Some(rec.id.clone()),
+                    path,
+                },
+            ));
+        }
+    }
+
+    if let Some(root) = files_root_dir(app) {
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let path = entry.path().to_string_lossy().to_string();
+                let title = palette_caption(&name, is_dir);
+                if seen_paths.contains(&path.to_lowercase())
+                    || seen_titles.contains(&title.to_lowercase())
+                {
+                    continue;
+                }
+                seen_paths.insert(path.to_lowercase());
+                seen_titles.insert(title.to_lowercase());
+                candidates.push((
+                    name.clone(),
+                    palette::PaletteHit {
+                        kind: if is_dir { "folder" } else { "file" }.to_string(),
+                        title,
+                        subtitle: root.to_string_lossy().to_string(),
+                        icon: String::new(),
+                        id: None,
+                        path: Some(path),
+                    },
+                ));
+            }
+        }
+    }
+
+    for entry in cached_apps() {
+        let title = palette_caption(&entry.name, false);
+        if seen_paths.contains(&entry.path.to_lowercase())
+            || seen_titles.contains(&title.to_lowercase())
+        {
+            continue;
+        }
+        seen_titles.insert(title.to_lowercase());
+        candidates.push((
+            title.clone(),
+            palette::PaletteHit {
+                kind: "app".to_string(),
+                title,
+                subtitle: entry.path.clone(),
+                icon: String::new(),
+                id: None,
+                path: Some(entry.path),
+            },
+        ));
+    }
+
+    let keys: Vec<String> = candidates.iter().map(|(key, _)| key.clone()).collect();
+    let mut hits: Vec<palette::PaletteHit> = palette::rank(query, &keys, palette::MAX_HITS)
+        .into_iter()
+        .map(|index| candidates[index].1.clone())
+        .collect();
+
+    // Icons last, and only for the rows that will actually be drawn. Resolving is a
+    // PowerShell round trip the first time a path is seen, and paying it for
+    // thousands of candidates nobody asked about is how a launcher gets a reputation
+    // for being slow.
+    let wanted: Vec<String> = hits
+        .iter()
+        .filter(|hit| hit.icon.is_empty())
+        .filter_map(|hit| hit.path.clone())
+        .collect();
+    if !wanted.is_empty() {
+        let icons = resolve_icons_batch(&wanted, false);
+        for hit in hits.iter_mut() {
+            if hit.icon.is_empty() {
+                if let Some(icon) = hit.path.as_ref().and_then(|path| icons.get(path)) {
+                    if icon != "none" {
+                        hit.icon = icon.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    log_line(
+        app,
+        &format!(
+            "palette: '{}' -> {} hit(s) of {} candidate(s) in {}ms",
+            query,
+            hits.len(),
+            candidates.len(),
+            started.elapsed().as_millis()
+        ),
+    );
+    hits
+}
+
+/// The launcher's rows: the same search the palette shows, for whatever asks.
+#[tauri::command]
+async fn floaty_palette_search(query: String, app: AppHandle) -> Vec<palette::PaletteHit> {
+    tauri::async_runtime::spawn_blocking(move || palette_search(&app, &query))
+        .await
+        .unwrap_or_default()
+}
+
+/// What running a row reports: the line the palette shows. A run that could not
+/// happen at all is an `Err`, which the page shows the same way.
+#[derive(serde::Serialize)]
+struct PaletteRun {
+    note: String,
+}
+
+/// Run one row: launch an app, open a file or folder, or do what a double-click on
+/// that floatie would do.
+///
+/// The palette closes first: a launcher that stays open after Enter is not a
+/// launcher, and it would be the window in the way of what it just opened.
+#[tauri::command]
+async fn floaty_palette_run(
+    hit: palette::PaletteHit,
+    app: AppHandle,
+) -> Result<PaletteRun, String> {
+    palette::hide(&app);
+    let path = hit.path.clone().unwrap_or_default();
+    match hit.kind.as_str() {
+        "app" | "file" | "folder" => {
+            if path.trim().is_empty() {
+                return Err("nothing to open".to_string());
+            }
+            launch_target(&app, &path)?;
+            Ok(PaletteRun {
+                note: format!("opened {path}"),
+            })
+        }
+        "floatie" => {
+            let id = hit.id.clone().unwrap_or_default();
+            let target = {
+                let state = app.state::<AppState>();
+                let guard = state.0.lock().map_err(|e| e.to_string())?;
+                guard.widgets.get(&id).and_then(|rec| {
+                    plugins::path_key(&rec.kind).and_then(|key| {
+                        rec.data
+                            .get(key)
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| s.to_string())
+                    })
+                })
+            };
+            match target {
+                Some(target) => {
+                    launch_target(&app, &target)?;
+                    Ok(PaletteRun {
+                        note: format!("launched {target}"),
+                    })
+                }
+                // A note, a clock, a pet: it is already where it belongs. Saying so
+                // is better than a run that looks like it failed.
+                None => Ok(PaletteRun {
+                    note: format!("{} lives on your desktop", hit.title),
+                }),
+            }
+        }
+        other => Err(format!("nothing here knows how to run a '{other}'")),
+    }
+}
+
+#[tauri::command]
+fn floaty_palette_hide(app: AppHandle) {
+    palette::hide(&app);
+}
+
+/// Open the palette without the keyboard — the tray item and the settings button.
+#[tauri::command]
+fn floaty_show_palette(app: AppHandle) {
+    show_palette(&app);
+}
+
+/// What the settings window shows about the hotkey: the key, whether it is really
+/// registered (`Ctrl+Alt+Space` can be taken by another app), and whether the
+/// palette is up.
+#[derive(serde::Serialize)]
+struct PaletteState {
+    accelerator: String,
+    live: bool,
+    visible: bool,
+}
+
+#[tauri::command]
+fn floaty_palette_state(app: AppHandle) -> PaletteState {
+    let accelerator = load_settings(&app).palette_shortcut;
+    PaletteState {
+        live: palette::shortcut_is_live(&app, &accelerator),
+        visible: palette::is_visible(&app),
+        accelerator,
+    }
+}
+
+/// Open the palette from anywhere, without blocking the caller.
+///
+/// **Building the window on the main thread deadlocks**, because the main thread is
+/// the one that has to create it: measured, `floaty_show_palette` — a sync command,
+/// so it runs on the main thread — never returned and no window ever appeared. The
+/// tray handler and the hotkey handler are delivered on that same thread, so every
+/// path that opens the palette comes through here instead. Showing the *existing*
+/// window is safe from any thread; it is the first `build()` that cannot wait.
+fn show_palette(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(err) = palette::show(&app) {
+            log_line(&app, &format!("palette: could not open ({err})"));
+        }
+    });
+}
+
+/// Point the launcher hotkey at whatever the settings say, and say so in the log.
+fn apply_palette_shortcut(app: &AppHandle) {
+    let accelerator = load_settings(app).palette_shortcut;
+    match palette::register_shortcut(app, &accelerator) {
+        Ok(()) => log_line(app, &format!("palette: {accelerator} opens the launcher")),
+        Err(err) => log_line(
+            app,
+            &format!("palette: {err} — the tray item still opens it"),
+        ),
+    }
+}
+
 // ---------- undo ----------
 
 /// Remember the records an action is about to change, so one press can put them
@@ -5884,6 +6345,18 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        // The launcher hotkey. Registered and handled in Rust, so the palette page
+        // needs no plugin permission to use it — and a press only shows a window,
+        // which cannot fail in a way worth telling anyone about.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        show_palette(app);
+                    }
+                })
+                .build(),
+        )
         .manage(AppState(Mutex::new(StoreData::default())))
         .setup(|app| {
             let _ = SHARED_APP.set(app.handle().clone());
@@ -6010,12 +6483,14 @@ pub fn run() {
             if !set_start_on_boot(&handle, boot.start_on_boot) {
                 log_line(&handle, "autostart: could not reconcile the startup entry");
             }
+            apply_palette_shortcut(&handle);
 
             // tray: settings + quit only (widgets are managed via settings)
+            let search = MenuItem::with_id(app, "search", "Search…", true, None::<&str>)?;
             let settings =
                 MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Floaty", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&settings, &quit])?;
+            let menu = Menu::with_items(app, &[&search, &settings, &quit])?;
             let icon = app
                 .default_window_icon()
                 .cloned()
@@ -6026,6 +6501,9 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
+                    // The launcher has a hotkey, but a hotkey another app can steal
+                    // must never be the only way in.
+                    "search" => show_palette(app),
                     "settings" => {
                         if let Err(e) = show_settings(app) {
                             log_line(app, &format!("tray settings FAILED: {e}"));
@@ -6132,6 +6610,11 @@ pub fn run() {
             floaty_undo,
             floaty_undo_state,
             floaty_undo_checkpoint,
+            floaty_palette_search,
+            floaty_palette_run,
+            floaty_palette_hide,
+            floaty_show_palette,
+            floaty_palette_state,
             floaty_open_with,
             floaty_reveal,
             floaty_properties,
@@ -6143,6 +6626,8 @@ pub fn run() {
             floaty_open_plugins_dir,
             floaty_rescan_plugins,
             floaty_install_plugin,
+            floaty_inspect_plugin,
+            floaty_uninstall_plugin,
             floaty_set_plugin_enabled,
             floaty_get_settings,
             floaty_set_settings,

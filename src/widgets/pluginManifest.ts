@@ -39,6 +39,8 @@ export interface PluginManifestEntry {
   entry: string | null;
   version: string;
   author: string;
+  /** The plugin contract this kind was written against. */
+  api_version: number;
 }
 
 export interface PluginDesktopItem {

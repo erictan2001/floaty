@@ -23,6 +23,7 @@ import {
   setPluginEnabled,
   settings,
   updateSettings,
+  widgets,
 } from "../store";
 
 let host: HTMLElement | undefined;
@@ -45,7 +46,7 @@ function pluginCard(entry: PluginManifestEntry): HTMLElement {
   const head = el("div", "set-row");
   const origin =
     entry.source === "installed"
-      ? ` — installed${entry.version ? ` v${entry.version}` : ""}${entry.author ? ` by ${entry.author}` : ""}`
+      ? ` — installed${entry.version ? ` v${entry.version}` : ""}${entry.author ? ` by ${entry.author}` : ""}, api v${entry.api_version}`
       : "";
   head.append(
     chip(entry.id, entry.id),
@@ -58,6 +59,18 @@ function pluginCard(entry: PluginManifestEntry): HTMLElement {
     }),
   );
   item.append(head, note(entry.description));
+  // Only an installed plugin has a folder to take away: a built-in is floaty
+  // itself, and the switch above is how it is turned off.
+  if (entry.source === "installed") {
+    const controls = actionRow();
+    controls.append(
+      action("remove plugin", () => removePlugin(entry), {
+        cls: "pill danger-btn",
+        busyLabel: "removing…",
+      }),
+    );
+    item.append(controls);
+  }
 
   const plugin = pluginFor(entry.id);
   if (plugin?.renderSettings) {
@@ -74,6 +87,22 @@ function pluginCard(entry: PluginManifestEntry): HTMLElement {
   return item;
 }
 
+/** What an archive holds, as the backend reads it before installing anything. */
+interface ArchiveReport {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  api_version: number;
+  add_label: string | null;
+  files: number;
+  size_bytes: number;
+  installed_version: string | null;
+  /** new | same | upgrade | downgrade | unknown */
+  relation: string;
+}
+
 /** What the backend reports about one install. */
 interface PluginInstallReport {
   id: string;
@@ -83,12 +112,20 @@ interface PluginInstallReport {
   replaced: boolean;
 }
 
+/** What the backend reports about one removal. */
+interface PluginUninstallReport {
+  id: string;
+  files: number;
+  recycled_to: string;
+}
+
 /**
- * Install a plugin from a zip the user picked.
+ * Install a plugin from a zip the user picked: read it, say what it is, then do it.
  *
- * "Already installed" is a question here rather than an error: without a second
- * yes the backend refuses to overwrite an installed plugin, and a newer copy of
- * something you already have is exactly what reinstalling means.
+ * The confirm is built from the archive itself, by the same code that would install
+ * it, so what is offered and what lands cannot disagree — and an archive that is
+ * older than the installed copy says so, because that is almost always not what
+ * somebody meant.
  */
 async function installFromArchive(): Promise<void> {
   const { open, confirm } = await import("@tauri-apps/plugin-dialog");
@@ -99,31 +136,83 @@ async function installFromArchive(): Promise<void> {
   });
   if (typeof picked !== "string" || !picked) return;
 
-  const install = (replace: boolean) =>
-    invoke<PluginInstallReport>("floaty_install_plugin", { path: picked, replace });
-
-  let report: PluginInstallReport | undefined;
-  try {
-    report = await install(false);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (!message.includes("already installed")) {
-      showError(`install plugin: ${message}`);
-      return;
-    }
-    const swap = await confirm(`${message}.\n\nReplace the installed copy with this archive?`, {
-      title: "floaty",
-      kind: "warning",
-      okLabel: "replace",
-      cancelLabel: "keep",
-    });
-    if (!swap) return;
-    report = await safe("replace plugin", () => install(true));
-  }
+  const report = await safe("read the plugin archive", () =>
+    invoke<ArchiveReport>("floaty_inspect_plugin", { path: picked }),
+  );
   if (!report) return;
+
+  const replaces = report.installed_version !== null;
+  const summary = [
+    `${report.name} v${report.version || "?"}  (${report.id})`,
+    report.author ? `by ${report.author}` : "",
+    report.description,
+    `${report.files} file(s), ${Math.max(1, Math.round(report.size_bytes / 1024))} KB, plugin api v${report.api_version}`,
+    replaces
+      ? `replaces the installed v${report.installed_version} — ${report.relation}`
+      : "not installed yet",
+    report.relation === "downgrade"
+      ? "This archive is OLDER than the copy you have."
+      : "",
+    report.relation === "same"
+      ? "Same version as the installed copy: this rewrites it as it is."
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const go = await confirm(`${summary}\n\nInstall it?`, {
+    title: "floaty plugins",
+    kind: report.relation === "downgrade" ? "warning" : "info",
+    okLabel: replaces ? "replace" : "install",
+    cancelLabel: "cancel",
+  });
+  if (!go) return;
+
+  const done = await safe("install plugin", () =>
+    invoke<PluginInstallReport>("floaty_install_plugin", { path: picked, replace: replaces }),
+  );
+  if (!done) return;
   if (status) {
-    status.textContent = `${report.replaced ? "replaced" : "installed"} ${report.name} v${report.version} (${report.files} files)`;
+    status.textContent = `${done.replaced ? "replaced" : "installed"} ${done.name} v${done.version} (${done.files} files)`;
   }
+  await reloadPlugins();
+  await reloadWidgets();
+}
+
+/**
+ * Take a plugin off the desktop.
+ *
+ * Its floaties have to go with it — a record whose kind is no longer in the
+ * manifest is drawn by a build that has no idea what it is — so the count is part
+ * of the question rather than a surprise afterwards. The folder goes to the
+ * Recycle Bin, so the answer is reversible.
+ */
+async function removePlugin(entry: PluginManifestEntry): Promise<void> {
+  const { confirm } = await import("@tauri-apps/plugin-dialog");
+  const mine = widgets().filter((rec) => rec.kind === entry.id);
+  const body = [
+    `Remove the plugin "${entry.name}" (${entry.id} v${entry.version || "?"})?`,
+    mine.length
+      ? `Its ${mine.length} floatie(s) on the desktop go with it.`
+      : "Nothing of it is on the desktop.",
+    "The plugin folder goes to the Recycle Bin, so it can be restored from there.",
+  ].join("\n\n");
+  const yes = await confirm(body, {
+    title: "floaty plugins",
+    kind: "warning",
+    okLabel: "remove",
+    cancelLabel: "keep",
+  });
+  if (!yes) return;
+
+  const done = await safe("remove plugin", () =>
+    invoke<PluginUninstallReport>("floaty_uninstall_plugin", {
+      id: entry.id,
+      removeWidgets: mine.length > 0,
+    }),
+  );
+  if (!done) return;
+  if (status) status.textContent = `removed ${done.id} (${done.files} files, floaties and all)`;
   await reloadPlugins();
   await reloadWidgets();
 }

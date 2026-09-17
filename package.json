@@ -10,7 +10,10 @@
     "build": "node scripts/check-plugins.mjs && tsc --noEmit && vite build",
     "check:plugins": "node scripts/check-plugins.mjs",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "verify:panes": "node verify/panes.mjs",
+    "verify:app": "node verify/app.mjs",
+    "verify:palette": "node verify/palette.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2",

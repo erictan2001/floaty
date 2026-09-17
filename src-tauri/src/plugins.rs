@@ -94,6 +94,7 @@ impl PluginDef {
             entry: None,
             version: String::new(),
             author: String::new(),
+            api_version: PLUGIN_API_VERSION,
         }
     }
 }
@@ -263,6 +264,10 @@ pub struct InstalledPlugin {
     pub description: String,
     pub version: String,
     pub author: String,
+    /// The `apiVersion` the manifest declared. Always the one this build speaks,
+    /// because `read_plugin` refuses anything else — kept so the settings window can
+    /// say which contract a plugin was written against.
+    pub api_version: u32,
     pub default_size: (f64, f64),
     pub resizable: bool,
     pub min_size: Option<(f64, f64)>,
@@ -363,16 +368,17 @@ pub fn manifest(disabled: &[String]) -> Vec<PluginInfo> {
             entry: Some(p.entry.to_string_lossy().to_string()),
             version: p.version.clone(),
             author: p.author.clone(),
+            api_version: p.api_version,
         });
     }
     out
 }
 
-/// Read and validate one plugin folder.
+/// The plugin's `id`, or why it is not usable: 2-32 characters of `a-z`, `0-9`,
+/// `-` and `_`, starting with a letter or a digit, and never a built-in's.
 ///
-/// Pure: no global state, so the tests can point it at a fixture directory.
-/// Everything a broken or hostile plugin could get wrong is checked here — the
-/// id, the API version, the entry path staying inside the folder, the sizes.
+/// Built-ins are refused here rather than merged over later, because a plugin
+/// sharing a built-in's id would have its records read as the built-in's.
 fn validate_plugin_id(json: &serde_json::Value) -> Result<String, String> {
     let id = json
         .get("id")
@@ -452,6 +458,46 @@ fn parse_desktop_item(json: &serde_json::Value, name: &str) -> Option<PluginDesk
         })
 }
 
+/// How `incoming` compares to what is already installed: `"new"`, `"same"`,
+/// `"upgrade"`, `"downgrade"` or `"unknown"` when either version is not a version.
+///
+/// Numeric fields, so 1.10 is newer than 1.9 — a string compare gets that wrong, and
+/// getting it wrong is how an update silently goes backwards. Anything that does not
+/// parse is `"unknown"` and left for the person to judge, which is why the caller
+/// shows both versions and not only a verdict.
+pub fn version_relation(installed: Option<&str>, incoming: &str) -> &'static str {
+    let Some(installed) = installed else {
+        return "new";
+    };
+    let parse = |text: &str| -> Option<Vec<u64>> {
+        let trimmed = text.trim().trim_start_matches('v');
+        if trimmed.is_empty() {
+            return None;
+        }
+        trimmed
+            .split('.')
+            .map(|part| {
+                let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if digits.is_empty() {
+                    None
+                } else {
+                    digits.parse::<u64>().ok()
+                }
+            })
+            .collect()
+    };
+    let (Some(a), Some(b)) = (parse(installed), parse(incoming)) else {
+        return "unknown";
+    };
+    if a == b {
+        "same"
+    } else if b > a {
+        "upgrade"
+    } else {
+        "downgrade"
+    }
+}
+
 /// Read and validate one plugin folder.
 ///
 /// Pure: no global state, so the tests can point it at a fixture directory.
@@ -504,6 +550,7 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
             .to_string(),
         version: json.get("version").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
         author: json.get("author").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        api_version: api,
         default_size,
         resizable: json.get("resizable").and_then(|v| v.as_bool()).unwrap_or(false),
         min_size,
@@ -608,6 +655,8 @@ pub struct PluginInfo {
     pub entry: Option<String>,
     pub version: String,
     pub author: String,
+    /// The plugin contract this kind was written against.
+    pub api_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -717,6 +766,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn versions_are_compared_as_numbers_not_as_text() {
+        assert_eq!(version_relation(None, "1.0.0"), "new");
+        assert_eq!(version_relation(Some("1.0.0"), "1.0.0"), "same");
+        assert_eq!(version_relation(Some("1.0.0"), "1.10.0"), "upgrade");
+        assert_eq!(version_relation(Some("1.10.0"), "1.9.0"), "downgrade");
+        assert_eq!(version_relation(Some("v2"), "2.1"), "upgrade");
+        assert_eq!(version_relation(Some(""), "1.0"), "unknown");
+        assert_eq!(version_relation(Some("abc"), "1.0"), "unknown");
+        assert_eq!(version_relation(Some("1.0"), "beta"), "unknown");
     }
 
     #[test]

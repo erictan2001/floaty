@@ -797,6 +797,8 @@ export interface FloatSettings {
   viz_fps: number;
   /** system monitor sample period in ms */
   sysmon_interval: number;
+  /** the key that opens the launcher palette, e.g. "Ctrl+Alt+Space" */
+  palette_shortcut: string;
 }
 
 export const DEFAULT_SETTINGS: FloatSettings = {
@@ -819,6 +821,7 @@ export const DEFAULT_SETTINGS: FloatSettings = {
   viz_gain: 1,
   viz_fps: 30,
   sysmon_interval: 1000,
+  palette_shortcut: "Ctrl+Alt+Space",
 };
 
 /** A settings number, or the fallback when the field is missing or not one. */
