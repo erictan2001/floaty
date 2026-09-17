@@ -95,6 +95,7 @@ impl PluginDef {
             version: String::new(),
             author: String::new(),
             api_version: PLUGIN_API_VERSION,
+            trusted: true,
         }
     }
 }
@@ -246,7 +247,14 @@ pub fn find(kind: &str) -> Option<&'static PluginDef> {
 }
 
 /// The plugin format this build understands; `apiVersion` in `plugin.json`.
-pub const PLUGIN_API_VERSION: u32 = 1;
+///
+/// Additive: 2 adds the notification, timer and event members to the widget api,
+/// and a manifest that says 1 still loads with exactly the old surface. Bumping
+/// this is how a *plugin* can tell which build it is running on.
+pub const PLUGIN_API_VERSION: u32 = 2;
+
+/// The oldest `apiVersion` still accepted.
+pub const PLUGIN_API_MIN: u32 = 1;
 
 /// Folder users drop plugins into, under the app data directory.
 pub const PLUGINS_DIR_NAME: &str = "plugins";
@@ -369,6 +377,7 @@ pub fn manifest(disabled: &[String]) -> Vec<PluginInfo> {
             version: p.version.clone(),
             author: p.author.clone(),
             api_version: p.api_version,
+            trusted: true,
         });
     }
     out
@@ -513,9 +522,12 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
     let id = validate_plugin_id(&json)?;
 
     let api = json.get("apiVersion").and_then(|v| v.as_u64()).unwrap_or_default() as u32;
-    if api != PLUGIN_API_VERSION {
+    // A range, not an equality: the format is additive, so every older apiVersion
+    // still loads with the surface it was written against, and only a *newer*
+    // manifest (or a missing/garbage one) is refused.
+    if api < PLUGIN_API_MIN || api > PLUGIN_API_VERSION {
         return Err(format!(
-            "apiVersion {api} is not supported (this build speaks {PLUGIN_API_VERSION})"
+            "apiVersion {api} is not supported (this build speaks {PLUGIN_API_MIN}..{PLUGIN_API_VERSION})"
         ));
     }
     let name = json
@@ -657,6 +669,11 @@ pub struct PluginInfo {
     pub author: String,
     /// The plugin contract this kind was written against.
     pub api_version: u32,
+    /// Whether the user has approved this code. Built-ins always are; an installed
+    /// plugin is approved when it is installed from an archive, or from the
+    /// Plugins tab afterwards, and its widgets do not mount until then. Stamped by
+    /// the command, because only it has the settings to compare fingerprints with.
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -854,6 +871,33 @@ mod tests {
     }"#;
 
     #[test]
+    fn a_manifest_may_speak_an_older_api_version_but_not_a_newer_one() {
+        // The format is additive, so an older manifest still loads — that is the
+        // whole reason the range exists and the reason the bump did not break the
+        // examples in `examples/plugins`.
+        for version in [PLUGIN_API_MIN, PLUGIN_API_VERSION] {
+            let manifest = GOOD.replace("\"apiVersion\": 1", &format!("\"apiVersion\": {version}"));
+            let dir = fixture(&format!("api{version}"), &manifest, Some("export default {};"));
+            let plugin = read_plugin(&dir).unwrap_or_else(|e| panic!("apiVersion {version}: {e}"));
+            assert_eq!(plugin.api_version, version);
+        }
+        // A newer one is refused, and the sentence says which range this build has.
+        let ahead = GOOD.replace("\"apiVersion\": 1", "\"apiVersion\": 99");
+        let dir = fixture("api99", &ahead, Some("export default {};"));
+        let err = read_plugin(&dir).unwrap_err();
+        assert!(err.contains("99"), "{err}");
+        assert!(
+            err.contains(&format!("{PLUGIN_API_MIN}..{PLUGIN_API_VERSION}")),
+            "the refusal has to name the range: {err}"
+        );
+        // And a missing or zero apiVersion is not "the oldest one", it is a broken
+        // manifest: reading it as v1 would let a typo skip the contract entirely.
+        let none = GOOD.replace("\"apiVersion\": 1,", "");
+        let dir = fixture("apinone", &none, Some("export default {};"));
+        assert!(read_plugin(&dir).is_err(), "a manifest with no apiVersion");
+    }
+
+    #[test]
     fn a_valid_plugin_folder_reads_back() {
         let dir = fixture("good", GOOD, Some("export default { mount() {} };"));
         let p = read_plugin(&dir).unwrap();
@@ -882,7 +926,9 @@ mod tests {
             ("no-id", r#"{ "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "id"),
             ("bad-id", r#"{ "id": "Bad Id", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "id"),
             ("builtin-id", r#"{ "id": "note", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "built-in"),
-            ("old-api", r#"{ "id": "sample", "name": "x", "apiVersion": 2, "size": {"w":100,"h":100} }"#, Some("x"), "apiVersion 2"),
+            // a *newer* apiVersion than this build speaks is the refusal; an older
+            // one is not (see `a_manifest_may_speak_an_older_api_version_...`)
+            ("new-api", r#"{ "id": "sample", "name": "x", "apiVersion": 99, "size": {"w":100,"h":100} }"#, Some("x"), "not supported"),
             ("no-name", r#"{ "id": "sample", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "name is required"),
             ("no-size", r#"{ "id": "sample", "name": "x", "apiVersion": 1 }"#, Some("x"), "size"),
             ("tiny-size", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":10,"h":4000} }"#, Some("x"), "outside"),

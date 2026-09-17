@@ -5,6 +5,7 @@ import { filesPane } from "./files";
 import { motionPane } from "./motion";
 import { pluginsPane } from "./plugins";
 import { generalPane } from "./general";
+import { diagnosticsPane } from "./diagnostics";
 
 /**
  * The tabs of the settings window, in the order they appear.
@@ -14,4 +15,4 @@ import { generalPane } from "./general";
  * the window never shows more than one of them at a time. The first is where a
  * fresh window lands.
  */
-export const PANES: Pane[] = [desktopPane, appsPane, filesPane, motionPane, pluginsPane, generalPane];
+export const PANES: Pane[] = [desktopPane, appsPane, filesPane, motionPane, pluginsPane, generalPane, diagnosticsPane];

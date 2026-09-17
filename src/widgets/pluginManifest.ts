@@ -41,6 +41,12 @@ export interface PluginManifestEntry {
   author: string;
   /** The plugin contract this kind was written against. */
   api_version: number;
+  /**
+   * Whether the user has approved this code. Built-ins always are. An installed
+   * plugin is approved when it is installed from an archive, or from the Plugins
+   * tab afterwards, and its widgets do not mount until then.
+   */
+  trusted: boolean;
 }
 
 export interface PluginDesktopItem {

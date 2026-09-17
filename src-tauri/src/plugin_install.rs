@@ -32,7 +32,48 @@ pub struct PluginInstall {
     pub replaced: bool,
 }
 
-/// What an archive holds, read *before* anything is installed.
+/// A fingerprint of everything in a plugin folder: the sorted relative paths and
+/// their bytes, through the same hash the icon store uses for content addressing.
+///
+/// **This is a change detector, not a signature.** Anything that can write the
+/// folder can also rewrite the settings entry that trusts it, so it cannot stop a
+/// determined attacker — what it does stop is *silent* change: a plugin approved at
+/// v1 is re-asked after its files are replaced, so an update cannot inherit an
+/// approval the user gave to different code.
+pub fn folder_fingerprint(dir: &Path) -> Result<String, String> {
+    let mut paths = Vec::new();
+    collect_files(dir, &mut paths)?;
+    paths.sort();
+    let mut stream: Vec<u8> = Vec::new();
+    for rel in &paths {
+        let bytes = std::fs::read(dir.join(rel)).map_err(|e| format!("{rel} could not be read: {e}"))?;
+        stream.extend_from_slice(rel.as_bytes());
+        stream.push(0);
+        stream.extend_from_slice(&bytes);
+        stream.push(0xff);
+    }
+    Ok(crate::icons::fingerprint(&stream))
+}
+
+/// Relative paths of every file under `dir`, one level or many.
+fn collect_files(dir: &Path, into: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{} could not be read: {e}", dir.display()))?;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let rel = entry.file_name().to_string_lossy().to_string();
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if kind.is_dir() {
+            let nested = dir.join(&rel);
+            let mut inner = Vec::new();
+            collect_files(&nested, &mut inner)?;
+            into.extend(inner.into_iter().map(|p| format!("{rel}/{p}")));
+        } else if kind.is_file() {
+            into.push(rel);
+        }
+    }
+    Ok(())
+}
+
+/// What an archive holds, before anything is installed.
 ///
 /// Every field here exists because a person is about to say yes or no to it: what
 /// it is, which contract it was written against, how much of it there is, and how
@@ -670,6 +711,33 @@ mod tests {
         assert!(uninstall("../evil", &plugins).is_err());
         assert!(uninstall("a/b", &plugins).is_err());
         assert!(uninstall("a\\b", &plugins).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_plugins_fingerprint_follows_its_files() {
+        let dir = temp("fingerprint");
+        let plugin = dir.join("countdown");
+        make_plugin(&plugin, "countdown", "1.0.0");
+        let before = folder_fingerprint(&plugin).unwrap();
+
+        // Same files, same answer: the fingerprint is the content, not a timestamp.
+        assert_eq!(folder_fingerprint(&plugin).unwrap(), before);
+
+        // One changed byte is a different fingerprint — this is what makes an
+        // approval cover the code the user actually read.
+        std::fs::write(plugin.join("index.js"), "// changed\n").unwrap();
+        let changed = folder_fingerprint(&plugin).unwrap();
+        assert_ne!(changed, before);
+
+        // A file *added* changes it too, even when nothing existing was touched.
+        std::fs::write(plugin.join("extra.js"), "// added\n").unwrap();
+        assert_ne!(folder_fingerprint(&plugin).unwrap(), changed);
+
+        // And a folder with nothing in it is still a fingerprint, not an error.
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(folder_fingerprint(&empty).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 

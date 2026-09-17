@@ -7,6 +7,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 mod audio;
+mod diagnostics;
 mod fs_watch;
 mod icons;
 mod palette;
@@ -51,12 +52,25 @@ fn log_line(app: &AppHandle, msg: &str) {
         return;
     };
     let path = dir.join("floaty.log");
-    // cap log at ~100KB
-    if fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 100_000 {
-        fs::write(&path, "").ok();
-    }
+    // Roll rather than wipe: emptying the file destroys exactly the evidence
+    // someone is looking for (see `diagnostics.rs`).
+    //
+    // The note about it goes into the same append instead of through `log_line`,
+    // which would deadlock on the lock this function is holding. It is worth
+    // writing down: "the lines I was looking for are gone" now has a visible
+    // reason and a file to look in.
     use std::fmt::Write as _;
     let mut line = String::new();
+    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if diagnostics::should_roll(size) {
+        diagnostics::roll(&path);
+        let _ = writeln!(
+            line,
+            "{} log was {} — rolled to floaty.log.1",
+            timestamp(),
+            diagnostics::human_bytes(size)
+        );
+    }
     let _ = writeln!(line, "{msg}");
     use std::io::Write as _;
     fs::OpenOptions::new()
@@ -327,6 +341,11 @@ struct FloatSettings {
     /// The key that opens the launcher palette, e.g. "Ctrl+Alt+Space".
     #[serde(default = "default_palette_shortcut")]
     palette_shortcut: String,
+    /// Plugin id -> the fingerprint of the folder the user approved, for plugins
+    /// they installed themselves. A plugin whose files have changed since is asked
+    /// about again: approving code is not approving whatever replaces it later.
+    #[serde(default)]
+    plugin_trust: std::collections::HashMap<String, String>,
     /// system monitor sample period (milliseconds)
     #[serde(default = "default_sysmon_interval")]
     sysmon_interval: f64,
@@ -416,6 +435,14 @@ fn default_double_click() -> String {
 
 fn settings_file(app: &AppHandle) -> std::path::PathBuf {
     app_data_dir(app).join("floaty-settings.json")
+}
+
+/// Write the settings the way the settings pane does — pretty JSON, written
+/// atomically — for the few commands that change them on their own.
+fn write_settings(app: &AppHandle, settings: &FloatSettings) {
+    if let Ok(json) = serde_json::to_string_pretty(settings) {
+        write_text_atomic(&settings_file(app), &json);
+    }
 }
 
 /// Fold the settings a file written before the float sliders were made honest.
@@ -509,6 +536,7 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             viz_fps: default_viz_fps(),
             sysmon_interval: default_sysmon_interval(),
             palette_shortcut: default_palette_shortcut(),
+            plugin_trust: std::collections::HashMap::new(),
             icon_pipeline: default_icon_pipeline(),
         },
     }
@@ -561,6 +589,9 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             Some(accelerator) => accelerator,
             None => stored.palette_shortcut.clone(),
         },
+        // The approvals are the backend's own bookkeeping, like icon_pipeline: a
+        // settings form that does not show them must not be able to clear them.
+        plugin_trust: stored.plugin_trust.clone(),
         icon_pipeline: stored_pipeline.max(settings.icon_pipeline),
     };
     // Start on boot is a registry entry, not a preference: write it now and, if
@@ -569,9 +600,7 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
     if s.start_on_boot != stored.start_on_boot && !set_start_on_boot(&app, s.start_on_boot) {
         s.start_on_boot = stored.start_on_boot;
     }
-    if let Ok(json) = serde_json::to_string_pretty(&s) {
-        write_text_atomic(&settings_file(&app), &json);
-    }
+    write_settings(&app, &s);
     #[cfg(windows)]
     {
         if let Some(win) = app.get_webview_window("desktop-overlay") {
@@ -1566,6 +1595,13 @@ unsafe extern "system" fn display_setting_changed(
             let previous = DISPLAY_STATE.swap(state, std::sync::atomic::Ordering::SeqCst);
             if previous != state {
                 if let Some(app) = shared_app() {
+                    // A real signal for widgets and plugins: a clock that redraws, a
+                    // poll that costs a powershell, a pet that animates — all have a
+                    // reason to stop while nobody is looking at the screen.
+                    let _ = app.emit(
+                        "floaty-display-changed",
+                        serde_json::json!({ "display": if state == 1 { "on" } else { "off" } }),
+                    );
                     log_line(
                         &app,
                         &format!(
@@ -2235,22 +2271,92 @@ fn is_path_kind(kind: &str) -> bool {
     plugins::is_path_kind(kind)
 }
 
-/// Where the overlay belongs on the primary monitor: logical px, so it matches
-/// the coordinates the widgets and the store use.
+/// Where the overlay belongs: the whole desktop, in logical px, so it matches the
+/// coordinates the widgets and the store use.
+///
+/// It used to be the *primary monitor* only, which meant a widget placed on a
+/// second screen was laid out outside the overlay's bounds and never seen, and
+/// nothing could be dragged from one screen to the other. The desktop is the union
+/// of every monitor now: one window, one coordinate space, and a floatie that is
+/// dragged past the edge keeps going.
+///
+/// Logical px because that is the space records are stored in. With monitors at
+/// *different* scale factors one webview cannot honour both — it has a single scale
+/// factor — so the union is computed per monitor in that monitor's logical px and
+/// the window is built for the primary's: the arrangement is right, the rendering
+/// on the other screen may not be. `mixed_scale` says so in the log, once.
 fn overlay_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
-    if let Ok(Some(mon)) = app.primary_monitor() {
-        let s = mon.scale_factor();
-        let size = mon.size();
-        let pos = mon.position();
-        (
-            (pos.x as f64) / s,
-            (pos.y as f64) / s,
-            (size.width as f64) / s,
-            (size.height as f64) / s,
-        )
-    } else {
-        (0.0, 0.0, 1920.0, 1080.0)
+    let monitors = app.available_monitors().unwrap_or_default();
+    let rects: Vec<(f64, f64, f64, f64)> = monitors
+        .iter()
+        .map(|mon| {
+            let s = mon.scale_factor();
+            (
+                mon.position().x as f64 / s,
+                mon.position().y as f64 / s,
+                mon.size().width as f64 / s,
+                mon.size().height as f64 / s,
+            )
+        })
+        .collect();
+    if rects.is_empty() {
+        // No monitor list at all (a driver that is not answering): the primary, or
+        // the box this always used to be.
+        if let Ok(Some(mon)) = app.primary_monitor() {
+            let s = mon.scale_factor();
+            return (
+                mon.position().x as f64 / s,
+                mon.position().y as f64 / s,
+                mon.size().width as f64 / s,
+                mon.size().height as f64 / s,
+            );
+        }
+        return (0.0, 0.0, 1920.0, 1080.0);
     }
+    log_mixed_scale(app, &monitors);
+    union_rect(&rects)
+}
+
+/// The smallest rectangle holding every rect. Pure: negative origins and a monitor
+/// above the primary get a test that does not need two screens.
+fn union_rect(rects: &[(f64, f64, f64, f64)]) -> (f64, f64, f64, f64) {
+    let min_x = rects.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
+    let min_y = rects.iter().map(|r| r.1).fold(f64::INFINITY, f64::min);
+    let max_x = rects
+        .iter()
+        .map(|r| r.0 + r.2)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_y = rects
+        .iter()
+        .map(|r| r.1 + r.3)
+        .fold(f64::NEG_INFINITY, f64::max);
+    (min_x, min_y, max_x - min_x, max_y - min_y)
+}
+
+/// Say once, in the log, when the desktop spans scale factors it cannot render
+/// honestly — so "it looks blurry on my laptop screen" has an answer in the log
+/// rather than in a bug report.
+fn log_mixed_scale(app: &AppHandle, monitors: &[tauri::Monitor]) {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if monitors.len() < 2 || SAID.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let first = monitors[0].scale_factor();
+    if monitors.iter().all(|m| (m.scale_factor() - first).abs() < 0.001) {
+        return;
+    }
+    let scales: Vec<String> = monitors
+        .iter()
+        .map(|m| format!("{:.2}", m.scale_factor()))
+        .collect();
+    log_line(
+        app,
+        &format!(
+            "monitors: {} screens at different scale factors [{}] — the desktop covers the primary's scale, so widgets on the other screen may be drawn at the wrong size",
+            monitors.len(),
+            scales.join(", ")
+        ),
+    );
 }
 
 /// Follow the primary monitor: the resolution or the DPI can change while the
@@ -3529,8 +3635,119 @@ fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
 
 #[tauri::command]
 fn floaty_plugins(app: AppHandle) -> Vec<PluginInfo> {
-    plugins::manifest(&load_settings(&app).disabled)
+    let settings = load_settings(&app);
+    let mut list = plugins::manifest(&settings.disabled);
+    // Built-ins are floaty's own code and always approved; an installed plugin is
+    // approved by *fingerprint*, so the approval covers the files the user read.
+    let dir = plugins_dir(&app);
+    for info in list.iter_mut() {
+        if info.source == "installed" {
+            info.trusted = plugin_approved(&settings, &dir.join(&info.id), &info.id);
+        }
+    }
+    list
 }
+
+/// Approve what was already on the desktop before approvals existed.
+///
+/// The trust model arrived after these plugins did: their folders were installed
+/// without a fingerprint being recorded, so on the first launch with it every one of
+/// them reads as "not approved" and its widgets stop mounting — code the user chose
+/// and has been looking at for months. A plugin that has a floatie of its kind on the
+/// desktop is recorded as approved once, from the files it is running from.
+///
+/// A folder with no floaties is left alone: that is the case where "it appeared and
+/// nobody approved it" is exactly the thing worth asking about.
+fn migrate_plugin_trust(app: &AppHandle) {
+    let dir = plugins_dir(app);
+    let (installed, _) = plugins::install_from(&dir);
+    if installed.is_empty() {
+        return;
+    }
+    let kinds: std::collections::HashSet<String> = app
+        .state::<AppState>()
+        .0
+        .lock()
+        .map(|guard| guard.widgets.values().map(|rec| rec.kind.clone()).collect())
+        .unwrap_or_default();
+    let mut settings = load_settings(app);
+    let mut changed = false;
+    for entry in installed {
+        // the manifest list answers "countdown v1.0.0"
+        let id = entry.split_whitespace().next().unwrap_or("").to_string();
+        if id.is_empty() || settings.plugin_trust.contains_key(&id) || !kinds.contains(&id) {
+            continue;
+        }
+        if let Ok(fingerprint) = plugin_install::folder_fingerprint(&dir.join(&id)) {
+            settings.plugin_trust.insert(id.clone(), fingerprint);
+            changed = true;
+            log_line(
+                app,
+                &format!("plugins: approved {id} by migration — it was already on the desktop"),
+            );
+        }
+    }
+    if changed {
+        write_settings(app, &settings);
+    }
+}
+
+/// Is this plugin's *current* code the code the user approved?
+fn plugin_approved(settings: &FloatSettings, dir: &std::path::Path, id: &str) -> bool {
+    let Some(approved) = settings.plugin_trust.get(id) else {
+        return false;
+    };
+    // A folder that cannot be read is not approved: failing open here would mean a
+    // plugin whose files were replaced by something unreadable still runs.
+    plugin_install::folder_fingerprint(dir)
+        .map(|now| now == *approved)
+        .unwrap_or(false)
+}
+
+/// Approve an installed plugin, or take the approval back.
+///
+/// Approving records the fingerprint of the folder *as it is now*; withdrawing
+/// forgets it, and its widgets stop mounting (they are not removed — nothing here
+/// touches the desk, and approving again brings them back).
+#[tauri::command]
+fn floaty_plugin_trust(id: String, trusted: bool, app: AppHandle) -> Result<(), String> {
+    if plugins::find(&id).is_some() {
+        return Err(format!("{id} is one of floaty's own widgets"));
+    }
+    let dir = plugins_dir(&app).join(&id);
+    if !dir.is_dir() {
+        return Err(format!("{id} is not installed"));
+    }
+    let fingerprint = if trusted {
+        Some(plugin_install::folder_fingerprint(&dir)?)
+    } else {
+        None
+    };
+    let mut settings = load_settings(&app);
+    match fingerprint {
+        Some(fingerprint) => {
+            settings.plugin_trust.insert(id.clone(), fingerprint);
+        }
+        None => {
+            settings.plugin_trust.remove(&id);
+        }
+    }
+    write_settings(&app, &settings);
+    log_line(
+        &app,
+        &format!(
+            "plugins: {} {id}",
+            if trusted {
+                "approved"
+            } else {
+                "approval withdrawn for"
+            }
+        ),
+    );
+    reload_plugin_windows(&app);
+    Ok(())
+}
+
 
 /// Where user plugins live: one folder each, `plugin.json` + its module.
 fn plugins_dir(app: &AppHandle) -> std::path::PathBuf {
@@ -3593,6 +3810,24 @@ async fn floaty_install_plugin(
     })
     .await
     .map_err(|e| e.to_string())??;
+
+    // Installing from an archive *is* the approval: the dialog showed the user what
+    // is in it, who wrote it, what it replaces and which version of the plugin
+    // contract it wants. A folder that appears in the plugins directory by some
+    // other route is unapproved and stays that way until it is approved in the
+    // Plugins tab.
+    {
+        let dir = plugins_dir(&app).join(&report.id);
+        let mut settings = load_settings(&app);
+        if let Ok(fingerprint) = plugin_install::folder_fingerprint(&dir) {
+            settings.plugin_trust.insert(report.id.clone(), fingerprint);
+            write_settings(&app, &settings);
+        }
+        log_line(
+            &app,
+            &format!("plugins: approved {} v{} after the install report", report.id, report.version),
+        );
+    }
 
     let (installed, rejected) = plugins::install_from(&plugins_dir(&app));
     log_line(
@@ -5420,6 +5655,14 @@ async fn floaty_list(app: AppHandle) -> Vec<WidgetRecord> {
 
 #[tauri::command]
 fn floaty_create(kind: String, app: AppHandle) -> Result<WidgetRecord, String> {
+    // A widget of an unapproved plugin would mount nothing and sit on the desktop
+    // as a square, so refuse it with the reason instead.
+    let settings = load_settings(&app);
+    if plugins::find(&kind).is_none() && !plugin_approved(&settings, &plugins_dir(&app).join(&kind), &kind) {
+        return Err(format!(
+            "{kind} is not approved — approve it in the Plugins tab first"
+        ));
+    }
     create_record(&app, &kind)
 }
 
@@ -6247,6 +6490,214 @@ async fn floaty_log(msg: String, app: AppHandle) {
     log_line(&app, &format!("webview: {msg}"));
 }
 
+/// The rectangle the desktop covers, in logical px — the space a record's x/y are
+/// in. The overlay asks for this once and lays out widgets inside it.
+#[tauri::command]
+fn floaty_desktop_rect(app: AppHandle) -> diagnostics::Rect {
+    let (x, y, w, h) = overlay_rect(&app);
+    diagnostics::Rect { x, y, w, h }
+}
+
+/// Every monitor, in logical px plus the scale factor the platform reports, with
+/// the primary marked. This is the *layout* view (the same space as a widget's
+/// position); the Diagnostics tab shows the physical one, which is what the
+/// platform and the window manager actually work in.
+#[tauri::command]
+fn floaty_monitors(app: AppHandle) -> Vec<diagnostics::Rect> {
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let scale = m.scale_factor();
+            diagnostics::Rect {
+                x: (m.position().x as f64 / scale).round(),
+                y: (m.position().y as f64 / scale).round(),
+                w: (m.size().width as f64 / scale).round(),
+                h: (m.size().height as f64 / scale).round(),
+            }
+        })
+        .collect()
+}
+
+// ---------- diagnostics ----------
+
+/// Everything the app knows about itself: the log tail, the monitor inventory,
+/// where each window actually is, the heartbeat table, and the sizes on disk.
+#[tauri::command]
+async fn floaty_diagnostics(app: AppHandle) -> diagnostics::Report {
+    let dir = app_data_dir(&app);
+    let log_path = dir.join("floaty.log");
+    let (lines, log_bytes) = diagnostics::read_log(&log_path);
+
+    // The store plus whatever `.bak`/`.tmp` siblings the atomic writes have left.
+    let mut store_bytes = fs::metadata(store_file(&app)).map(|m| m.len()).unwrap_or(0);
+    let mut backups = 0;
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            if entry.file_name().to_string_lossy().starts_with("floaty-store.json.") {
+                backups += 1;
+                store_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+
+    let icon_dir = icons_dir(&app);
+    let (icon_files, icon_bytes) = diagnostics::dir_size(&icon_dir);
+
+    let (installed, rejected) = plugins::install_from(&plugins_dir(&app));
+
+    let records = app
+        .state::<AppState>()
+        .0
+        .lock()
+        .map(|guard| guard.widgets.len() as u64)
+        .unwrap_or(0);
+
+    let now = elapsed_ms();
+    let mut heartbeats: Vec<diagnostics::BeatInfo> = heartbeats()
+        .lock()
+        .map(|map| {
+            map.iter()
+                .map(|(label, (at, visibility))| diagnostics::BeatInfo {
+                    label: label.clone(),
+                    visibility: visibility.clone(),
+                    ms_ago: now.saturating_sub(*at),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    heartbeats.sort_by(|a, b| a.label.cmp(&b.label));
+
+    let mut repairs: Vec<diagnostics::RepairInfo> = heartbeat_repairs()
+        .lock()
+        .map(|map| {
+            map.iter()
+                .map(|(label, (_, attempts))| diagnostics::RepairInfo {
+                    label: label.clone(),
+                    attempts: *attempts,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    repairs.sort_by(|a, b| a.label.cmp(&b.label));
+
+    let primary = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().map(|n| n.to_string()));
+
+    let monitors = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let name = m.name().map(|n| n.to_string()).unwrap_or_default();
+            diagnostics::MonitorInfo {
+                primary: Some(name.clone()) == primary,
+                key: name.clone(),
+                name,
+                x: m.position().x,
+                y: m.position().y,
+                width: m.size().width,
+                height: m.size().height,
+                scale: m.scale_factor(),
+            }
+        })
+        .collect();
+
+    // Physical px, which is what the platform reports and what the monitor list
+    // above is in: "the window is where I think it is" is the whole point.
+    let mut windows: Vec<diagnostics::WindowInfo> = app
+        .webview_windows()
+        .into_iter()
+        .map(|(label, window)| {
+            let pos = window.outer_position().unwrap_or(tauri::PhysicalPosition::new(0, 0));
+            let size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(0, 0));
+            diagnostics::WindowInfo {
+                layer: if is_desktop_layer_label(&label) {
+                    "desktop".to_string()
+                } else {
+                    "window".to_string()
+                },
+                visible: window.is_visible().unwrap_or(false),
+                label,
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect();
+    windows.sort_by(|a, b| a.label.cmp(&b.label));
+
+    let display = match DISPLAY_STATE.load(std::sync::atomic::Ordering::SeqCst) {
+        1 => "on",
+        0 => "off",
+        _ => "unknown",
+    };
+
+    diagnostics::Report {
+        version: app.package_info().version.to_string(),
+        mode: if load_settings(&app).stay_on_desktop {
+            "desktop".to_string()
+        } else {
+            "floating".to_string()
+        },
+        os: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        started_ms_ago: now,
+        log: diagnostics::LogInfo {
+            rotated: diagnostics::rolled_count(&log_path),
+            path: log_path.to_string_lossy().to_string(),
+            bytes: log_bytes,
+            lines,
+        },
+        store: diagnostics::FileInfo {
+            path: store_file(&app).to_string_lossy().to_string(),
+            bytes: store_bytes,
+            backups,
+        },
+        icons: diagnostics::DirInfo {
+            path: icon_dir.to_string_lossy().to_string(),
+            files: icon_files,
+            bytes: icon_bytes,
+        },
+        records,
+        installed_plugins: installed,
+        rejected_plugins: rejected,
+        display: display.to_string(),
+        heartbeats,
+        repairs,
+        monitors,
+        windows,
+    }
+}
+
+/// Say something in a Windows notification. Raised from Rust on purpose: a
+/// third-party plugin reaches it through the widget api, so it needs no permission
+/// of its own and no plugin command is exposed to a page.
+#[tauri::command]
+fn floaty_notify(title: String, body: String, app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("a notification needs a title".to_string());
+    }
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| format!("the notification was refused: {e}"))
+}
+
+/// Open the folder the log lives in, which is what a bug report asks for next.
+#[tauri::command]
+fn floaty_open_log_folder(app: AppHandle) -> Result<(), String> {
+    let dir = app_data_dir(&app);
+    launch_target(&app, &dir.to_string_lossy())
+}
+
 // ---------- audio visualizer ----------
 
 /// Claim the system-audio capture (ref-counted, started by the first
@@ -6345,6 +6796,10 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        // Notifications are raised from Rust (`floaty_notify`) and reached by
+        // plugins through the widget api, so no notification permission reaches
+        // any page.
+        .plugin(tauri_plugin_notification::init())
         // The launcher hotkey. Registered and handled in Rust, so the palette page
         // needs no plugin permission to use it — and a press only shows a window,
         // which cannot fail in a way worth telling anyone about.
@@ -6562,6 +7017,11 @@ pub fn run() {
                     persist(&handle);
                 }
             }
+            // Before the overlay asks for its manifest: it reads the approval state
+            // out of the settings, and a plugin that was already here must read as
+            // approved on this very first pass, or its widgets never mount.
+            migrate_plugin_trust(&handle);
+
             // Spawn overlay window as early as possible so WebView2 initializes
             // concurrently with disk scanning and plugin installation.
             if let Err(e) = spawn_overlay_window(&handle) {
@@ -6650,6 +7110,12 @@ pub fn run() {
             floaty_set_on_top,
             floaty_log,
             floaty_heartbeat,
+            floaty_diagnostics,
+            floaty_open_log_folder,
+            floaty_plugin_trust,
+            floaty_notify,
+            floaty_desktop_rect,
+            floaty_monitors,
             floaty_audio_start,
             floaty_audio_stop,
             floaty_audio_set_fps,
@@ -6747,6 +7213,31 @@ mod tests {
     /// that *are* the desktop. Applying it to the settings window is the bug
     /// this pins shut: its minimize button did nothing and the first drag step
     /// stripped its taskbar button.
+    #[test]
+    fn the_desktop_is_the_smallest_box_holding_every_screen() {
+        // one screen: itself
+        assert_eq!(
+            union_rect(&[(0.0, 0.0, 1920.0, 1080.0)]),
+            (0.0, 0.0, 1920.0, 1080.0)
+        );
+        // a second screen to the right, taller than the first
+        assert_eq!(
+            union_rect(&[(0.0, 0.0, 1920.0, 1080.0), (1920.0, 0.0, 2560.0, 1440.0)]),
+            (0.0, 0.0, 4480.0, 1440.0)
+        );
+        // one to the left: the origin is negative, which is why the overlay is
+        // positioned rather than assumed to start at 0,0
+        assert_eq!(
+            union_rect(&[(0.0, 0.0, 1920.0, 1080.0), (-1280.0, 200.0, 1280.0, 1024.0)]),
+            (-1280.0, 0.0, 3200.0, 1224.0)
+        );
+        // one above, offset in y on both sides
+        assert_eq!(
+            union_rect(&[(0.0, 0.0, 1920.0, 1080.0), (300.0, -1080.0, 1920.0, 1080.0)]),
+            (0.0, -1080.0, 2220.0, 2160.0)
+        );
+    }
+
     #[test]
     fn the_desktop_layer_is_the_overlays_and_the_floatie_windows() {
         assert!(is_desktop_layer_label("desktop-overlay"));

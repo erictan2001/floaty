@@ -20,7 +20,14 @@ import {
   type OverlaySlot,
   type WidgetRecord,
 } from "./widgets/lib";
-import { loadPlugins, pluginFor, pluginKinds, widgetApi } from "./widgets/plugin";
+import {
+  clearWidgetScope,
+  loadPlugins,
+  pluginApi,
+  pluginFor,
+  pluginKinds,
+  widgetApi,
+} from "./widgets/plugin";
 import { crossCheckPlugins, isDesktopItem, layoutPriorityFor, pluginSize } from "./widgets/pluginManifest";
 
 /**
@@ -379,7 +386,7 @@ export function mountOverlay(root: HTMLElement): void {
     // rejection has to be caught on the promise: a throw alone used to lose the
     // only clue a third-party plugin left behind.
     try {
-      void Promise.resolve(plugin.mount(slot, rec.id, widgetApi)).catch((e: unknown) => {
+      void Promise.resolve(plugin.mount(slot, rec.id, pluginApi(rec.kind))).catch((e: unknown) => {
         invoke("floaty_log", { msg: `[overlay] mount ${rec.id} failed: ${String(e)}` }).catch(
           () => undefined,
         );
@@ -393,6 +400,11 @@ export function mountOverlay(root: HTMLElement): void {
 
   const unmountWidget = (id: string) => {
     if (!mountedSlots.has(id)) return;
+    // The widget is going away, so everything it started goes with it: a plugin's
+    // timers and event listeners are keyed by the widget that owns them, and this
+    // is the one place every removal path (removed, remounted, kind switched off)
+    // comes through.
+    clearWidgetScope(id);
     // a widget on its way out cannot be half of a preview
     if (mergeArmed && (mergeArmed.target === id || mergeArmed.dragged === id)) disarmMerge();
     mountedSlots.delete(id);

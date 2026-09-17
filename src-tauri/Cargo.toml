@@ -12,6 +12,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
+# plugin notifications: raised from Rust (`floaty_notify`) so a third-party plugin
+# needs no capability of its own to say something
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-single-instance = "2.4.4"

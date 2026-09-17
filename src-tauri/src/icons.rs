@@ -91,7 +91,7 @@ fn percent_decode(text: &str) -> Option<String> {
 
 /// A content fingerprint: FNV-1a over the bytes, with the length appended so a
 /// truncated file can never collide with the whole one.
-fn fingerprint(bytes: &[u8]) -> String {
+pub(crate) fn fingerprint(bytes: &[u8]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in bytes {
         hash ^= *byte as u64;

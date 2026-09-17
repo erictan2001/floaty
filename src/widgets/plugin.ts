@@ -21,6 +21,7 @@
  */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import * as floaty from "./lib";
 import type { FloatSettings, MonitorArea, PinMenuOptions, WidgetRecord } from "./lib";
 import { installedEntries, loadPluginManifest } from "./pluginManifest";
@@ -106,7 +107,110 @@ export interface WidgetApi {
   displayName: (name: string) => string;
   /** The desktop area this widget may live in. */
   monitorArea: () => Promise<MonitorArea>;
+
+  // ---- apiVersion 2 ----
+  // Additive. A manifest that says `"apiVersion": 1` gets the surface above and
+  // nothing here: a plugin cannot come to depend on a member its own manifest says
+  // it does not have.
+
+  /** The api contract this build speaks. */
+  apiVersion: number;
+  /**
+   * Say something in a Windows notification. Raised in Rust, so it costs you no
+   * permission of your own — and it is the only way out of a widget the user will
+   * notice while the desktop is covered by something else.
+   */
+  notify: (title: string, body?: string) => Promise<void>;
+  /**
+   * Run `fn` every `ms` while the widget is mounted. The timer belongs to the
+   * widget: it is cleared when the widget is removed or remounted, so a plugin
+   * cannot outlive its own widget by leaking one.
+   */
+  every: (id: string, ms: number, fn: () => void) => void;
+  /** Run `fn` once, `ms` from now, unless the widget goes away first. */
+  after: (id: string, ms: number, fn: () => void) => void;
+  /**
+   * Follow one of floaty's own events. Cleaned up with the widget, and returns a
+   * function that stops listening early. See `PluginEventName` for the list.
+   */
+  on: (id: string, event: PluginEventName, fn: (payload: unknown) => void) => () => void;
 }
+
+/** The events a plugin may listen for, and the app event each is forwarded from. */
+export type PluginEventName =
+  | "settings"
+  | "widget-updated"
+  | "widget-removed"
+  | "plugins-changed"
+  | "display";
+
+const FORWARDED: Array<[PluginEventName, string]> = [
+  ["settings", "floaty-settings-changed"],
+  ["widget-updated", "floaty-widget-updated"],
+  ["widget-removed", "floaty-widget-removed"],
+  ["plugins-changed", "floaty-plugins-changed"],
+  ["display", "floaty-display-changed"],
+];
+
+/** What a widget owns: its timers, and who is listening to what. */
+interface Scope {
+  timers: Set<number>;
+  listeners: Map<PluginEventName, Set<(payload: unknown) => void>>;
+}
+
+const scopes = new Map<string, Scope>();
+
+function scopeOf(id: string): Scope {
+  let scope = scopes.get(id);
+  if (!scope) {
+    scope = { timers: new Set(), listeners: new Map() };
+    scopes.set(id, scope);
+  }
+  return scope;
+}
+
+/**
+ * Drop everything a widget owns: its timers and its listeners.
+ *
+ * Called when the widget goes away — removed, remounted, or its kind switched off
+ * — because a timer a plugin started is otherwise a widget that never dies: it
+ * keeps running after the thing that wanted it is gone, which is the shape of
+ * every slow leak in a long-running desktop.
+ */
+export function clearWidgetScope(id: string): void {
+  const scope = scopes.get(id);
+  if (!scope) return;
+  for (const timer of scope.timers) window.clearInterval(timer);
+  scopes.delete(id);
+}
+
+/** One forwarder per event name per window, not one per widget. */
+const forwarding = new Set<PluginEventName>();
+
+function ensureForwarded(name: PluginEventName): void {
+  if (forwarding.has(name)) return;
+  forwarding.add(name);
+  const source = FORWARDED.find(([pluginName]) => pluginName === name)?.[1];
+  if (!source) return;
+  void listen(source, (event) => {
+    for (const scope of scopes.values()) {
+      const handlers = scope.listeners.get(name);
+      if (!handlers) continue;
+      for (const handler of handlers) {
+        try {
+          handler(event.payload);
+        } catch (err) {
+          widgetApi.log(`[plugin] a "${name}" listener threw: ${String(err)}`);
+        }
+      }
+    }
+  }).catch((e: unknown) => widgetApi.log(`[plugin] could not follow "${name}": ${String(e)}`));
+}
+
+/** What a v1 plugin gets instead of the new members: a sentence, not silence. */
+const notInV1 = (what: string) => () => {
+  throw new Error(`${what} needs "apiVersion": 2 in plugin.json`);
+};
 
 export interface WidgetControlContext {
   /** Safely run an asynchronous backend invocation with error reporting */
@@ -163,6 +267,13 @@ export interface FloatyPlugin {
   renderSettings?: (card: HTMLElement, ctx: PluginSettingsContext) => void | Promise<void>;
 }
 
+/**
+ * The plugin contract this build hands out. Must match `PLUGIN_API_VERSION` in
+ * `src-tauri/src/plugins.rs` — `scripts/check-plugins.mjs` reads both and fails
+ * when they drift.
+ */
+export const WIDGET_API_VERSION = 2;
+
 /** The api object handed to every `mount`. */
 export const widgetApi: WidgetApi = {
   invoke,
@@ -184,7 +295,64 @@ export const widgetApi: WidgetApi = {
   watchSettings: floaty.watchSettings,
   displayName: floaty.displayName,
   monitorArea: floaty.monitorArea,
+  apiVersion: WIDGET_API_VERSION,
+  notify: async (title: string, body = "") => {
+    await invoke("floaty_notify", { title, body });
+  },
+  every: (id, ms, fn) => {
+    const scope = scopeOf(id);
+    scope.timers.add(window.setInterval(fn, ms));
+  },
+  after: (id, ms, fn) => {
+    const scope = scopeOf(id);
+    const timer = window.setTimeout(() => {
+      scope.timers.delete(timer);
+      fn();
+    }, ms);
+    scope.timers.add(timer);
+  },
+  on: (id, event, fn) => {
+    const scope = scopeOf(id);
+    let handlers = scope.listeners.get(event);
+    if (!handlers) {
+      handlers = new Set();
+      scope.listeners.set(event, handlers);
+    }
+    handlers.add(fn);
+    ensureForwarded(event);
+    return () => {
+      handlers?.delete(fn);
+    };
+  },
 };
+
+/**
+ * The surface a manifest that says `"apiVersion": 1` gets.
+ *
+ * The new members are there but refuse: a plugin that calls one is told what to
+ * put in its manifest, which is more use than "api.every is not a function".
+ */
+const legacyApi: WidgetApi = {
+  ...widgetApi,
+  apiVersion: 1,
+  notify: refuse("notify"),
+  every: refuse("every"),
+  after: refuse("after"),
+  on: refuse("on"),
+};
+
+function refuse(what: string): (...args: unknown[]) => never {
+  return () => {
+    throw new Error(`api.${what} needs "apiVersion": 2 in plugin.json`);
+  };
+}
+
+/** The api to hand a plugin of this kind: the surface its manifest promised. */
+export function pluginApi(kind: string): WidgetApi {
+  const entry = installedEntries().find((candidate) => candidate.id === kind);
+  if (entry && entry.api_version < WIDGET_API_VERSION) return legacyApi;
+  return widgetApi;
+}
 
 /**
  * The built-in plugins, in the order the settings window lists them. This is the
@@ -251,6 +419,15 @@ export function loadPlugins(): Promise<void> {
     await loadPluginManifest();
     for (const entry of installedEntries()) {
       if (registry.has(entry.id)) continue;
+      // Unapproved code is not imported at all. A plugin is approved when it is
+      // installed from an archive (that dialog shows what is in it, who wrote it
+      // and what it replaces) or from the Plugins tab afterwards; a folder that
+      // appeared by some other route is not, and neither is one whose files changed
+      // since it was approved.
+      if (!entry.trusted) {
+        widgetApi.log(`[plugin] ${entry.id} is not approved — approve it in the Plugins tab`);
+        continue;
+      }
       try {
         const module = (await import(/* @vite-ignore */ convertFileSrc(entry.entry!))) as {
           default?: Partial<FloatyPlugin>;
