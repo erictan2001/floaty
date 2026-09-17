@@ -1430,4 +1430,88 @@ body.settings-page {
 }
 /* the line only exists while it has something to say */
 .palette-note:empty { display: none; }
+/* diagnostics: the report is a list of facts, so a row is a name and its value,
+   with the value against the right edge. Only paths and the log tail are allowed
+   to be long, and both are cut with an ellipsis rather than widening the pane. */
+.diag-row { gap: 12px; }
+.diag-stack { display: flex; flex-direction: column; gap: 6px; }
+.diag-key { flex: 0 0 auto; }
+.diag-val {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--panel-ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* a rejected plugin is the one value here that is bad news */
+.diag-val.diag-warn { color: #fca5a5; }
+.diag-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+  color: var(--panel-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diag-line { display: flex; align-items: baseline; gap: 8px; }
+.diag-layer {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--panel-ink-faint);
+}
+/* the desktop layer is not an ordinary window, and the row says so in colour too */
+.diag-layer.diag-desktop { color: #fcd34d; }
+.diag-primary {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6ee7b7;
+}
+.diag-mark {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #fcd34d;
+}
+.diag-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--panel-ink-faint);
+}
+/* the log tail: whitespace kept, selectable, and bounded so a long log cannot
+   push the rest of the report off the screen */
+.diag-log {
+  margin: 0;
+  min-width: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  background: var(--panel-inset);
+  color: var(--panel-ink-soft);
+  font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  user-select: text;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.diag-log::-webkit-scrollbar { width: 8px; height: 8px; }
+.diag-log::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); border-radius: 8px; }
+.diag-log::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }
 

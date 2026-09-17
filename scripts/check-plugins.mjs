@@ -82,6 +82,36 @@ if (forgotten.length > 0) {
   );
 }
 
+/**
+ * The widget api version the two halves announce.
+ *
+ * Rust owns the number (`PLUGIN_API_VERSION`, which validates every manifest) and
+ * TypeScript has to agree (`WIDGET_API_VERSION`, which decides the surface a
+ * plugin is handed). A build that promises v2 and validates v1 — or the other way
+ * round — is a plugin that loads and then fails on a member its manifest was
+ * allowed to ask for.
+ */
+function rustApiVersion() {
+  const source = read(join(root, "src-tauri", "src", "plugins.rs"));
+  const found = source.match(/pub const PLUGIN_API_VERSION: u32 = (\d+);/);
+  if (!found) throw new Error("src-tauri/src/plugins.rs: no PLUGIN_API_VERSION found");
+  return Number(found[1]);
+}
+
+function typescriptApiVersion() {
+  const registry = read(join(SOURCE, "plugin.ts"));
+  const found = registry.match(/export const WIDGET_API_VERSION = (\d+);/);
+  if (!found) throw new Error("src/widgets/plugin.ts: no WIDGET_API_VERSION found");
+  return Number(found[1]);
+}
+
+const apiVersions = [rustApiVersion(), typescriptApiVersion()];
+if (apiVersions[0] !== apiVersions[1]) {
+  problems.push(
+    `  api version: rust says ${apiVersions[0]}, src/widgets/plugin.ts says ${apiVersions[1]}`,
+  );
+}
+
 for (const kind of rust) {
   if (!tsKinds.includes(kind)) {
     problems.push(`  ${kind}: in src-tauri/src/plugins.rs but no frontend module mounts it`);
@@ -102,4 +132,6 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-console.log(`plugins: ${rust.length} kinds agree (${rust.join(", ")})`);
+console.log(
+  `plugins: ${rust.length} kinds agree (${rust.join(", ")}), widget api v${apiVersions[1]}`,
+);

@@ -246,15 +246,64 @@ export interface MonitorArea {
   h: number;
 }
 
-/** Current monitor work area in logical px. */
-export async function monitorArea(): Promise<MonitorArea> {
-  if (isOverlayMode()) {
-    return {
+/**
+ * The monitors, in logical px, as the backend last reported them.
+ *
+ * One overlay window covers every screen (see `overlay_rect` in `lib.rs`), so a
+ * widget's floor is the floor of *its* screen rather than of the whole arrangement.
+ * The physics needs that answer synchronously, every frame, which is why the layout
+ * is cached here and read by `monitorAt` instead of awaited per call.
+ */
+let monitors: MonitorArea[] = [];
+let desktop: MonitorArea | null = null;
+
+/**
+ * Read the desktop rectangle and the monitor layout. Called once at mount, and
+ * again whenever the display changes — a screen plugged in or unplugged is what
+ * the resume path is for.
+ */
+export async function watchMonitors(): Promise<MonitorArea[]> {
+  try {
+    desktop = (await invoke<MonitorArea>("floaty_desktop_rect")) ?? desktop;
+    monitors = (await invoke<MonitorArea[]>("floaty_monitors")) ?? monitors;
+  } catch {
+    /* keep whatever was known: a missing layout must not stop the desktop */
+  }
+  return monitors;
+}
+
+/**
+ * The screen whose horizontal band contains `x`, or the whole desktop when the
+ * layout is unknown. Monitors in a Windows arrangement are side by side in x, so
+ * one comparison is the whole test — and on a single-monitor machine this is the
+ * same rectangle `monitorArea()` returns.
+ */
+export function monitorAt(x: number): MonitorArea {
+  const hit = monitors.find((m) => x >= m.x && x < m.x + m.w);
+  return hit ?? monitorAreaSync();
+}
+
+/** The desktop rectangle without waiting for it (falls back to the window). */
+export function monitorAreaSync(): MonitorArea {
+  return (
+    desktop ?? {
       x: 0,
       y: 0,
       w: window.innerWidth || 1920,
       h: window.innerHeight || 1080,
-    };
+    }
+  );
+}
+
+/** Current desktop area in logical px: every screen, not just the primary. */
+export async function monitorArea(): Promise<MonitorArea> {
+  if (isOverlayMode()) {
+    // The backend's rectangle, not `innerWidth`: the window may be a few px off
+    // what Windows granted, and records live in the backend's space.
+    const rect = await watchMonitors()
+      .then(() => monitorAreaSync())
+      .catch(() => monitorAreaSync());
+    return rect;
   }
   const s = await scaleFactor();
   try {

@@ -1,5 +1,5 @@
 import "./style.css";
-import { loadPlugins, pluginFor, widgetApi } from "./widgets/plugin";
+import { loadPlugins, pluginApi, pluginFor, widgetApi } from "./widgets/plugin";
 import { startHeartbeat } from "./widgets/lib";
 
 const app = document.getElementById("app");
@@ -22,7 +22,7 @@ if (app) {
     if (id) startHeartbeat(`widget-${id}`);
     void loadPlugins().then(() => {
       const plugin = pluginFor(kind);
-      if (plugin && id) plugin.mount(app, id, widgetApi);
+      if (plugin && id) plugin.mount(app, id, pluginApi(kind));
     });
   }
   // "manager" hidden window and unknown routes intentionally render nothing

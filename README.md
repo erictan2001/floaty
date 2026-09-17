@@ -34,6 +34,21 @@ anything else just stops it floating.
 system audio visualizer, CPU/GPU/RAM monitor — the same overlay, the same motion
 settings, one right-click from pin-on-top.
 
+**Every screen.** The desktop is the union of your monitors, so floaties can live
+on the second one and be dragged between them, each resting on the floor of the
+screen it is over. (Mixed scale factors are the exception — see **Known limits**.)
+
+**A launcher.** `Ctrl+Alt+Space` (or whatever you set in General) opens the palette
+on the screen your pointer is on: type, arrow, Enter. It searches your applications,
+the root folder and your floaties together, resolving most-typed-first, and it is a
+command line as much as a launcher — Enter on a widget floatie opens what a
+double-click would.
+
+**A log worth reading, and a pane that reads it.** `floaty.log` rotates (1MB × 3)
+instead of being wiped at 100KB, and **Settings → Diagnostics** shows the tail of it
+alongside the monitor inventory, where each window actually is, the heartbeat table
+and the sizes on disk. When something looks wrong, that pane is the bug report.
+
 ## Requirements
 
 - Windows 10 or 11 (Win32 shell, Recycle Bin and WASAPI loopback are used
@@ -143,7 +158,7 @@ tool. The thumbprint is per-machine, which is why this repository carries none.
 ```powershell
 npm run build              # plugin id check + tsc --noEmit + vite build
 npm run check:plugins      # only the backend/frontend plugin id agreement
-cargo test                 # 73 backend tests, run from src-tauri
+cargo test                 # 80 backend tests, run from src-tauri
 cargo check
 npm run verify:panes       # render every settings pane headlessly (needs npm run dev)
 npm run verify:app         # check the running app over its debug port
@@ -331,7 +346,12 @@ a built-in. Installation, the `plugin.json` reference and the module contract ar
 An archive is read *before* it is installed: the confirm names the plugin, its
 version, its author, how much of it there is, which plugin api it was written
 against, and — if you already have it — both versions and whether this is an
-upgrade or a downgrade. Anything that is not a plugin, or is not a zip at all, is
+upgrade or a downgrade. **Installing is approving**: a plugin's code runs inside
+Floaty's own windows, so an installed plugin is not loaded until it has been
+approved, and the approval is recorded against a fingerprint of the files it was
+given for — replace them and Floaty asks again. A folder copied into the plugins
+directory by hand is listed with an **approve plugin** button and stays unloaded
+until you press it. Anything that is not a plugin, or is not a zip at all, is
 refused by name with the reason, with nothing written to the plugins folder. The
 **remove plugin** button on a plugin's card takes it off again: the folder goes to
 the Recycle Bin and its floaties go with it, and it says how many that is first.
@@ -353,6 +373,7 @@ arrive with, and the tab lives in the URL hash so a reload stays where you were:
 | Motion | `#/motion` | the table above, plus click behaviour |
 | Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
 | General | `#/general` | stay on desktop, start with Windows, ask before removing, the launcher key, tidy the desktop, undo |
+| Diagnostics | `#/diagnostics` | `floaty.log`, the monitors, every window, the heartbeat table, the sizes on disk |
 
 Edits are applied immediately; slider drags are debounced so a five-step drag is
 one save.
@@ -409,7 +430,7 @@ src/
     params.ts    the setting table: key, label, range, unit
     pane.ts      Pane interface
     store.ts     settings cache, debounced saves, widget list reload
-    panes/       desktop, apps, files, motion, plugins, general
+    panes/       desktop, apps, files, motion, plugins, general, diagnostics
   widgets/
     plugin.ts        frontend plugin registry + FloatyPlugin interface
     pluginManifest.ts reads the backend manifest
@@ -424,6 +445,7 @@ src-tauri/src/
   plugins.rs    backend plugin registry, manifests, sizing, installed plugins
   plugin_install.rs  install, inspect and remove a plugin archive or folder
   palette.rs    the launcher: its window, its hotkey, and how a query is ranked
+  diagnostics.rs the log (rotation, tail, sizes) and the report the pane renders
   icons.rs      stored icons: files named by content, and the urls that point at them
   undo.rs       what the last few changes were, so one press can put them back
   fs_watch.rs   the root-folder watcher
@@ -432,7 +454,7 @@ src-tauri/src/
   shell_ops.rs  shell-level file operations (shortcuts, icons, recycle)
   main.rs       entry point
 docs/PLUGINS.md                 plugin authoring reference
-examples/plugins/               two worked example plugins, and their README
+examples/plugins/               worked example plugins, and their README
 scripts/check-plugins.mjs       backend/frontend plugin id agreement
 scripts/set-version.mjs         write the version into every file that carries one
 verify/                        headless probes: the settings panes, the running app
@@ -467,6 +489,16 @@ verify/                        headless probes: the settings panes, the running 
   usually cloud-synced, where content notifications fire on every write while
   nothing on the desktop depends on a file's contents. Editing a file in place is
   not a desktop change, so nothing has to happen for it.
+- **Monitors at different scale factors are approximated.** One webview has one
+  scale factor, so the desktop covers the union of your screens in the primary's
+  scale: the arrangement is right, but a widget on a screen at a different scale can
+  be drawn at the wrong size. Same-scale multi-monitor setups (the usual case) are
+  exact, and the log says `monitors: N screens at different scale factors` when this
+  is what you are in.
+- **Tidy arranges across the whole arrangement, not per screen.** Its grid is
+  computed over the desktop rectangle, so on two monitors icons flow left to right
+  across both. Nothing is lost — a second tidy pass is idempotent — but a tidy that
+  respected each screen's own edges is not what this does yet.
 
 ## Built with AI
 

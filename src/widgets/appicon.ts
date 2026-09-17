@@ -14,6 +14,7 @@ import {
   loadRecord,
   logicalPos,
   monitorArea,
+  monitorAt,
   notifyDragMove,
   notifyDragging,
   onSettings,
@@ -561,7 +562,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         body: { x, y, vx, vy, w: WIN_W, h: WIN_H, restTime, restingOn, bounces },
         gravity: currentSettings().gravity,
         restitution: currentSettings().bounce,
-        bounds: mon,
+        // The floor of the screen this icon is actually over: with two monitors of
+        // different heights, the arrangement's bottom edge is off the shorter one.
+        bounds: monitorAt(x),
         others,
         dt,
       });

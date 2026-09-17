@@ -73,8 +73,17 @@ is read at startup, on rescan, and after an install.
 **Plugins are trusted code.** They run inside floaty's windows with the same
 access floaty has. There is no sandbox and no marketplace: read a plugin before
 you install it, exactly as you would a browser extension. Installing a `.zip`
-changes nothing about that — it is a copy with the checks above, not a review. Installing a `.zip`
 changes nothing about that — it is a copy with the checks above, not a review.
+
+**Installing is approving.** An installed plugin is not loaded at all until it has
+been approved, and the approval is tied to a fingerprint of the files it was given
+for: replace `index.js` and floaty asks again, because approving code is not
+approving whatever lands in its place next. Install from a `.zip` and the dialog is
+the approval — it shows the name, the author, the version, the size, the plugin api
+version and what it replaces. A folder dropped into the plugins directory by hand is
+listed in **Plugins** with an *approve plugin* button, and nothing happens until you
+press it. This replaced the old behaviour, where any folder with a manifest ran on
+the next launch.
 
 ## Writing a plugin
 
@@ -113,7 +122,7 @@ Two files. No build step, no dependencies, no floaty source.
 | `name` | yes | Shown in the settings list. |
 | `description` | no | Shown under the name. |
 | `version`, `author` | no | Shown in the settings list. |
-| `apiVersion` | yes | Must be `1`. How a future format change stays honest. |
+| `apiVersion` | yes | `1` or `2` on this build. The format is additive: 2 adds `notify`, `every`, `after` and `on` to the widget api (see `apiVersion 2` below); a manifest that says 1 gets the older surface and everything else works unchanged. A number *newer* than the build understands is refused, with the range it does speak. |
 | `entry` | no | Module file, default `index.js`. Must stay inside the plugin folder. |
 | `size` | yes | Size a fresh widget gets, in logical pixels (60–4000). |
 | `resizable` | no | `true` lets the user drag a size grip; `false` pins it to `size`. |
@@ -199,7 +208,37 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.onSettings(cb)` | Run `cb` on every settings change, and once when the settings are first loaded. This is how a widget follows a setting — see [the note above](#indexjs). |
 | `api.watchSettings()` | Make sure the settings have been loaded once. `settings()` reads whatever is cached, and this reports nothing back to you. |
 | `api.displayName(name)` | The desktop's caption rule: `Arc.lnk` → `Arc`, while a file keeps its extension. Use it for any label that names a file. |
-| `api.monitorArea()` | The desktop area the widget may use: `{ x, y, w, h }`. |
+| `api.monitorArea()` | The desktop area the widget may use: `{ x, y, w, h }`. Every screen, not just the primary — one overlay covers the whole arrangement, so a widget can sit or be dragged on any monitor. |
+
+#### `apiVersion` 2
+
+A manifest that says `"apiVersion": 2` gets four more members. Nothing was removed and
+nothing changed shape, so a plugin written against 1 keeps working exactly as it did —
+it simply does not see these.
+
+| Member | What it does |
+| --- | --- |
+| `api.notify(title, body?)` | Say something in a Windows notification. Raised by floaty, not by your plugin directly, so it costs you no permission of your own. |
+| `api.every(id, ms, fn)` | Run `fn` every `ms`. The timer belongs to the widget: floaty clears it when the widget is removed or remounted. |
+| `api.after(id, ms, fn)` | The same, once, `ms` from now. |
+| `api.on(id, event, fn)` | Follow one of floaty's own events (below). Returns a function that stops listening. Cleaned up with the widget. |
+| `api.apiVersion` | `2` on this build. |
+
+`id` is the widget record id you were mounted with — the same one
+`api.record.load` takes. Every timer and listener is keyed by it.
+`examples/plugins/reminder` shows the whole set in use.
+
+The events are floaty's own, not a private channel between plugins: `"settings"`
+(the settings changed), `"widget-updated"` (a record was rewritten — a rename on
+disk, a resize), `"widget-removed"`, `"plugins-changed"` (a plugin was installed,
+removed, enabled or disabled), and `"display"`, whose payload is
+`{ display: "on" | "off" }` — the screen went away or came back. That last one is
+the one worth having: a widget that animates, polls or draws has a reason to stop
+while nobody is looking at it.
+
+A plugin that says `"apiVersion": 1` and calls one of these gets a sentence saying
+so (`api.every needs "apiVersion": 2 in plugin.json`), rather than a type error.
+
 
 Style the widget yourself: size the container to `100%` and inject a `<style>`
 element from your module. To look like the built-in panels, build your card from

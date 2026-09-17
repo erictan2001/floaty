@@ -137,6 +137,12 @@ pub fn ensure_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
 /// tell the page to start a new search.
 pub fn show(app: &AppHandle) -> tauri::Result<()> {
     let window = ensure_window(app)?;
+    // On the screen the user is looking at, not always on the primary: with two
+    // monitors, a launcher that opens on the other one is a launcher you have to
+    // go and fetch.
+    if let Some((x, y)) = cursor_monitor_spot(app, WIDTH, HEIGHT) {
+        let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+    }
     let _ = window.center();
     let _ = window.show();
     let _ = window.set_focus();
@@ -173,6 +179,32 @@ pub fn parse_shortcut(text: &str) -> Option<String> {
     tauri_plugin_global_shortcut::Shortcut::from_str(text)
         .ok()
         .map(|_| text.to_string())
+}
+
+/// Where to put the palette: centred on the monitor the pointer is on, a third of
+/// the way down it. `None` when the platform will not say where the pointer is —
+/// the window then stays wherever it was built.
+fn cursor_monitor_spot(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
+    let cursor = app.cursor_position().ok()?;
+    let monitors = app.available_monitors().ok()?;
+    // Physical px on both sides, so this comparison does not care about scale.
+    let monitor = monitors.iter().find(|m| {
+        let (pos, size) = (m.position(), m.size());
+        cursor.x >= pos.x as f64
+            && cursor.y >= pos.y as f64
+            && cursor.x < (pos.x + size.width as i32) as f64
+            && cursor.y < (pos.y + size.height as i32) as f64
+    })?;
+    let scale = monitor.scale_factor();
+    let (mx, my) = (
+        monitor.position().x as f64 / scale,
+        monitor.position().y as f64 / scale,
+    );
+    let (mw, mh) = (
+        monitor.size().width as f64 / scale,
+        monitor.size().height as f64 / scale,
+    );
+    Some((mx + (mw - w) / 2.0, my + (mh - h) / 3.0))
 }
 
 /// Point the launcher hotkey at `accelerator`, replacing whatever was there.

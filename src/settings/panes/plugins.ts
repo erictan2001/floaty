@@ -62,7 +62,33 @@ function pluginCard(entry: PluginManifestEntry): HTMLElement {
   // Only an installed plugin has a folder to take away: a built-in is floaty
   // itself, and the switch above is how it is turned off.
   if (entry.source === "installed") {
+    // Approval is about *code*, not about a switch: an installed plugin runs in
+    // this window with the whole widget api in reach, so it is approved once —
+    // when the user has read what it is — and the approval is tied to the files it
+    // was given for. Anything else in the folder means it is asked about again.
+    if (!entry.trusted) {
+      item.append(
+        note(
+          "not approved — its widgets will not mount. This happens to a plugin whose files changed after you approved it, or one that was copied into the plugins folder instead of installed from a .zip.",
+        ),
+      );
+    }
     const controls = actionRow();
+    if (!entry.trusted) {
+      controls.append(
+        action("approve plugin", () => setPluginTrusted(entry, true), {
+          cls: "pill",
+          busyLabel: "approving…",
+        }),
+      );
+    } else {
+      controls.append(
+        action("withdraw approval", () => setPluginTrusted(entry, false), {
+          cls: "pill",
+          busyLabel: "withdrawing…",
+        }),
+      );
+    }
     controls.append(
       action("remove plugin", () => removePlugin(entry), {
         cls: "pill danger-btn",
@@ -85,6 +111,25 @@ function pluginCard(entry: PluginManifestEntry): HTMLElement {
     void plugin.renderSettings(item, ctx);
   }
   return item;
+}
+
+/**
+ * Approve an installed plugin's code, or take the approval back.
+ *
+ * The backend records the fingerprint of the folder as it is now; withdrawing
+ * forgets it, so the widgets stop mounting (they are not removed — approving again
+ * brings them back).
+ */
+async function setPluginTrusted(entry: PluginManifestEntry, trusted: boolean): Promise<void> {
+  const done = await safe("set plugin approval", () =>
+    invoke<null>("floaty_plugin_trust", { id: entry.id, trusted }),
+  );
+  if (done === undefined) return;
+  if (status) {
+    status.textContent = trusted ? `approved ${entry.id}` : `approval withdrawn for ${entry.id}`;
+  }
+  await reloadPlugins();
+  await reloadWidgets();
 }
 
 /** What an archive holds, as the backend reads it before installing anything. */
@@ -160,7 +205,12 @@ async function installFromArchive(): Promise<void> {
     .filter(Boolean)
     .join("\n\n");
 
-  const go = await confirm(`${summary}\n\nInstall it?`, {
+  // Installing from an archive *is* the approval: this dialog is where the user
+  // sees what the code is, who wrote it and what it replaces. The backend records
+  // it, so the plain fact is worth a line here.
+  const go = await confirm(
+    `${summary}\n\nInstalling approves this plugin's code for your desktop. The approval is tied to these files: replacing them later asks again.`,
+    {
     title: "floaty plugins",
     kind: report.relation === "downgrade" ? "warning" : "info",
     okLabel: replaces ? "replace" : "install",

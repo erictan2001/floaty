@@ -1,6 +1,6 @@
 # Example plugins
 
-Two complete plugins, written the third-party way: no floaty source, no build
+Three complete plugins, written the third-party way: no floaty source, no build
 step, no dependencies, and nothing but the documented `api` object. Each folder
 is a plugin you can copy into floaty as it stands, and each is written to be
 read.
@@ -9,6 +9,7 @@ read.
 | --- | --- | --- |
 | [countdown](countdown) | a widget that keeps to itself: counts down to a date you pick | a whole widget in ~150 commented lines — state in the record, a self-cleaning timer, and the standard drag / menu / resize affordances |
 | [trail](trail) | a widget that acts on the desktop: draw a path and the floaties line up along it | the harder half — taking the mouse away from the desktop, moving *other* widgets, and arrangements you can save and load back |
+| [reminder](reminder) | a widget that speaks up: shows the next reminder and raises a Windows notification when it is due | the `"apiVersion": 2` members — `api.notify`, `api.every` / `api.after` (timers the widget owns) and `api.on(id, "display", …)` to catch up after the screen was off — with the once-per-occurrence guard written out |
 
 ## Installing one
 
@@ -31,11 +32,11 @@ press rescan — no restart, and a `plugin.json` you broke is reported in settin
 with the reason rather than breaking the desktop.
 
 Plugins are trusted code. They run inside floaty's own windows with the same
-access floaty has, so read one before you install it — these two included.
+access floaty has, so read one before you install it — these three included.
 
 ## What they use
 
-Neither example imports anything from floaty. Everything comes through the `api`
+No example imports anything from floaty. Everything comes through the `api`
 object `mount(root, id, api)` is handed, which is the surface documented in
 [`docs/PLUGINS.md`](../../docs/PLUGINS.md):
 
@@ -45,6 +46,12 @@ object `mount(root, id, api)` is handed, which is the surface documented in
   their own.
 - **The standard affordances** — `api.enableDrag`, `api.addPinMenu`,
   `api.addResizeHandle`: what every floatie has, added in three lines each.
+- **The `"apiVersion": 2` members** (reminder) — `api.notify` for a Windows
+  notification, `api.every` / `api.after` for repeating and one-shot timers the
+  widget owns (floaty clears them when it goes, so there is no reaper interval to
+  write), and `api.on(id, event, …)` for floaty's own events, `"display"` among
+  them. A manifest that says `2` gets them; one that says `1` still loads and
+  gets none of them.
 - **Acting on other floaties** (trail) — `api.invoke("floaty_list")` to read the
   desktop, `api.setPos` / `api.record.save` to move an item and keep its record
   in step, and `floaty_refresh` to make the ones already on screen re-read their

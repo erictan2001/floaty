@@ -69,6 +69,12 @@ Four rules, each of which was learned the hard way:
 - **A key that needs a default action must be a real one.** `Input.dispatchKeyEvent`
   goes through the same pipeline as the keyboard; a synthetic `KeyboardEvent` does
   not.
+- **Never wait on a stopwatch; wait for the thing you are measuring.** A fixed
+  `setTimeout` after `Page.navigate` measures a half-loaded page: right after the dev
+  server re-transforms the module graph, four panes were reported as "drew nothing"
+  with no console error and no invoke, and re-runs were green — a false failure, which
+  is how a probe teaches people to ignore it. Both page probes poll for the state they
+  are about to assert (the pane's groups, the palette's input) and give up after ~20s.
 - **Assert the effect, not the presence.** "The pane has a button" passes on a
   button that does nothing: check that the invoke it should make was made, that the
   record changed, or that the pixels moved.
