@@ -12,14 +12,19 @@ read.
 
 ## Installing one
 
-A plugin is two files in a folder, and installing it is a copy:
+A plugin is two files in a folder, and installing it is a copy — either way:
 
-1. Tray icon → **Settings** → **Plugins** → **open plugin folder**. That is
-   `%APPDATA%\com.floaty.app\plugins`.
-2. Copy the example's folder in, so you end up with
-   `…\plugins\countdown\plugin.json` and `…\plugins\countdown\index.js`.
-3. Press **rescan plugins**. Both windows reload and the plugin appears in the
-   list, with a button in **+ New floatie** (`+ countdown`, `+ trail`).
+- **zip it and install it**: zip the example's folder (so the zip holds
+  `countdown/plugin.json`), then Tray icon → **Settings** → **Plugins** →
+  **install from .zip…**. The archive is validated before it lands, and the id in
+  it decides where it goes.
+- **or copy the folder in**: Tray icon → **Settings** → **Plugins** → **open
+  plugin folder** (that is `%APPDATA%\com.floaty.app\plugins`), copy the example's
+  folder so you end up with `…\plugins\countdown\plugin.json` and
+  `…\plugins\countdown\index.js`, then press **rescan plugins**.
+
+Either way both windows reload and the plugin appears in the list, with a button
+in **+ New floatie** (`+ countdown`, `+ trail`).
 
 Editing a plugin is the same loop: change the files in your plugins folder and
 press rescan — no restart, and a `plugin.json` you broke is reported in settings

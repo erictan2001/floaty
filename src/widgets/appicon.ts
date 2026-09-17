@@ -217,6 +217,11 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     setBubble(true);
     // real app icon when available (cached in the record, else resolved once
     // by the backend and persisted there); letter tile stays as the fallback
+    // An icon url is a file on disk now, so it can be missing at the moment the
+    // record still claims to have one (a cleared app data folder, a profile
+    // copied without its icons). Show the letter tile instead of a broken image,
+    // and give the backend exactly one chance to resolve it again.
+    let reasked = false;
     const applyIcon = (url: string) => {
       setBubble(false);
       let img = tile.querySelector<HTMLImageElement>("img.tile-icon");
@@ -227,6 +232,20 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         img.alt = "";
         tile.prepend(img);
       }
+      img.onerror = () => {
+        img?.remove();
+        setBubble(true);
+        if (reasked || !url) return;
+        reasked = true;
+        invoke<string>("floaty_icon", { id })
+          .then((fresh) => {
+            if (fresh && fresh !== "none" && fresh !== url) {
+              if (rec) rec.data["icon"] = fresh;
+              applyIcon(fresh);
+            }
+          })
+          .catch(() => undefined);
+      };
       img.src = url;
     };
     const cachedIcon = typeof rec.data["icon"] === "string" ? (rec.data["icon"] as string) : "";

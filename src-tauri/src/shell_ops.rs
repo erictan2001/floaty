@@ -169,6 +169,159 @@ fn spawn_hidden(program: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Put a recycled file back where it came from.
+///
+/// Three routes were tried and two are recorded here because they look right and
+/// are not:
+///
+/// - **The bin's own `Restore` verb does nothing from a script.** `InvokeVerb()`
+///   and `InvokeVerb('Restore')` both return success and leave the file in the
+///   bin — measured for files and for directories, with the verb's name spelled
+///   with and without its accelerator. So no shell verb.
+/// - **The Shell namespace lags a fresh delete.** Listing `NameSpace(0xA)` and
+///   matching `System.Recycle.DeletedFrom` + the item's name does find an entry —
+///   a minute later. Measured right after a delete (which is when an undo is
+///   pressed) it reports nothing, through six attempts over 1.5s, and that is
+///   exactly what "undo does nothing" would look like.
+///
+/// So this reads the bin the way the shell stores it: beside each `$I<id>`
+/// metadata file sits the file itself as `$R<id>`. `$I` holds the original path
+/// and the deletion time, which is all a restore needs — move `$R` back, drop
+/// `$I`. No COM, no namespace cache, no waiting.
+#[cfg(windows)]
+pub fn restore_from_bin(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("no path to restore".into());
+    }
+    let target = Path::new(path);
+    if target.exists() {
+        return Err(format!("'{path}' is on disk already"));
+    }
+
+    // The newest entry for this path wins: the same file can be recycled more
+    // than once, and undoing the most recent delete is what was asked for.
+    let mut best: Option<(std::time::SystemTime, PathBuf, PathBuf)> = None;
+    for (metadata, file, original, deleted_at) in bin_entries() {
+        if !same_path(&original, path) {
+            continue;
+        }
+        if best.as_ref().map(|(t, _, _)| deleted_at > *t).unwrap_or(true) {
+            best = Some((deleted_at, file, metadata));
+        }
+    }
+
+    let Some((_, file, metadata)) = best else {
+        return Err(format!("'{path}' is no longer in the Recycle Bin"));
+    };
+    if !file.exists() {
+        return Err(format!(
+            "the Recycle Bin remembers '{path}' but no longer holds it"
+        ));
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    std::fs::rename(&file, target).map_err(|e| format!("could not put '{path}' back: {e}"))?;
+    // The metadata goes last: a crash in between leaves the file restored and a
+    // stale row in the bin, which is visible and harmless — the other order
+    // loses the file.
+    let _ = std::fs::remove_file(&metadata);
+    Ok(())
+}
+
+/// Every entry in every Recycle Bin this user can read, as
+/// `($I path, $R path, original path, deleted at)`.
+///
+/// One bin per volume, each with a folder per SID; another user's folder simply
+/// cannot be read and is skipped.
+fn bin_entries() -> Vec<(PathBuf, PathBuf, String, std::time::SystemTime)> {
+    let mut out = Vec::new();
+    for letter in b'A'..=b'Z' {
+        let root = PathBuf::from(format!("{}:\\$Recycle.Bin", letter as char));
+        let Ok(sids) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for sid in sids.filter_map(|e| e.ok()) {
+            let Ok(entries) = std::fs::read_dir(sid.path()) else {
+                continue;
+            };
+            for entry in entries.filter_map(|e| e.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let Some(suffix) = name.strip_prefix("$I") else {
+                    continue;
+                };
+                let Ok(bytes) = std::fs::read(entry.path()) else {
+                    continue;
+                };
+                let Some((original, deleted_at)) = parse_recycled_metadata(&bytes) else {
+                    continue;
+                };
+                let file = entry.path().with_file_name(format!("$R{suffix}"));
+                out.push((entry.path(), file, original, deleted_at));
+            }
+        }
+    }
+    out
+}
+
+/// The original path and the moment it was deleted, out of an `$I` file.
+///
+/// Version 2+ (Vista and later, so everything this build runs on) stores the path
+/// as a count of UTF-16 code units followed by the text; version 1 stored it as
+/// ANSI. Both are read, because a bin carried over from an old profile is not a
+/// reason to refuse to put someone's file back.
+fn parse_recycled_metadata(bytes: &[u8]) -> Option<(String, std::time::SystemTime)> {
+    if bytes.len() < 28 {
+        return None;
+    }
+    let version = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
+    let deleted_at = filetime_to_system_time(u64::from_le_bytes(bytes[16..24].try_into().ok()?));
+
+    let original = if version >= 2 {
+        let units = u32::from_le_bytes(bytes[24..28].try_into().ok()?) as usize;
+        let start = 28usize;
+        let end = start.checked_add(units.checked_mul(2)?)?;
+        let raw = bytes.get(start..end)?;
+        let mut utf16: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        while utf16.last() == Some(&0) {
+            utf16.pop();
+        }
+        String::from_utf16(&utf16).ok()?
+    } else {
+        let rest = bytes.get(24..)?;
+        let end = rest.iter().position(|b| *b == 0)?;
+        String::from_utf8_lossy(&rest[..end]).to_string()
+    };
+    if original.is_empty() {
+        return None;
+    }
+    Some((original, deleted_at))
+}
+
+/// Windows' 100ns-since-1601 clock into a `SystemTime`.
+fn filetime_to_system_time(raw: u64) -> std::time::SystemTime {
+    const EPOCH_DIFF_SECS: u64 = 11_644_473_600;
+    let secs = raw / 10_000_000;
+    let nanos = ((raw % 10_000_000) * 100) as u32;
+    std::time::UNIX_EPOCH
+        + std::time::Duration::new(secs.saturating_sub(EPOCH_DIFF_SECS), nanos.min(999_999_999))
+}
+
+/// Windows paths are case-insensitive, and a trailing separator is not a
+/// difference worth failing a restore over.
+fn same_path(a: &str, b: &str) -> bool {
+    a.trim_end_matches(['\\', '/'])
+        .eq_ignore_ascii_case(b.trim_end_matches(['\\', '/']))
+}
+
+#[cfg(not(windows))]
+pub fn restore_from_bin(_path: &str) -> Result<(), String> {
+    Err("the Recycle Bin is windows-only".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +368,109 @@ mod tests {
         std::fs::write(&other, b"y").unwrap();
         assert!(rename(&renamed, "other.txt").is_err());
         assert_eq!(std::fs::read(&other).unwrap(), b"y");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `$I` file as Windows 10 writes it: version 2, a UTF-16 path.
+    fn i_file_v2(original: &str, deleted_unix: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u64.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&((deleted_unix + 11_644_473_600) * 10_000_000).to_le_bytes());
+        let units: Vec<u16> = original.encode_utf16().collect();
+        bytes.extend_from_slice(&(units.len() as u32).to_le_bytes());
+        for unit in &units {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes
+    }
+
+    /// The older layout: version 1, an ANSI path.
+    fn i_file_v1(original: &str, deleted_unix: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u64.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&((deleted_unix + 11_644_473_600) * 10_000_000).to_le_bytes());
+        bytes.extend_from_slice(original.as_bytes());
+        bytes.push(0);
+        bytes
+    }
+
+    #[test]
+    fn a_recycled_files_metadata_parses_in_both_formats() {
+        let unix = 1_700_000_000u64;
+        let (path, when) =
+            parse_recycled_metadata(&i_file_v2(r"C:\Users\me\Desktop\a b.txt", unix)).unwrap();
+        assert_eq!(path, r"C:\Users\me\Desktop\a b.txt");
+        assert_eq!(
+            when.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            unix,
+            "the deletion time is what picks the newest of several entries"
+        );
+        // a name a byte-wise read would mangle
+        let (path, _) =
+            parse_recycled_metadata(&i_file_v2(r"C:\Users\me\Desktop\百度网盘.lnk", unix)).unwrap();
+        assert_eq!(path, r"C:\Users\me\Desktop\百度网盘.lnk");
+        // and the format an old profile's bin would still be in
+        let (path, _) = parse_recycled_metadata(&i_file_v1(r"C:\old\thing.txt", unix)).unwrap();
+        assert_eq!(path, r"C:\old\thing.txt");
+        // junk, and a record with no name, are refused rather than restored
+        // somewhere invented
+        assert!(parse_recycled_metadata(&[]).is_none());
+        assert!(parse_recycled_metadata(&[0u8; 40]).is_none());
+        assert!(parse_recycled_metadata(&i_file_v2("", unix)).is_none());
+    }
+
+    #[test]
+    fn paths_match_the_way_windows_compares_them() {
+        assert!(same_path(r"C:\Users\Me\a.txt", r"c:\users\me\A.TXT"));
+        assert!(same_path(r"C:\Users\Me\", r"C:\Users\Me"));
+        assert!(!same_path(r"C:\Users\Me\a.txt", r"C:\Users\Me\b.txt"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_recycled_directory_comes_back_with_its_contents() {
+        let dir = temp_dir("restore-dir");
+        let folder = dir.join("Grouped");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("inside.txt"), b"still here").unwrap();
+
+        recycle(&folder).unwrap();
+        assert!(!folder.exists());
+
+        restore_from_bin(&folder.to_string_lossy()).expect("the bin should hold the folder");
+        assert!(folder.is_dir(), "the folder is back");
+        assert_eq!(
+            std::fs::read(folder.join("inside.txt")).unwrap(),
+            b"still here",
+            "with what was inside it"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bin halves of one round trip: what `recycle` put in comes back out.
+    #[test]
+    #[cfg(windows)]
+    fn a_recycled_file_can_be_put_back() {
+        let dir = temp_dir("restore");
+        let victim = dir.join("throwaway-restore.txt");
+        std::fs::write(&victim, b"put me back").unwrap();
+
+        recycle(&victim).expect("shell delete should succeed");
+        assert!(!victim.exists());
+
+        restore_from_bin(&victim.to_string_lossy()).expect("the bin should hold it");
+        assert!(victim.exists(), "the file is back on disk");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"put me back");
+
+        // and a path that was never recycled says so rather than pretending
+        let never = dir.join("never-recycled.txt");
+        let err = restore_from_bin(&never.to_string_lossy()).unwrap_err();
+        assert!(err.contains("Recycle Bin"), "{err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

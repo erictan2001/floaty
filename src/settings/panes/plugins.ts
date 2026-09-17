@@ -74,15 +74,70 @@ function pluginCard(entry: PluginManifestEntry): HTMLElement {
   return item;
 }
 
+/** What the backend reports about one install. */
+interface PluginInstallReport {
+  id: string;
+  name: string;
+  version: string;
+  files: number;
+  replaced: boolean;
+}
+
+/**
+ * Install a plugin from a zip the user picked.
+ *
+ * "Already installed" is a question here rather than an error: without a second
+ * yes the backend refuses to overwrite an installed plugin, and a newer copy of
+ * something you already have is exactly what reinstalling means.
+ */
+async function installFromArchive(): Promise<void> {
+  const { open, confirm } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    multiple: false,
+    title: "a plugin archive",
+    filters: [{ name: "plugin archive", extensions: ["zip"] }],
+  });
+  if (typeof picked !== "string" || !picked) return;
+
+  const install = (replace: boolean) =>
+    invoke<PluginInstallReport>("floaty_install_plugin", { path: picked, replace });
+
+  let report: PluginInstallReport | undefined;
+  try {
+    report = await install(false);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!message.includes("already installed")) {
+      showError(`install plugin: ${message}`);
+      return;
+    }
+    const swap = await confirm(`${message}.\n\nReplace the installed copy with this archive?`, {
+      title: "floaty",
+      kind: "warning",
+      okLabel: "replace",
+      cancelLabel: "keep",
+    });
+    if (!swap) return;
+    report = await safe("replace plugin", () => install(true));
+  }
+  if (!report) return;
+  if (status) {
+    status.textContent = `${report.replaced ? "replaced" : "installed"} ${report.name} v${report.version} (${report.files} files)`;
+  }
+  await reloadPlugins();
+  await reloadWidgets();
+}
+
 /** Where a third-party plugin comes from, and a way to reload the folder. */
 function installGroup(): HTMLElement {
   const section = group(
     "Install your own",
-    "Drop a folder holding plugin.json and index.js into the plugins folder, then press rescan — the module is imported straight from disk. docs/PLUGINS.md describes the format.",
+    "Install a plugin .zip, or drop a folder holding plugin.json and index.js into the plugins folder and press rescan — the module is imported straight from disk. docs/PLUGINS.md describes the format.",
   );
   const row = actionRow();
   row.append(
     action("open plugin folder", () => safe("open plugin folder", () => invoke("floaty_open_plugins_dir"))),
+    action("install from .zip…", installFromArchive, { busyLabel: "installing…" }),
     action(
       "rescan plugins",
       async () => {

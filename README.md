@@ -143,12 +143,14 @@ tool. The thumbprint is per-machine, which is why this repository carries none.
 ```powershell
 npm run build              # plugin id check + tsc --noEmit + vite build
 npm run check:plugins      # only the backend/frontend plugin id agreement
-cargo test                 # 43 backend tests, run from src-tauri
+cargo test                 # 67 backend tests, run from src-tauri
 cargo check
 ```
 
 The backend tests cover the watcher, the shortcut and grouping rules, the plugin
-manifests, the desktop-layer window policy and how an older settings file loads.
+manifests, the icon store (including a real recycle-and-restore round trip), undo
+steps and the disk moves they reverse, the desktop-layer window policy and how an
+older settings file loads.
 `scripts/check-plugins.mjs` fails the build when the plugin listed in the backend
 registry and the one registered in the frontend disagree, which is the one mistake
 that is easy to make and invisible at runtime. (Quit Floaty first: the running app
@@ -234,6 +236,15 @@ single handler out to its widgets so nothing reads a half-updated cache. Every
 change is logged (`[motion] …`) with the values it used and the decision each
 icon made.
 
+**Tidy the desktop** (General tab) lines the icons up on a grid: a pinned icon
+holds the place it is given, and everything else is stacked up from the floor in
+even columns — a mid-screen slot for an icon that falls would be a place it left
+the moment it was mounted again. Panels and notes keep their places and the grid
+lays itself around them. **Ctrl+Z** on the desktop, or the undo button in the
+General tab, puts back the last change: a removed floatie, a recycled file (out of
+the Recycle Bin, by name), an ungroup, a grouping, or a tidy. The stack holds the
+last sixteen changes of the running session; nothing is written to disk for it.
+
 Right-click any floatie for its menu: pin on top (a real second layer, above all
 normal windows, persisted per widget), or remove it. "Stay on the desktop"
 (General tab) keeps floaties visible through Win+D instead of minimising with
@@ -288,11 +299,15 @@ names, sizes, the quick-add label and whether the kind stands for a file on disk
 while the frontend module owns behaviour — mount, describe, settings rows. The
 frontend reads the manifest, so those facts exist once.
 
-Third-party plugins need no Floaty source: drop a folder with `plugin.json` and
-`index.js` into `%APPDATA%\com.floaty.app\plugins`, press **rescan plugins**, and
-the widget is available with the same API and the same settings card as a
-built-in. Installation, the `plugin.json` reference and the module contract are in
-[docs/PLUGINS.md](docs/PLUGINS.md).
+Third-party plugins need no Floaty source: press **install from .zip** with a
+plugin archive somebody sent you, or drop a folder with `plugin.json` and
+`index.js` into `%APPDATA%\com.floaty.app\plugins` and press **rescan plugins**.
+Either way the widget is available with the same API and the same settings card as
+a built-in. An archive is unpacked and validated *before* anything reaches the
+plugins folder, so a bad zip is a sentence in settings rather than a folder name
+every later launch rejects; installing over a plugin you already have asks first,
+and says which versions are involved. Installation, the `plugin.json` reference
+and the module contract are in [docs/PLUGINS.md](docs/PLUGINS.md).
 
 Disabling a plugin closes its widgets and keeps their records; re-enabling brings
 them back. Nothing disabled is loaded, listed or creatable until it is turned back
@@ -310,16 +325,27 @@ arrive with, and the tab lives in the URL hash so a reload stays where you were:
 | Files | `#/files` | the root folder and its contents |
 | Motion | `#/motion` | the table above, plus click behaviour |
 | Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
-| General | `#/general` | stay on desktop, start with Windows, ask before removing |
+| General | `#/general` | stay on desktop, start with Windows, ask before removing, tidy the desktop, undo |
 
 Edits are applied immediately; slider drags are debounced so a five-step drag is
 one save.
+
+Icons are files, not text in the store. A record's `icon` is an
+`http://asset.localhost/…` url into that folder, which is what an `<img>` loads
+either way — so the desktop renders them exactly as it did when they were inlined
+base64. Measured on a real desktop of 36 widgets: 451 stored icons (8.39MB, 97% of
+an 8.65MB store) became 42 files totalling 1.8MB, and the store became 300KB.
+Identical bytes are one file, which is why ten folders holding the same app icon
+cost one icon. A store written before this change is migrated on the next launch
+(`icons: moved N inlined icons into …`), and icon files no record mentions any
+more are swept.
 
 ## Where things live
 
 | Path | Contents |
 | --- | --- |
-| `%APPDATA%\com.floaty.app\floaty-store.json` | widget records: `id`, `kind`, logical `x`/`y`, and the per-widget `data` (name, target, icon, `pinned`) |
+| `%APPDATA%\com.floaty.app\floaty-store.json` | widget records: `id`, `kind`, logical `x`/`y`, and the per-widget `data` (name, target, `pinned`, and an `icon` url) |
+| `%APPDATA%\com.floaty.app\icons\` | one PNG per *distinct* icon, named after its contents, so the same app icon in ten folders is one file |
 | `%APPDATA%\com.floaty.app\floaty-settings.json` | global settings (the keys in the Motion table and the panes) |
 | `%APPDATA%\com.floaty.app\plugins\` | installed third-party plugins |
 | `%APPDATA%\com.floaty.app\floaty.log` | backend log, including forwarded frontend errors |
@@ -369,6 +395,9 @@ src/
 src-tauri/src/
   lib.rs        store, overlays and windows, watcher wiring, tray, apps, icons
   plugins.rs    backend plugin registry, manifests, sizing, installed plugins
+  plugin_install.rs  install a plugin from a .zip, or from a folder
+  icons.rs      stored icons: files named by content, and the urls that point at them
+  undo.rs       what the last few changes were, so one press can put them back
   fs_watch.rs   the root-folder watcher
   audio.rs      WASAPI loopback capture for the visualizer
   sysmon.rs     CPU / GPU / RAM sampling

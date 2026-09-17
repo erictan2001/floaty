@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   currentSettings,
   isOverlayMode,
@@ -28,7 +28,12 @@ import { crossCheckPlugins, isDesktopItem, layoutPriorityFor, pluginSize } from 
  * Existing valid in-bounds positions are preserved; any widgets at (0, 0), offscreen,
  * or colliding with earlier widgets are assigned clean, staggered desktop grid coordinates.
  */
-export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea, top: boolean): void {
+export function resolveOverlayLayout(
+  list: WidgetRecord[],
+  mon: MonitorArea,
+  top: boolean,
+  opts: { tidy?: boolean } = {},
+): Array<{ id: string; x: number; y: number }> {
   const screenW = mon.w > 0 ? mon.w : (window.innerWidth || 1920);
   const screenH = mon.h > 0 ? mon.h : (window.innerHeight || 1080);
 
@@ -41,6 +46,10 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea, top
   }
   const placed: PlacedItem[] = [];
   const needsRelocation: WidgetRecord[] = [];
+  // Tidy only: what is put back on the floor, so a stack of icons is not read as
+  // a collision with itself. See the note on `tidy` below.
+  const floorZone = new Set<string>();
+  const moved: Array<{ id: string; x: number; y: number }> = [];
 
   const sorted = [...list].sort(
     (a, b) => layoutPriorityFor(a.kind) - layoutPriorityFor(b.kind),
@@ -51,6 +60,21 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea, top
     // which is the one they are drawn in.
     if (isPinned(rec) !== top) continue;
     const { w, h } = pluginSize(rec);
+
+    // "Tidy the desktop" is a deliberate instruction, so it overrides the two
+    // things that normally protect a saved position — a hand-dragged one and an
+    // arrangement a widget made (`arranged`). It applies to the icons only: a
+    // note or a panel is hand-placed and stays where it is, which also makes it
+    // something the grid must lay itself around.
+    if (opts.tidy === true && isDesktopItem(rec.kind)) {
+      if (isPinned(rec)) {
+        needsRelocation.push(rec);
+      } else {
+        floorZone.add(rec.id);
+        needsRelocation.push(rec);
+      }
+      continue;
+    }
 
     // A record a widget placed on purpose is left exactly where it is. The trail widget
     // marks the icons it arranged (`data.arranged`), because the collision test below
@@ -84,29 +108,54 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea, top
   const MARGIN_BOTTOM = 72;
   const CELL_W = 100;
   const CELL_H = 116;
+  // The desktop has gravity, so a slot is only a place an icon will *stay* if
+  // something holds it up. A pinned icon holds its own place; everything else
+  // comes to rest on the floor, and a tidy that put one mid-screen would be a
+  // tidy the next mount undid. So the grid runs two ways: pinned icons fill rows
+  // from the top, and the rest stack up from the floor, one cell apart.
+  const FLOOR_GAP = 6;
 
   const usableH = Math.max(200, screenH - MARGIN_TOP - MARGIN_BOTTOM);
   const rowsPerCol = Math.max(1, Math.floor(usableH / CELL_H));
+  const floorRows = Math.max(
+    1,
+    Math.floor((screenH - MARGIN_TOP - FLOOR_GAP) / CELL_H),
+  );
 
   let gridIndex = 0;
+  let floorIndex = 0;
   for (const rec of needsRelocation) {
     const { w, h } = pluginSize(rec);
+    const onFloor = opts.tidy === true && !isPinned(rec);
     // Clamp into the screen *before* testing for room. The clamp used to run
-    // after, so any widget wider than a grid cell (a 240px plugin, a 392px
+    // after, so any widget wider than a grid cell (a 240px plugin, the 392px
     // live2d) was pushed back onto the icon grid and ended up hidden behind the
     // tiles that were already there.
     let placedAt: { x: number; y: number } | undefined;
     for (let tries = 0; tries < 500 && !placedAt; tries++) {
-      const col = Math.floor(gridIndex / rowsPerCol);
-      const row = gridIndex % rowsPerCol;
-      gridIndex++;
+      const index = onFloor ? floorIndex : gridIndex;
+      const rows = onFloor ? floorRows : rowsPerCol;
+      const col = Math.floor(index / rows);
+      const row = index % rows;
+      if (onFloor) {
+        floorIndex++;
+      } else {
+        gridIndex++;
+      }
       const gx = Math.max(MARGIN_LEFT, Math.min(MARGIN_LEFT + col * CELL_W, screenW - w - 16));
-      const gy = Math.max(MARGIN_TOP, Math.min(MARGIN_TOP + row * CELL_H, screenH - h - 16));
+      // from the floor upwards for an icon that rests, from the top down for one
+      // that is held: both are measured from the edge the icon answers to
+      const gy = onFloor
+        ? Math.max(MARGIN_TOP, screenH - FLOOR_GAP - h - row * CELL_H)
+        : Math.max(MARGIN_TOP, Math.min(MARGIN_TOP + row * CELL_H, screenH - h - 16));
 
       const collides = placed.some((p) => {
         const ox = Math.min(gx + w, p.x + p.w) - Math.max(gx, p.x);
         const oy = Math.min(gy + h, p.y + p.h) - Math.max(gy, p.y);
-        return ox > 12 && oy > 12;
+        if (ox <= 12 || oy <= 12) return false;
+        // A stack of resting icons is not a collision: the floor zone is what
+        // the physics does with a pile, and tidy is only choosing the columns.
+        return !floorZone.has(p.id);
       });
       if (!collides) placedAt = { x: gx, y: gy };
     }
@@ -119,8 +168,16 @@ export function resolveOverlayLayout(list: WidgetRecord[], mon: MonitorArea, top
     rec.x = placedAt.x;
     rec.y = placedAt.y;
     placed.push({ id: rec.id, x: rec.x, y: rec.y, w, h });
+    moved.push({ id: rec.id, x: rec.x, y: rec.y });
+    // What tidy placed has to survive the next launch, and the layout pass on
+    // load keeps any record that says it was arranged on purpose — the same flag
+    // the trail plugin sets for the icons it lines up.
+    if (opts.tidy === true && isDesktopItem(rec.kind)) {
+      rec.data["arranged"] = true;
+    }
     void saveRecord(rec);
   }
+  return moved;
 }
 
 export function mountOverlay(root: HTMLElement): void {
@@ -511,8 +568,72 @@ export function mountOverlay(root: HTMLElement): void {
     }).catch(() => undefined);
   });
 
-  // Global escape key to collapse open folders / close menus
+  /**
+   * Put this layer's icons back in order.
+   *
+   * Reuses the layout pass with `tidy`, which overrides saved positions and any
+   * earlier arrangement for the icons (never for the panels), and then remounts
+   * them so the desktop shows the new places instead of carrying on falling.
+   *
+   * The positions about to be overwritten are recorded as an undo step first:
+   * this is the only place that has them, and a tidy is worth being able to take
+   * back with Ctrl+Z.
+   */
+  const tidyDesktop = async (): Promise<number> => {
+    const records = await invoke<WidgetRecord[]>("floaty_list");
+    const mon = await monitorArea();
+    const mine = records.filter(
+      (rec) => isDesktopItem(rec.kind) && isPinned(rec) === top,
+    );
+    if (mine.length === 0) return 0;
+    await invoke("floaty_undo_checkpoint", {
+      label: "tidy",
+      restore: mine.map((rec) => ({ id: rec.id, record: JSON.parse(JSON.stringify(rec)) })),
+    }).catch(() => undefined);
+    const moved = resolveOverlayLayout(records, mon, top, { tidy: true });
+    if (moved.length > 0) {
+      await invoke("floaty_refresh", { ids: moved.map((m) => m.id) }).catch(() => undefined);
+    }
+    return moved.length;
+  };
+
+  listen("floaty-tidy-requested", () => {
+    void tidyDesktop()
+      .then((count) => {
+        void invoke("floaty_log", {
+          msg: `[overlay${top ? ":top" : ""}] tidied ${count} floatie(s)`,
+        });
+        return emit("floaty-tidy-done", { count });
+      })
+      .catch((err) => {
+        void invoke("floaty_log", {
+          msg: `[overlay${top ? ":top" : ""}] tidy FAILED: ${String(err)}`,
+        });
+      });
+  }).catch(() => undefined);
+
+  // Ctrl+Z anywhere on the desktop undoes the last change: a recycled file, an
+  // ungroup, a grouping, a tidy. Anything that takes typing keeps its own undo,
+  // so a focused field is left alone.
   window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+      const active = document.activeElement;
+      const typing =
+        active instanceof HTMLElement &&
+        (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
+      if (typing) return;
+      e.preventDefault();
+      void invoke<{ label: string; remaining: number }>("floaty_undo")
+        .then((report) =>
+          invoke("floaty_log", {
+            msg: `[overlay] undid '${report.label}' (${report.remaining} left to undo)`,
+          }),
+        )
+        .catch((err) =>
+          invoke("floaty_log", { msg: `[overlay] undo: ${String(err)}` }),
+        );
+      return;
+    }
     if (e.key === "Escape") {
       document.querySelectorAll(".pin-menu, .model-menu").forEach((m) => m.remove());
       document.querySelectorAll(".folder.open .fshut").forEach((b) => (b as HTMLElement).click());
