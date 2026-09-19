@@ -263,6 +263,7 @@ let desktop: MonitorArea | null = null;
  * the resume path is for.
  */
 export async function watchMonitors(): Promise<MonitorArea[]> {
+  followMonitors();
   try {
     desktop = (await invoke<MonitorArea>("floaty_desktop_rect")) ?? desktop;
     monitors = (await invoke<MonitorArea[]>("floaty_monitors")) ?? monitors;
@@ -270,6 +271,22 @@ export async function watchMonitors(): Promise<MonitorArea[]> {
     /* keep whatever was known: a missing layout must not stop the desktop */
   }
   return monitors;
+}
+
+/**
+ * Re-read the layout when Windows says the arrangement changed — a screen plugged in,
+ * unplugged or re-scaled. The backend refits the overlay, brings stranded floaties
+ * back, and emits this; a page that has ever asked about the layout is a page that
+ * cares, so the subscription is made here rather than left to each caller.
+ */
+let monitorsWatched = false;
+
+function followMonitors(): void {
+  if (monitorsWatched) return;
+  monitorsWatched = true;
+  void listen("floaty-display-changed", () => {
+    void watchMonitors();
+  }).catch(() => undefined);
 }
 
 /**

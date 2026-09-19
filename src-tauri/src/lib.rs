@@ -1208,6 +1208,16 @@ mod desktop_pin {
         // put itself back together. Two shapes: a resume code after a classic
         // sleep, or the display switching back on after Modern Standby (which
         // sends no resume at all).
+        // A display was plugged in, unplugged or re-scaled. Nothing acted on this
+        // before, so the overlay kept the size it was built with, the pages kept the
+        // layout they had read at mount, and a floatie that had been dragged onto the
+        // screen that just went away kept its coordinates — pinned, so nothing was
+        // ever going to move it back. Every top-level window gets this message, and
+        // the debounce inside treats one change as one job.
+        if msg == crate::WM_DISPLAYCHANGE {
+            std::thread::spawn(crate::display_arrangement_changed);
+        }
+
         if msg == crate::WM_POWERBROADCAST {
             if wparam == crate::PBT_POWERSETTINGCHANGE && lparam != 0 {
                 let setting = unsafe { &*(lparam as *const crate::POWERBROADCAST_SETTING) };
@@ -1538,6 +1548,10 @@ mod desktop_pin {
 /// Windows tells every top-level window when the machine goes down and comes
 /// back. Nothing else re-creates what a sleep broke.
 const WM_POWERBROADCAST: u32 = 0x0218;
+/// Sent to every top-level window when a display is added, removed or re-scaled.
+/// Spelled out here for the same reason as the line above: this module names its own
+/// messages, and the crate's copy lives behind a module this file does not import.
+pub const WM_DISPLAYCHANGE: u32 = 0x007E;
 const PBT_APMRESUMESUSPEND: usize = 0x0007;
 const PBT_APMRESUMEAUTOMATIC: usize = 0x0012;
 const PBT_APMRESUMECRITICAL: usize = 0x0006;
@@ -2287,18 +2301,7 @@ fn is_path_kind(kind: &str) -> bool {
 /// on the other screen may not be. `mixed_scale` says so in the log, once.
 fn overlay_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
     let monitors = app.available_monitors().unwrap_or_default();
-    let rects: Vec<(f64, f64, f64, f64)> = monitors
-        .iter()
-        .map(|mon| {
-            let s = mon.scale_factor();
-            (
-                mon.position().x as f64 / s,
-                mon.position().y as f64 / s,
-                mon.size().width as f64 / s,
-                mon.size().height as f64 / s,
-            )
-        })
-        .collect();
+    let rects = logical_monitor_rects(&monitors);
     if rects.is_empty() {
         // No monitor list at all (a driver that is not answering): the primary, or
         // the box this always used to be.
@@ -2315,6 +2318,23 @@ fn overlay_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
     }
     log_mixed_scale(app, &monitors);
     union_rect(&rects)
+}
+
+/// Every monitor as `(x, y, w, h)` in logical px — the space a record's x/y are in,
+/// so a record can be tested against, and moved into, a screen.
+fn logical_monitor_rects(monitors: &[tauri::Monitor]) -> Vec<(f64, f64, f64, f64)> {
+    monitors
+        .iter()
+        .map(|mon| {
+            let s = mon.scale_factor();
+            (
+                mon.position().x as f64 / s,
+                mon.position().y as f64 / s,
+                mon.size().width as f64 / s,
+                mon.size().height as f64 / s,
+            )
+        })
+        .collect()
 }
 
 /// The smallest rectangle holding every rect. Pure: negative origins and a monitor
@@ -6691,6 +6711,263 @@ fn floaty_notify(title: String, body: String, app: AppHandle) -> Result<(), Stri
         .map_err(|e| format!("the notification was refused: {e}"))
 }
 
+/// The monitor whose rect a point belongs to, or the one nearest to it.
+///
+/// "Nearest" is what makes a floatie come back: a point that is on no screen at all
+/// is a point whose screen was unplugged, and the honest destination is the closest
+/// screen that still exists — not the primary, which may be the far one.
+fn nearest_monitor(rects: &[(f64, f64, f64, f64)], x: f64, y: f64) -> Option<usize> {
+    if rects.is_empty() {
+        return None;
+    }
+    let gap = |rect: &(f64, f64, f64, f64)| {
+        let (rx, ry, rw, rh) = *rect;
+        let dx = (rx - x).max(0.0).max(x - (rx + rw));
+        let dy = (ry - y).max(0.0).max(y - (ry + rh));
+        dx * dx + dy * dy
+    };
+    rects
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| gap(a).total_cmp(&gap(b)))
+        .map(|(index, _)| index)
+}
+
+/// A place inside `rect`, `margin` px from its edges, where all of a `w * h` floatie
+/// fits — so one that comes back is a floatie you can see, not one clinging to the
+/// edge with two thirds of itself hanging off the side.
+fn clamp_into(
+    rect: (f64, f64, f64, f64),
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    margin: f64,
+) -> (f64, f64) {
+    let (rx, ry, rw, rh) = rect;
+    let left = rx + margin;
+    let top = ry + margin;
+    // A floatie wider or taller than the screen it is coming back to cannot fit:
+    // hold it at the top-left rather than pushing it off the far edge, where the
+    // clamp would be inverted and `clamp` would panic.
+    let right = (rx + rw - margin - w).max(left);
+    let bottom = (ry + rh - margin - h).max(top);
+    (x.clamp(left, right).round(), y.clamp(top, bottom).round())
+}
+
+/// The arrangement changed: a display was plugged in, unplugged or re-scaled.
+///
+/// Three things go stale at once, and all three are the user's problem: the overlay
+/// is the size it was built with, the pages hold the layout they read at mount (drag
+/// bounds, and the floor a falling icon rests on), and a floatie that was on a screen
+/// that just went away is sitting at coordinates that are on no screen at all.
+///
+/// Runs on a thread it is handed, never on the pumping thread: it touches the
+/// webview, the window manager and the disk.
+pub fn display_arrangement_changed() {
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = elapsed_ms();
+    let previous = LAST.swap(now, std::sync::atomic::Ordering::SeqCst);
+    // Every top-level window gets the message — five of ours means five threads — and
+    // one change is one job. Short enough that a second, real change still counts.
+    if now.saturating_sub(previous) < 2_000 {
+        return;
+    }
+    let Some(app) = shared_app() else {
+        return;
+    };
+    log_line(&app, "monitors: the arrangement changed");
+    reconcile_desktop(&app);
+}
+
+/// Fit everything to the arrangement that exists now: the overlay window, the pages
+/// that hold a cached layout, and any floatie sitting off every screen.
+///
+/// Three callers and one implementation: `WM_DISPLAYCHANGE`, startup, and the button
+/// in the Diagnostics tab — which is also how this gets tested without unplugging
+/// anything.
+fn reconcile_desktop(app: &AppHandle) -> Vec<String> {
+    let (x, y, w, h) = overlay_rect(app);
+    log_line(
+        app,
+        &format!("monitors: the desktop is now {x},{y} {w}x{h}"),
+    );
+    fit_overlay_to_monitor(app);
+    // Pages re-read the layout from this. `display` is "arrangement" rather than
+    // "on"/"off" on purpose: a plugin watching the screen state ignores a value it
+    // does not know rather than guessing, and this is not a screen state.
+    let _ = app.emit(
+        "floaty-display-changed",
+        serde_json::json!({
+            "display": "arrangement",
+            "desktop": { "x": x, "y": y, "w": w, "h": h },
+        }),
+    );
+    rehome_stranded(app)
+}
+
+/// Bring back every floatie whose screen is gone, and say how many.
+///
+/// Two ways to end up off-screen, and both are silent: a display is unplugged while
+/// the desktop covers it (the arrangement shrinks and the record keeps its old
+/// coordinates), or the app starts after that happened. Either way the record is
+/// `pinned`, so the physics will never move it, and nothing else in the app has an
+/// opinion about position — so without this it is simply not on the screen any more.
+/// Measured: two screens at 2.00/1.50, overlay `0,0 3200x960`, then the second one
+/// unplugged — the floaties that had been dragged there never came back.
+fn rehome_stranded(app: &AppHandle) -> Vec<String> {
+    let rects = logical_monitor_rects(&app.available_monitors().unwrap_or_default());
+    if rects.is_empty() {
+        return Vec::new();
+    }
+    let mut moved: Vec<String> = Vec::new();
+    {
+        let state = app.state::<AppState>();
+        let Ok(mut guard) = state.0.lock() else {
+            return Vec::new();
+        };
+        // What is already on each screen, so a floatie coming back lands *beside*
+        // its neighbours rather than under them.
+        let mut taken: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); rects.len()];
+        for rec in guard.widgets.values() {
+            let (x, y) = (rec.x as f64, rec.y as f64);
+            if let Some(index) = screen_at(&rects, x, y) {
+                let (w, h) = plugins::size(&rec.kind, &rec.data);
+                taken[index].push((x, y, w, h));
+            }
+        }
+
+        // Top-down, left-to-right: with several coming back at once, which one ends up
+        // where should not depend on a hash map's iteration order.
+        let mut stranded: Vec<(i32, i32, String, String, serde_json::Value)> = guard
+            .widgets
+            .values()
+            .filter(|rec| screen_at(&rects, rec.x as f64, rec.y as f64).is_none())
+            .map(|rec| {
+                (
+                    rec.y,
+                    rec.x,
+                    rec.id.clone(),
+                    rec.kind.clone(),
+                    rec.data.clone(),
+                )
+            })
+            .collect();
+        stranded.sort_by_key(|(y, x, _, _, _)| (*y, *x));
+
+        for (_, _, id, kind, data) in stranded {
+            let Some(rec) = guard.widgets.get(&id) else {
+                continue;
+            };
+            let (x, y) = (rec.x as f64, rec.y as f64);
+            let Some(index) = nearest_monitor(&rects, x, y) else {
+                continue;
+            };
+            // The widget's own size, from the manifest that owns it — the same
+            // `size(kind, data)` a fresh widget is built from, so a panel and an icon
+            // each come back clear of the edge by their own width, not by a guess.
+            let (w, h) = plugins::size(&kind, &data);
+            let start = clamp_into(rects[index], x, y, w, h, REHOME_MARGIN);
+            let (nx, ny) = place_without_overlap(rects[index], w, h, start, &taken[index]);
+            taken[index].push((nx, ny, w, h));
+            if let Some(rec) = guard.widgets.get_mut(&id) {
+                rec.x = nx as i32;
+                rec.y = ny as i32;
+            }
+            moved.push(id);
+        }
+    }
+    if moved.is_empty() {
+        return moved;
+    }
+    persist(app);
+    let records: Vec<WidgetRecord> = {
+        let state = app.state::<AppState>();
+        let Ok(guard) = state.0.lock() else {
+            return moved;
+        };
+        moved
+            .iter()
+            .filter_map(|id| guard.widgets.get(id).cloned())
+            .collect()
+    };
+    for rec in &records {
+        app.emit("floaty-widget-updated", rec).ok();
+    }
+    log_line(
+        app,
+        &format!(
+            "monitors: brought {} floatie(s) back onto a screen that still exists [{}]",
+            moved.len(),
+            moved.join(", ")
+        ),
+    );
+    moved
+}
+
+/// How far from the edge a floatie that comes back is placed. A window is wider
+/// than this, so a point this far in is a floatie you can see and grab.
+const REHOME_MARGIN: f64 = 24.0;
+/// The clear space left between two floaties that came back together.
+const REHOME_GAP: f64 = 8.0;
+
+/// Which screen a point is on, if any.
+fn screen_at(rects: &[(f64, f64, f64, f64)], x: f64, y: f64) -> Option<usize> {
+    rects
+        .iter()
+        .position(|r| x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3)
+}
+
+/// Two rectangles overlap (touching edges do not count).
+fn rects_overlap(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// A place near `start` where this floatie does not land on top of another one.
+///
+/// Floaties that came back from a screen that is gone all arrive from beyond the same
+/// edge, so the clamp by itself puts every one of them at the same spot: three icons
+/// come home and the user sees one icon and two hidden behind it. They stack down the
+/// edge instead, and open a new column further in when the edge is full.
+fn place_without_overlap(
+    rect: (f64, f64, f64, f64),
+    w: f64,
+    h: f64,
+    start: (f64, f64),
+    taken: &[(f64, f64, f64, f64)],
+) -> (f64, f64) {
+    let (mut x, mut y) = start;
+    let bottom = rect.1 + rect.3 - REHOME_MARGIN - h;
+    let left = rect.0 + REHOME_MARGIN;
+    for _ in 0..128 {
+        if !taken
+            .iter()
+            .any(|other| rects_overlap(*other, (x, y, w, h)))
+        {
+            return (x.round(), y.round());
+        }
+        y += h + REHOME_GAP;
+        if y > bottom {
+            // The column is full: one step further in, back to the row it started at.
+            x -= w + REHOME_GAP;
+            y = start.1;
+            if x < left {
+                // Nowhere clear: the clamped spot is still better than nowhere.
+                return (start.0.round(), start.1.round());
+            }
+        }
+    }
+    (x.round(), y.round())
+}
+
+/// Fit the desktop to the screens that exist now, and bring back anything that was
+/// left off-screen. The Diagnostics tab's button: the same work a display change
+/// does, for a user who would rather press something than restart.
+#[tauri::command]
+fn floaty_rehome_floaties(app: AppHandle) -> Result<usize, String> {
+    Ok(reconcile_desktop(&app).len())
+}
+
 /// Open the folder the log lives in, which is what a bug report asks for next.
 #[tauri::command]
 fn floaty_open_log_folder(app: AppHandle) -> Result<(), String> {
@@ -6995,6 +7272,11 @@ pub fn run() {
                 create_record(&handle, "pet").ok();
             }
 
+            // A display that went away while floaty was not running leaves records at
+            // coordinates no screen covers, and they are pinned, so nothing else will
+            // ever move them: bring them home before they are mounted.
+            rehome_stranded(&handle);
+
             // spawn restored widgets, or a welcome note on first run
             let ids: Vec<WidgetRecord> = {
                 let state = handle.state::<AppState>();
@@ -7114,6 +7396,7 @@ pub fn run() {
             floaty_open_log_folder,
             floaty_plugin_trust,
             floaty_notify,
+            floaty_rehome_floaties,
             floaty_desktop_rect,
             floaty_monitors,
             floaty_audio_start,
@@ -7213,6 +7496,94 @@ mod tests {
     /// that *are* the desktop. Applying it to the settings window is the bug
     /// this pins shut: its minimize button did nothing and the first drag step
     /// stripped its taskbar button.
+    #[test]
+    fn a_floatie_off_every_screen_comes_back_to_the_nearest_one() {
+        // A primary and a second screen to its right.
+        let two = vec![(0.0, 0.0, 1440.0, 960.0), (1440.0, 0.0, 1760.0, 960.0)];
+        assert_eq!(nearest_monitor(&two, 100.0, 100.0), Some(0));
+        assert_eq!(nearest_monitor(&two, 2000.0, 100.0), Some(1));
+        assert_eq!(nearest_monitor(&[], 0.0, 0.0), None);
+
+        // The second screen is unplugged. A floatie that was on it comes back onto the
+        // screen that still exists, at its nearest edge, *whole* — an icon is 92 wide,
+        // so 1440 - 24 - 92 = 1324: pinned to the right edge and fully visible, which
+        // 1416 (the corner) was not.
+        let alone = vec![(0.0, 0.0, 1440.0, 960.0)];
+        assert_eq!(nearest_monitor(&alone, 2000.0, 120.0), Some(0));
+        assert_eq!(clamp_into(alone[0], 2000.0, 120.0, 92.0, 112.0, 24.0), (1324.0, 120.0));
+        assert!(
+            1324.0 + 92.0 <= 1440.0,
+            "the whole icon is on the screen, not just its corner"
+        );
+
+        // One from above a screen comes down into it, keeping its column ...
+        assert_eq!(clamp_into(alone[0], 300.0, -400.0, 92.0, 112.0, 24.0), (300.0, 24.0));
+        // ... and a panel as tall as most of the screen fits by its own height.
+        assert_eq!(clamp_into(alone[0], 2000.0, 5000.0, 300.0, 330.0, 24.0), (1116.0, 606.0));
+        // Something bigger than the screen cannot be fitted: it is held at the
+        // top-left instead of being pushed off the far edge.
+        assert_eq!(clamp_into(alone[0], 2000.0, 5000.0, 5000.0, 5000.0, 24.0), (24.0, 24.0));
+
+        // Three screens, including one to the left: nearest is nearest, not first.
+        let three = vec![
+            (-1280.0, 0.0, 1280.0, 1024.0),
+            (0.0, 0.0, 1440.0, 960.0),
+            (1440.0, 0.0, 1760.0, 960.0),
+        ];
+        assert_eq!(nearest_monitor(&three, -3000.0, 100.0), Some(0));
+        assert_eq!(nearest_monitor(&three, 2600.0, 100.0), Some(2));
+        assert_eq!(
+            nearest_monitor(&three, 1000.0, 2000.0),
+            Some(1),
+            "below the middle screen, nearer to it than to either neighbour"
+        );
+        assert_eq!(clamp_into(three[0], -3000.0, 100.0, 92.0, 112.0, 24.0), (-1256.0, 100.0));
+    }
+
+    #[test]
+    fn floaties_that_come_back_together_do_not_land_on_top_of_each_other() {
+        let rect = (0.0, 0.0, 1440.0, 960.0);
+        let icon = (92.0, 112.0);
+        // Three icons from the screen that went away: the clamp puts all three here,
+        // which is one visible icon and two hidden behind it.
+        let start = clamp_into(rect, 2000.0, 100.0, icon.0, icon.1, 24.0);
+        assert_eq!(start, (1324.0, 100.0));
+
+        let mut taken: Vec<(f64, f64, f64, f64)> = Vec::new();
+        let first = place_without_overlap(rect, icon.0, icon.1, start, &taken);
+        taken.push((first.0, first.1, icon.0, icon.1));
+        let second = place_without_overlap(rect, icon.0, icon.1, start, &taken);
+        taken.push((second.0, second.1, icon.0, icon.1));
+        let third = place_without_overlap(rect, icon.0, icon.1, start, &taken);
+
+        assert_eq!(first, start, "the first one keeps the spot it was clamped to");
+        assert_eq!(second.1, 100.0 + 112.0 + 8.0, "the second goes below it");
+        assert_eq!(third.1, 100.0 + 2.0 * (112.0 + 8.0), "the third below that");
+        for (x, y) in [first, second, third] {
+            assert!(x >= 0.0 && x + icon.0 <= rect.2, "fully on the screen: {x}");
+            assert!(y >= 0.0 && y + icon.1 <= rect.3, "fully on the screen: {y}");
+        }
+        // Every pair is clear of the others.
+        let placed = [
+            (first.0, first.1, icon.0, icon.1),
+            (second.0, second.1, icon.0, icon.1),
+            (third.0, third.1, icon.0, icon.1),
+        ];
+        for a in 0..placed.len() {
+            for b in (a + 1)..placed.len() {
+                assert!(!rects_overlap(placed[a], placed[b]), "{a} overlaps {b}");
+            }
+        }
+
+        // A column that runs out of room continues further in, and stays inside.
+        let near_bottom = place_without_overlap(rect, icon.0, 112.0, (1324.0, 800.0), &[
+            (1324.0, 800.0, 92.0, 112.0),
+            (1324.0, 920.0, 92.0, 112.0),
+        ]);
+        assert!(near_bottom.0 + icon.0 <= rect.2 && near_bottom.1 + icon.1 <= rect.3);
+        assert!(!rects_overlap((near_bottom.0, near_bottom.1, icon.0, icon.1), (1324.0, 800.0, 92.0, 112.0)));
+    }
+
     #[test]
     fn the_desktop_is_the_smallest_box_holding_every_screen() {
         // one screen: itself

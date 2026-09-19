@@ -178,6 +178,28 @@ async function openLogFolder(): Promise<void> {
   }
 }
 
+/**
+ * Bring back anything sitting at coordinates no screen covers.
+ *
+ * The backend does this by itself when Windows says the arrangement changed and once
+ * at startup; this is the by-hand version, for a floatie that went missing from a
+ * display that is no longer plugged in and a user who would rather not restart.
+ */
+async function bringBackOffscreen(): Promise<void> {
+  try {
+    const moved = await invoke<number>("floaty_rehome_floaties");
+    if (status?.isConnected) {
+      status.textContent =
+        moved === 0
+          ? "every floatie is already on a screen"
+          : `brought ${moved} floatie(s) back from a screen that is gone`;
+    }
+    if (moved > 0) await draw();
+  } catch (err) {
+    if (status?.isConnected) status.textContent = `could not bring them back: ${String(err)}`;
+  }
+}
+
 async function draw(): Promise<void> {
   if (!host || !host.isConnected) return;
   host.innerHTML = "";
@@ -186,6 +208,7 @@ async function draw(): Promise<void> {
   const tools = actionRow();
   tools.append(
     action("open the log folder", openLogFolder),
+    action("bring back off-screen floaties", bringBackOffscreen, { busyLabel: "looking…" }),
     action("refresh", () => draw(), { busyLabel: "reading…" }),
   );
   const line = note("");
