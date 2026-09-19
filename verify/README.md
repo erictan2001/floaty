@@ -19,6 +19,7 @@ testing.
 | `npm run verify:panes` | renders all six settings panes from the dev server with the Tauri IPC stubbed, one Chrome per run, and fails on an exception, a console error, a pane that drew nothing, or a row wider than the window | `npm run dev` |
 | `npm run verify:app` | checks the *running* app over its debug port: mounted slots vs records, icons that failed to load, whether the page believes it is visible, console errors | see below |
 | `npm run verify:palette` | renders the launcher palette with its search stubbed, types into it, and asserts the keys do what they say | `npm run dev` |
+| `npm run verify:drag` | drags a real floatie from one screen to the other with real input events, then checks it arrived, landed where the pointer held it, is drawn by exactly one window, and that no file was merged on the way | see below, two screens |
 
 ## Checking the running app
 
@@ -30,8 +31,16 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
 npm run tauri dev
 ```
 
+`--nth N` picks between windows that share a page: with one overlay **per screen**,
+every overlay is `index.html#/overlay`, so `health` walks all of them and checks each
+window against the records that fall on its own screen — plus the sum, because the
+failure that matters is a floatie no window drew (or two that drew it).
+
 ```powershell
-npm run verify:app                                  # health
+npm run verify:app -- --nth 1 js "await window.__TAURI_INTERNALS__.invoke('floaty_overlay_area')"
+npm run verify:app                                   # health
+npm run verify:app reload                            # reload the pages (stale HMR)
+npm run verify:drag                                  # drag a floatie across screens
 npm run verify:app -- js "await window.__TAURI_INTERNALS__.invoke('floaty_undo_state')"
 npm run verify:app -- key ctrl+z                    # a real key event
 npm run verify:app -- shot out/overlay.png
@@ -51,6 +60,21 @@ desktop.** Prefer read commands, make one file at a time, and put back what you
 move. `floaty_install_plugin` and `floaty_rescan_plugins` reload every window, which
 destroys the evaluation that awaited them: call those un-awaited and read the
 outcome from `%APPDATA%\com.floaty.app\floaty.log` and from disk.
+
+### The two traps that waste the most time
+
+**A killed app leaves its debug port alive.** A WebView2 process survives the app and
+keeps serving `/json/list`: the targets are listed, the URLs are right, and every page is
+a corpse — evaluating in one fails with *Cannot read properties of undefined (reading
+`invoke`)*, because there is no Tauri bridge any more. `node verify/app-ready.mjs` waits
+for pages that actually answer, and says which case it found; probes run against a corpse
+look like app bugs.
+
+**Vite's HMR stops reaching a long-lived overlay window.** The dev server serves the new
+module and the running page keeps the old one, so a probe measures yesterday's code and
+reports the fix as not working — it did, twice, and each time the "still broken" reading
+was the old arithmetic. `npm run verify:app reload` reloads every overlay page; after a
+*Rust* change the app restarts itself and the pages come back anyway.
 
 ## Writing a new probe
 

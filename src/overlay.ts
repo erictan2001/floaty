@@ -9,11 +9,14 @@ import {
   startHeartbeat,
   appWin,
   monitorArea,
+  onMyScreen,
   overlaySlots,
   preventOverlap,
   registerOverlaySlot,
   saveRecord,
   scheduleHitRectsUpdate,
+  setWidgetPos,
+  toWindow,
   unregisterOverlaySlot,
   watchSettings,
   type MonitorArea,
@@ -344,6 +347,16 @@ export function mountOverlay(root: HTMLElement): void {
   });
   window.addEventListener("floaty-drag-end", () => disarmMerge());
 
+  // A dragged floatie is moved by the window the drag started in, which after a boundary
+  // crossing is no longer the window drawing it: this is how the drawing window follows
+  // the pointer for the rest of the drag. Kept separate from `floaty-widget-updated`
+  // below, which re-mounts the floatie — wrong per move, and slower.
+  listen<{ id: string; x: number; y: number }>("floaty-drag-moved", (e) => {
+    const moved = e.payload;
+    if (!moved?.id || !mountedSlots.has(moved.id)) return;
+    setWidgetPos(moved.id, moved.x, moved.y);
+  }).catch(() => undefined);
+
 
   const mountWidget = (rec: WidgetRecord) => {
     if (mountedSlots.has(rec.id)) return;
@@ -353,6 +366,11 @@ export function mountOverlay(root: HTMLElement): void {
     // the pin is toggled), which is what keeps a pinned widget from appearing in
     // the desktop layer as well.
     if (isPinned(rec) !== top) return;
+    // One overlay per screen, and each draws only its own: a record whose place is on
+    // another screen is that window's to mount, and this is what hands it over when a
+    // drag crosses the boundary (the backend re-emits the record and both windows
+    // re-decide).
+    if (!onMyScreen(rec.x, rec.y)) return;
     const s = currentSettings();
     if (s.disabled && s.disabled.includes(rec.kind)) return;
 
@@ -365,7 +383,9 @@ export function mountOverlay(root: HTMLElement): void {
     slot.id = `slot-${rec.id}`;
     slot.dataset.id = rec.id;
     slot.dataset.kind = rec.kind;
-    slot.style.transform = `translate3d(${rec.x}px, ${rec.y}px, 0)`;
+    // record space → this window's css px (the identity on a single screen)
+    const at = toWindow(rec.x, rec.y);
+    slot.style.transform = `translate3d(${at.x}px, ${at.y}px, 0)`;
     slot.style.width = `${w}px`;
     slot.style.height = `${h}px`;
 

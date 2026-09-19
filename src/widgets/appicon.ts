@@ -13,6 +13,9 @@ import {
   isOverlayMode,
   loadRecord,
   logicalPos,
+  dragGrab,
+  dragPosition,
+  isOnMyScreen,
   monitorArea,
   monitorAt,
   notifyDragMove,
@@ -352,19 +355,34 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     const startSX = isOverlay ? e.clientX : e.screenX;
     const startSY = isOverlay ? e.clientY : e.screenY;
     let moved = false;
+    // Where the pointer holds the tile, and (in overlay mode) the screens it can be
+    // mapped through: dragging a tile onto another screen is a drag like any other now,
+    // instead of one that stops dead at this window's edge.
+    const grab = isOverlay ? dragGrab(e, startX, startY) : null;
     const onMove = (ev: PointerEvent) => {
       const curSX = isOverlay ? ev.clientX : ev.screenX;
       const curSY = isOverlay ? ev.clientY : ev.screenY;
-      x = startX + (curSX - startSX);
-      y = startY + (curSY - startSY);
-      if (isOverlay) {
-        const monW = window.innerWidth || 1920;
-        const monH = window.innerHeight || 1080;
-        x = Math.max(0, Math.min(monW - WIN_W, x));
-        y = Math.max(0, Math.min(monH - WIN_H, y));
+      const want = isOverlay ? dragPosition(ev) : null;
+      if (want && grab) {
+        x = want.x - grab.dx;
+        y = want.y - grab.dy;
+        // Told on *every* move, not only when the tile has left this screen: the backend
+        // is what decides which screen the tile is on and hands it between windows, and a
+        // drag that comes back has to be handed back the same way. Sending only while the
+        // pointer was off this screen stranded the tile as soon as a drag returned — the
+        // record stayed on the other screen while the pointer was on this one, so it was
+        // drawn by the wrong window, at the coordinates of a drag that had left.
+        void invoke("floaty_drag_to", { id, x: Math.round(x), y: Math.round(y) }).catch(
+          () => undefined,
+        );
       } else {
+        x = startX + (curSX - startSX);
+        y = startY + (curSY - startSY);
+      }
+      if (!isOverlay) {
         if (x < mon.x) x = mon.x;
         if (x > mon.x + mon.w - WIN_W) x = mon.x + mon.w - WIN_W;
+        // (overlay mode deliberately has no clamp: the desktop is every screen)
         if (y < mon.y) y = mon.y;
         if (y > mon.y + mon.h - WIN_H) y = mon.y + mon.h - WIN_H;
       }
@@ -374,7 +392,11 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         if (!captured) {
           captured = true;
           try {
-            wrap.setPointerCapture(e.pointerId);
+            // on the *body*, not on the tile: the tile's slot is removed from the DOM
+            // when the drag hands it to another screen's window, and a capture on a
+            // removed element stops delivering moves — the drag would freeze at the
+            // boundary with the pointer still down
+            (document.body ?? wrap).setPointerCapture(e.pointerId);
           } catch {
             /* capture unsupported — window-level listeners still cover the drag */
           }
@@ -382,15 +404,20 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       }
       setWidgetPos(id, x, y, scale);
       // tell the overlay where we are, so it can show the merge this hover
-      // would run (nothing listens in one-window-per-widget mode)
-      notifyDragMove(id, x, y);
+      // would run (nothing listens in one-window-per-widget mode) — but only while the
+      // tile is on this window's screen: a tile out on another screen is not this
+      // window's to preview a merge for, and vetting it here is what merged files by
+      // accident
+      if (isOnMyScreen(x, y)) notifyDragMove(id, x, y);
+      else window.dispatchEvent(new CustomEvent("floaty-drag-end"));
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
       try {
-        if (wrap.hasPointerCapture(e.pointerId)) wrap.releasePointerCapture(e.pointerId);
+        const held = (document.body ?? wrap) as HTMLElement;
+        if (held.hasPointerCapture(e.pointerId)) held.releasePointerCapture(e.pointerId);
       } catch {
         /* ignore */
       }

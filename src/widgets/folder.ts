@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, displayName, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, displayName, dragGrab, dragPosition, enforceDesktopLayer, iconIsMissing, isOnMyScreen, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -505,16 +505,23 @@ export function mountFolder(root: HTMLElement, id: string): void {
     const startSX = isOverlay ? e.clientX : e.screenX;
     const startSY = isOverlay ? e.clientY : e.screenY;
     let moved = false;
+    // Where the pointer holds the tile, and the screens it can be mapped through — a
+    // folder drags onto another screen the same way an icon does.
+    const grab = isOverlay ? dragGrab(e, startX, startY) : null;
     const onMove = (ev: PointerEvent) => {
       const curSX = isOverlay ? ev.clientX : ev.screenX;
       const curSY = isOverlay ? ev.clientY : ev.screenY;
-      px = startX + (curSX - startSX);
-      py = startY + (curSY - startSY);
-      if (isOverlay) {
-        const monW = window.innerWidth || 1920;
-        const monH = window.innerHeight || 1080;
-        px = Math.max(0, Math.min(monW - WIN_W, px));
-        py = Math.max(0, Math.min(monH - WIN_H, py));
+      const want = isOverlay ? dragPosition(ev) : null;
+      if (want && grab) {
+        px = want.x - grab.dx;
+        py = want.y - grab.dy;
+        // every move, so a drag that crosses back is handed back (see appicon.ts)
+        void invoke("floaty_drag_to", { id, x: Math.round(px), y: Math.round(py) }).catch(
+          () => undefined,
+        );
+      } else {
+        px = startX + (curSX - startSX);
+        py = startY + (curSY - startSY);
       }
       if (Math.hypot(curSX - startSX, curSY - startSY) > 4) {
         moved = true;
@@ -522,21 +529,25 @@ export function mountFolder(root: HTMLElement, id: string): void {
         if (!captured) {
           captured = true;
           try {
-            wrap.setPointerCapture(e.pointerId);
+            // on the body: the tile's slot is removed when the drag hands it to another
+            // screen's window, and a capture on a removed element stops delivering moves
+            (document.body ?? wrap).setPointerCapture(e.pointerId);
           } catch {
             /* ignore */
           }
         }
       }
       setWidgetPos(id, px, py, scale);
-      notifyDragMove(id, px, py);
+      if (isOnMyScreen(px, py)) notifyDragMove(id, px, py);
+      else window.dispatchEvent(new CustomEvent("floaty-drag-end"));
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
       try {
-        if (wrap.hasPointerCapture(e.pointerId)) wrap.releasePointerCapture(e.pointerId);
+        const held = (document.body ?? wrap) as HTMLElement;
+        if (held.hasPointerCapture(e.pointerId)) held.releasePointerCapture(e.pointerId);
       } catch {
         /* ignore */
       }

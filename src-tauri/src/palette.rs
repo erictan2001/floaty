@@ -186,25 +186,20 @@ pub fn parse_shortcut(text: &str) -> Option<String> {
 /// the window then stays wherever it was built.
 fn cursor_monitor_spot(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
     let cursor = app.cursor_position().ok()?;
-    let monitors = app.available_monitors().ok()?;
-    // Physical px on both sides, so this comparison does not care about scale.
-    let monitor = monitors.iter().find(|m| {
-        let (pos, size) = (m.position(), m.size());
-        cursor.x >= pos.x as f64
-            && cursor.y >= pos.y as f64
-            && cursor.x < (pos.x + size.width as i32) as f64
-            && cursor.y < (pos.y + size.height as i32) as f64
+    // The screen model does the arithmetic: the cursor is in physical px and the
+    // palette is placed in record space, which is what `to_virtual` is for.
+    let on = crate::screens(app).into_iter().find(|s| {
+        cursor.x >= s.physical.x
+            && cursor.y >= s.physical.y
+            && cursor.x < s.physical.x + s.physical.w
+            && cursor.y < s.physical.y + s.physical.h
     })?;
-    let scale = monitor.scale_factor();
-    let (mx, my) = (
-        monitor.position().x as f64 / scale,
-        monitor.position().y as f64 / scale,
-    );
-    let (mw, mh) = (
-        monitor.size().width as f64 / scale,
-        monitor.size().height as f64 / scale,
-    );
-    Some((mx + (mw - w) / 2.0, my + (mh - h) / 3.0))
+    let local_x = (cursor.x - on.physical.x) / on.scale;
+    let (vx, _) = on.to_virtual(local_x, 0.0);
+    // centred horizontally on the pointer's screen, a third of the way down it
+    let left = vx.clamp(on.logical.x, (on.logical.right() - w).max(on.logical.x));
+    let top = on.logical.y + (on.logical.h - h) / 3.0;
+    Some((left.round(), top.round()))
 }
 
 /// Point the launcher hotkey at `accelerator`, replacing whatever was there.
