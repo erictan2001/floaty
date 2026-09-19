@@ -34,9 +34,14 @@ anything else just stops it floating.
 system audio visualizer, CPU/GPU/RAM monitor — the same overlay, the same motion
 settings, one right-click from pin-on-top.
 
-**Every screen.** The desktop is the union of your monitors, so floaties can live
-on the second one and be dragged between them, each resting on the floor of the
-screen it is over. (Mixed scale factors are the exception — see **Known limits**.)
+**Every screen.** One overlay per monitor: floaties can live on the second screen
+and be dragged between them, each resting on the floor of the screen it is over, and
+each screen renders at its own scale factor — a 150% screen next to a 200% one shows
+its icons at 150%, not 33% too big. A drag follows the pointer across the boundary
+(the place is worked out from where the pointer *is*, through the screen it is on) and
+hands the floatie from the window it left to the window it entered, mid-drag; a drop is
+judged where the floatie actually is, so dragging one onto the second screen cannot
+quietly fold a file into a folder at the first screen's edge.
 
 **A launcher.** `Ctrl+Alt+Space` (or whatever you set in General) opens the palette
 on the screen your pointer is on: type, arrow, Enter. It searches your applications,
@@ -445,6 +450,7 @@ src-tauri/src/
   plugins.rs    backend plugin registry, manifests, sizing, installed plugins
   plugin_install.rs  install, inspect and remove a plugin archive or folder
   palette.rs    the launcher: its window, its hotkey, and how a query is ranked
+  screens.rs    the monitors in both spaces (physical and logical) and the mapping
   diagnostics.rs the log (rotation, tail, sizes) and the report the pane renders
   icons.rs      stored icons: files named by content, and the urls that point at them
   undo.rs       what the last few changes were, so one press can put them back
@@ -489,16 +495,15 @@ verify/                        headless probes: the settings panes, the running 
   usually cloud-synced, where content notifications fire on every write while
   nothing on the desktop depends on a file's contents. Editing a file in place is
   not a desktop change, so nothing has to happen for it.
-- **Monitors at different scale factors are approximated.** One webview has one
-  scale factor, so the desktop covers the union of your screens in the primary's
-  scale: the arrangement is right, but a widget on a screen at a different scale can
-  be drawn at the wrong size. Same-scale multi-monitor setups (the usual case) are
-  exact, and the log says `monitors: N screens at different scale factors` when this
-  is what you are in.
-- **Tidy arranges across the whole arrangement, not per screen.** Its grid is
-  computed over the desktop rectangle, so on two monitors icons flow left to right
-  across both. Nothing is lost — a second tidy pass is idempotent — but a tidy that
-  respected each screen's own edges is not what this does yet.
+- **A floatie is drawn by one window, so it is clipped at the screen edge.** An icon
+  straddling the boundary between two monitors shows only its half that is on the
+  screen it belongs to. Everything is 92px wide, so this only shows for a panel wider
+  than the screen it is on.
+- **The desktop has a band that belongs to no screen** when the monitors are at
+  different scales: Windows reports the second screen's origin in physical px, so in
+  the coordinates records are stored in, the primary ends at 1440 and the second
+  screen starts at 1920. Nothing lives there — a floatie dropped in it is brought back
+  to the nearest screen — and the drag maps per screen, so the gap is never visible.
 
 ## Built with AI
 

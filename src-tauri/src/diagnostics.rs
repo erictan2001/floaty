@@ -51,16 +51,6 @@ pub struct DirInfo {
     pub bytes: u64,
 }
 
-/// A rectangle in logical px — the shape the frontend lays widgets out in, so it
-/// travels as an object and not as a four-element tuple.
-#[derive(Debug, Clone, Serialize)]
-pub struct Rect {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct MonitorInfo {
     /// The device name, which is what stays put across replugs (`\\.\DISPLAY1`).

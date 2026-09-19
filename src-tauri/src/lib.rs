@@ -13,6 +13,7 @@ mod icons;
 mod palette;
 mod plugin_install;
 mod plugins;
+mod screens;
 mod shell_ops;
 mod sysmon;
 mod undo;
@@ -1732,9 +1733,15 @@ fn shared_app() -> Option<AppHandle> {
 /// Put the pinned layer back in front of everything else.
 #[cfg(windows)]
 fn raise_top_layer(app: &AppHandle) {
-    let Some(w) = app.get_webview_window(TOP_LAYER) else { return };
-    if let Ok(hwnd) = w.hwnd() {
-        desktop_pin::raise_above_everything(hwnd.0 as isize);
+    // one layer per screen: a pinned widget on the second screen needs its own window
+    // in front, not the first screen's
+    for (label, w) in app.webview_windows() {
+        if label != TOP_LAYER && !label.starts_with(&format!("{TOP_LAYER}-")) {
+            continue;
+        }
+        if let Ok(hwnd) = w.hwnd() {
+            desktop_pin::raise_above_everything(hwnd.0 as isize);
+        }
     }
 }
 
@@ -1819,12 +1826,7 @@ fn recover_windows(reason: &str) {
         // The hidden manager window renders nothing and is never rebuilt, so it
         // is not watched (it is still the window that holds the display-state
         // notification, which is what matters about it).
-        .filter(|(label, _)| {
-            label == DESKTOP_LAYER
-                || label == TOP_LAYER
-                || label == "settings"
-                || label.starts_with("widget-")
-        })
+        .filter(|(label, _)| is_desktop_layer_label(label) || label == "settings")
         .collect();
     let started = std::time::Instant::now();
     let seen = DISPLAY_ON_MS.load(std::sync::atomic::Ordering::SeqCst);
@@ -2161,7 +2163,7 @@ fn floaty_heartbeat(label: String, visibility: Option<String>, app: AppHandle) {
 /// Replace a wedged window: nothing the page or the webview API does can be
 /// trusted by this point, so close it for real and build it again.
 fn recreate_window(app: &AppHandle, label: &str) {
-    if label == DESKTOP_LAYER || label == TOP_LAYER {
+    if is_desktop_layer_label(label) {
         if let Some(w) = app.get_webview_window(label) {
             let _ = w.destroy();
         }
@@ -2174,13 +2176,14 @@ fn recreate_window(app: &AppHandle, label: &str) {
             if app.get_webview_window(label).is_some() {
                 continue;
             }
-            let again = if label == TOP_LAYER {
+            // "top-overlay" and "top-overlay-2" are both the top layer
+            let again = if label.starts_with(TOP_LAYER) {
                 // only if something is still pinned: nothing pinned means the
                 // layer is meant to be gone
                 sync_top_overlay(app);
                 Ok(())
             } else {
-                spawn_overlay_window(app).map(|_| ())
+                spawn_overlay_windows(app).map(|_| ())
             };
             match again {
                 Ok(()) => {
@@ -2231,7 +2234,9 @@ const TOP_LAYER: &str = "top-overlay";
 
 /// Whether the overlay mode is running (as opposed to one window per widget).
 fn is_overlay_running(app: &AppHandle) -> bool {
-    app.get_webview_window(DESKTOP_LAYER).is_some()
+    app.webview_windows()
+        .keys()
+        .any(|label| label == DESKTOP_LAYER || label.starts_with(&format!("{DESKTOP_LAYER}-")))
 }
 
 // ---------- windows ----------
@@ -2250,7 +2255,95 @@ fn widget_label(id: &str) -> String {
 /// say so, or it turns the settings window into a taskbar-less tool window that
 /// cannot be minimized back or moved properly.
 fn is_desktop_layer_label(label: &str) -> bool {
-    label == "desktop-overlay" || label == "top-overlay" || label.starts_with("widget-")
+    label == DESKTOP_LAYER
+        || label == TOP_LAYER
+        || label.starts_with(&format!("{DESKTOP_LAYER}-"))
+        || label.starts_with(&format!("{TOP_LAYER}-"))
+        || label.starts_with("widget-")
+}
+
+/// The screen an overlay window belongs to, read from its label: `desktop-overlay`
+/// and `top-overlay` are the first screen's, `desktop-overlay-2` the second's.
+fn overlay_index(label: &str) -> Option<usize> {
+    let rest = label
+        .strip_prefix(DESKTOP_LAYER)
+        .or_else(|| label.strip_prefix(TOP_LAYER))?;
+    if rest.is_empty() {
+        return Some(0);
+    }
+    rest.strip_prefix('-')?.parse::<usize>().ok()
+}
+
+/// The label an overlay on screen `index` has. Screen 0 keeps the plain label, so a
+/// one-screen desktop keeps exactly the windows it always had.
+fn overlay_label(base: &str, index: usize) -> String {
+    if index == 0 {
+        base.to_string()
+    } else {
+        format!("{base}-{index}")
+    }
+}
+
+/// Every screen, as floaty models it: physical px (where a window goes) and logical px
+/// (where a record lives), with the scale that relates them.
+pub(crate) fn screens(app: &AppHandle) -> Vec<screens::Screen> {
+    let primary = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().map(|n| n.to_string()));
+    app.available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let name = m.name().map(|n| n.to_string()).unwrap_or_default();
+            let scale = m.scale_factor();
+            screens::Screen {
+                primary: Some(name.clone()) == primary,
+                key: name.clone(),
+                name,
+                physical: screens::Rect::new(
+                    m.position().x as f64,
+                    m.position().y as f64,
+                    m.size().width as f64,
+                    m.size().height as f64,
+                ),
+                logical: screens::Rect::new(
+                    (m.position().x as f64 / scale).round(),
+                    (m.position().y as f64 / scale).round(),
+                    (m.size().width as f64 / scale).round(),
+                    (m.size().height as f64 / scale).round(),
+                ),
+                scale,
+            }
+        })
+        .collect()
+}
+
+/// A page's place in the arrangement: the screen its window covers, and the desktop
+/// as a whole. An overlay uses this to know which records are its own and where they
+/// go: `local = virtual - screen.logical.origin`, in the window's own css px.
+#[derive(serde::Serialize)]
+struct OverlayArea {
+    index: usize,
+    screen: screens::Screen,
+    desktop: screens::Rect,
+}
+
+#[tauri::command]
+fn floaty_overlay_area(window: tauri::WebviewWindow, app: AppHandle) -> Option<OverlayArea> {
+    let list = screens(&app);
+    let index = overlay_index(window.label())?;
+    Some(OverlayArea {
+        index,
+        screen: list.get(index)?.clone(),
+        desktop: screens::union(&list),
+    })
+}
+
+#[tauri::command]
+fn floaty_screens(app: AppHandle) -> Vec<screens::Screen> {
+    screens(&app)
 }
 
 /// Extensions the Windows shell launches directly. Anything else that is not a
@@ -2285,202 +2378,225 @@ fn is_path_kind(kind: &str) -> bool {
     plugins::is_path_kind(kind)
 }
 
-/// Where the overlay belongs: the whole desktop, in logical px, so it matches the
-/// coordinates the widgets and the store use.
+/// Where the desktop is: the union of every screen, in the space records live in.
 ///
-/// It used to be the *primary monitor* only, which meant a widget placed on a
-/// second screen was laid out outside the overlay's bounds and never seen, and
-/// nothing could be dragged from one screen to the other. The desktop is the union
-/// of every monitor now: one window, one coordinate space, and a floatie that is
-/// dragged past the edge keeps going.
-///
-/// Logical px because that is the space records are stored in. With monitors at
-/// *different* scale factors one webview cannot honour both — it has a single scale
-/// factor — so the union is computed per monitor in that monitor's logical px and
-/// the window is built for the primary's: the arrangement is right, the rendering
-/// on the other screen may not be. `mixed_scale` says so in the log, once.
+/// It used to be the primary monitor, which meant a widget on a second screen was laid
+/// out outside the window and never seen. Now it is the whole arrangement — and with
+/// one overlay window *per screen* (see `spawn_overlay_windows`) this is only what a
+/// widget's `monitorArea()` reports, not where anything is drawn.
 fn overlay_rect(app: &AppHandle) -> (f64, f64, f64, f64) {
-    let monitors = app.available_monitors().unwrap_or_default();
-    let rects = logical_monitor_rects(&monitors);
-    if rects.is_empty() {
-        // No monitor list at all (a driver that is not answering): the primary, or
-        // the box this always used to be.
-        if let Ok(Some(mon)) = app.primary_monitor() {
-            let s = mon.scale_factor();
-            return (
-                mon.position().x as f64 / s,
-                mon.position().y as f64 / s,
-                mon.size().width as f64 / s,
-                mon.size().height as f64 / s,
-            );
-        }
+    let list = screens(app);
+    if list.is_empty() {
         return (0.0, 0.0, 1920.0, 1080.0);
     }
-    log_mixed_scale(app, &monitors);
-    union_rect(&rects)
+    log_mixed_scale(app, &list);
+    let union = screens::union(&list);
+    (union.x, union.y, union.w, union.h)
 }
 
-/// Every monitor as `(x, y, w, h)` in logical px — the space a record's x/y are in,
-/// so a record can be tested against, and moved into, a screen.
-fn logical_monitor_rects(monitors: &[tauri::Monitor]) -> Vec<(f64, f64, f64, f64)> {
-    monitors
-        .iter()
-        .map(|mon| {
-            let s = mon.scale_factor();
-            (
-                mon.position().x as f64 / s,
-                mon.position().y as f64 / s,
-                mon.size().width as f64 / s,
-                mon.size().height as f64 / s,
-            )
-        })
-        .collect()
-}
-
-/// The smallest rectangle holding every rect. Pure: negative origins and a monitor
-/// above the primary get a test that does not need two screens.
-fn union_rect(rects: &[(f64, f64, f64, f64)]) -> (f64, f64, f64, f64) {
-    let min_x = rects.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
-    let min_y = rects.iter().map(|r| r.1).fold(f64::INFINITY, f64::min);
-    let max_x = rects
-        .iter()
-        .map(|r| r.0 + r.2)
-        .fold(f64::NEG_INFINITY, f64::max);
-    let max_y = rects
-        .iter()
-        .map(|r| r.1 + r.3)
-        .fold(f64::NEG_INFINITY, f64::max);
-    (min_x, min_y, max_x - min_x, max_y - min_y)
-}
-
-/// Say once, in the log, when the desktop spans scale factors it cannot render
-/// honestly — so "it looks blurry on my laptop screen" has an answer in the log
-/// rather than in a bug report.
-fn log_mixed_scale(app: &AppHandle, monitors: &[tauri::Monitor]) {
+/// Say once, in the log, when the arrangement spans scale factors.
+///
+/// It used to be a warning that the other screen would be drawn at the wrong size;
+/// with an overlay per screen each window is created *on* its own monitor, and
+/// WebView2 re-rasterizes to that monitor's scale (measured: moving a window onto a
+/// 150% screen takes its `devicePixelRatio` from 2 to 1.5). It stays in the log as
+/// context for a bug report.
+fn log_mixed_scale(app: &AppHandle, list: &[screens::Screen]) {
     static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if monitors.len() < 2 || SAID.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if list.len() < 2 || SAID.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    let first = monitors[0].scale_factor();
-    if monitors.iter().all(|m| (m.scale_factor() - first).abs() < 0.001) {
+    let first = list[0].scale;
+    if list.iter().all(|s| (s.scale - first).abs() < 0.001) {
         return;
     }
-    let scales: Vec<String> = monitors
-        .iter()
-        .map(|m| format!("{:.2}", m.scale_factor()))
-        .collect();
+    let scales: Vec<String> = list.iter().map(|s| format!("{:.2}", s.scale)).collect();
     log_line(
         app,
         &format!(
-            "monitors: {} screens at different scale factors [{}] — the desktop covers the primary's scale, so widgets on the other screen may be drawn at the wrong size",
-            monitors.len(),
+            "monitors: {} screens at different scale factors [{}] — each overlay is created on its own screen, so each renders at its own scale",
+            list.len(),
             scales.join(", ")
         ),
     );
 }
 
-/// Follow the primary monitor: the resolution or the DPI can change while the
-/// machine is asleep (a dock, a projector, a different scaling), which leaves the
-/// overlay the wrong size and the widgets outside it looking stuck.
+/// Every overlay, on its own screen: a resolution or DPI change while the machine was
+/// asleep (a dock, a projector, another scaling) leaves the windows the wrong size and
+/// the widgets outside them looking stuck.
 fn fit_overlay_to_monitor(app: &AppHandle) {
-    // both layers are the size of the monitor: the desktop layer and the layer
-    // holding the widgets pinned above other windows
-    for label in [DESKTOP_LAYER, TOP_LAYER] {
-        fit_layer_to_monitor(app, label);
-    }
-}
-
-fn fit_layer_to_monitor(app: &AppHandle, label: &str) {
-    let Some(w) = app.get_webview_window(label) else { return };
-    let (x, y, ww, hh) = overlay_rect(app);
-    if ww < 100.0 || hh < 100.0 {
-        return;
-    }
-    use tauri::{LogicalPosition, LogicalSize};
-    if let Ok(size) = w.inner_size() {
-        let scale = w.scale_factor().unwrap_or(1.0);
-        let cur_w = size.width as f64 / scale;
-        let cur_h = size.height as f64 / scale;
-        if (cur_w - ww).abs() < 2.0 && (cur_h - hh).abs() < 2.0 {
-            return;
+    let list = screens(app);
+    for (label, _) in app.webview_windows() {
+        let Some(index) = overlay_index(&label) else {
+            continue;
+        };
+        match list.get(index) {
+            Some(screen) => {
+                if let Some(win) = app.get_webview_window(&label) {
+                    place_on_screen(app, &win, screen);
+                }
+            }
+            None => close_extra_overlays(app),
         }
     }
-    log_line(app, &format!("{label}: refitting to {x},{y} {ww}x{hh}"));
-    let _ = w.set_position(LogicalPosition::new(x, y));
-    let _ = w.set_size(LogicalSize::new(ww, hh));
 }
 
-fn spawn_overlay_window(app: &AppHandle) -> tauri::Result<()> {
-    if app.get_webview_window("desktop-overlay").is_some() {
-        return Ok(());
+
+/// One desktop-layer overlay per screen, plus a top-layer overlay on each screen that
+/// has a pinned widget.
+///
+/// **This is what fixes a mixed-DPI desktop.** One window covering every screen has
+/// one scale factor, so a widget on a 150% screen next to a 200% one was drawn at
+/// 200% — 33% too big. A window created (or moved) onto a screen takes that screen's
+/// scale: measured, moving the manager window onto the 150% screen took its
+/// `devicePixelRatio` from 2 to 1.5.
+///
+/// With a single screen the labels and the geometry are exactly what this always
+/// built, so nothing about one monitor changes.
+fn spawn_overlay_windows(app: &AppHandle) -> tauri::Result<()> {
+    for (index, screen) in screens(app).iter().enumerate() {
+        let label = overlay_label(DESKTOP_LAYER, index);
+        if app.get_webview_window(&label).is_none() {
+            spawn_desktop_overlay(app, &label, screen)?;
+        }
     }
+    // the top layer exists only while something is pinned, per screen
+    sync_top_overlay(app);
+    Ok(())
+}
 
-    let (x, y, w, h) = overlay_rect(app);
-
-    log_line(app, &format!("spawn desktop-overlay at {x},{y} size {w}x{h}"));
-    let win = WebviewWindowBuilder::new(
+/// One desktop overlay, on one screen: built with the screen's logical rect and then
+/// put exactly where the platform says that screen is.
+///
+/// The second step matters: the builder only takes *logical* sizes and converts them
+/// with the scale factor the window has at birth, which is the primary's — so a
+/// window for the 150% screen would land at physical 1920 * 2 instead of 1920 * 1.5.
+/// Setting the physical rectangle afterwards is what puts it on its screen (and
+/// gives it that screen's scale).
+fn spawn_desktop_overlay(
+    app: &AppHandle,
+    label: &str,
+    screen: &screens::Screen,
+) -> tauri::Result<()> {
+    log_line(
         app,
-        "desktop-overlay",
-        WebviewUrl::App("index.html#/overlay".into()),
-    )
-    .title("Floaty Desktop")
-    .inner_size(w, h)
-    .position(x, y)
-    .transparent(true)
-    .decorations(false)
-    .shadow(false)
-    .resizable(false)
-    .skip_taskbar(true)
-    .always_on_top(false)
-    .build()?;
+        &format!(
+            "spawn {label} on screen {} at {},{} size {}x{} @{}x",
+            screen.name,
+            screen.physical.x,
+            screen.physical.y,
+            screen.physical.w,
+            screen.physical.h,
+            screen.scale
+        ),
+    );
+    let win = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html#/overlay".into()))
+        .title("Floaty Desktop")
+        .inner_size(screen.logical.w, screen.logical.h)
+        .position(screen.logical.x, screen.logical.y)
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(false)
+        .build()?;
+
+    place_on_screen(app, &win, screen);
 
     #[cfg(windows)]
     {
         let stay = load_settings(app).stay_on_desktop;
         if let Ok(hwnd) = win.hwnd() {
-            desktop_pin::apply_overlay_desktop_pin("desktop-overlay", hwnd.0 as isize, stay);
+            desktop_pin::apply_overlay_desktop_pin(label, hwnd.0 as isize, stay);
         }
     }
 
     Ok(())
 }
 
-/// The layer for the widgets that were pinned above other windows.
+/// Put a window exactly on a screen, in physical px — and doing it through the window
+/// rather than the builder is what lets WebView2 pick up that screen's scale.
+fn place_on_screen(app: &AppHandle, win: &tauri::WebviewWindow, screen: &screens::Screen) {
+    use tauri::{PhysicalPosition, PhysicalSize};
+    if let Ok(size) = win.inner_size() {
+        let scale = win.scale_factor().unwrap_or(1.0);
+        let same_size = (size.width as f64 - screen.physical.w).abs() < 2.0
+            && (size.height as f64 - screen.physical.h).abs() < 2.0;
+        let same_scale = (scale - screen.scale).abs() < 0.01;
+        if same_size && same_scale {
+            return;
+        }
+    }
+    log_line(
+        app,
+        &format!("{}: closing the gap to screen {}", win.label(), screen.name),
+    );
+    let _ = win.set_position(PhysicalPosition::new(screen.physical.x, screen.physical.y));
+    let _ = win.set_size(PhysicalSize::new(
+        screen.physical.w.max(1.0) as u32,
+        screen.physical.h.max(1.0) as u32,
+    ));
+}
+
+/// Take down the overlays of screens that are gone. Anything on them is re-homed by
+/// `rehome_stranded` before this runs.
+fn close_extra_overlays(app: &AppHandle) {
+    let count = screens(app).len().max(1);
+    for (label, _) in app.webview_windows() {
+        if let Some(index) = overlay_index(&label) {
+            if index >= count {
+                log_line(app, &format!("{label}: screen {index} is gone, taking it down"));
+                if let Some(w) = app.get_webview_window(&label) {
+                    let _ = w.close();
+                }
+            }
+        }
+    }
+}
+
+/// The layer for the widgets that were pinned above other windows, on one screen.
 ///
-/// A pinned widget cannot be drawn in the desktop overlay (the whole window is
-/// in the desktop layer, so the flag there lifts every widget at once), and it
-/// cannot have a window of its own either: an icon is 92x112, and its right-click
-/// menu is taller than that — a menu drawn in a window that size is clipped to
-/// the window. So pinned widgets get a second, full-screen overlay that *is*
-/// always on top, built while at least one widget is pinned and taken down again
-/// when none is.
-fn spawn_top_overlay(app: &AppHandle) -> tauri::Result<()> {
-    if app.get_webview_window("top-overlay").is_some() {
+/// A pinned widget cannot be drawn in the desktop overlay (the whole window is in the
+/// desktop layer, so the flag there lifts every widget at once), and it cannot have a
+/// window of its own either: an icon is 92x112, and its right-click menu is taller than
+/// that — a menu drawn in a window that size is clipped to the window. So pinned
+/// widgets get a second, full-screen overlay that *is* always on top, built while at
+/// least one widget on that screen is pinned and taken down again when none is.
+fn spawn_top_overlay(app: &AppHandle, index: usize) -> tauri::Result<()> {
+    let label = overlay_label(TOP_LAYER, index);
+    if app.get_webview_window(&label).is_some() {
         return Ok(());
     }
-    let (x, y, w, h) = overlay_rect(app);
-    log_line(app, &format!("spawn top-overlay at {x},{y} size {w}x{h}"));
-    let win = WebviewWindowBuilder::new(
+    let Some(screen) = screens(app).get(index).cloned() else {
+        return Ok(());
+    };
+    log_line(
         app,
-        "top-overlay",
-        WebviewUrl::App("index.html#/overlay".into()),
-    )
-    .title("Floaty On Top")
-    .inner_size(w, h)
-    .position(x, y)
-    .transparent(true)
-    .decorations(false)
-    .shadow(false)
-    .resizable(false)
-    .skip_taskbar(true)
-    .always_on_top(true)
-    .focused(false)
-    .build()?;
+        &format!(
+            "spawn {label} on screen {} at {},{} size {}x{} @{}x",
+            screen.name, screen.physical.x, screen.physical.y, screen.physical.w, screen.physical.h, screen.scale
+        ),
+    );
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html#/overlay".into()))
+        .title("Floaty On Top")
+        .inner_size(screen.logical.w, screen.logical.h)
+        .position(screen.logical.x, screen.logical.y)
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .focused(false)
+        .build()?;
+
+    place_on_screen(app, &win, &screen);
 
     #[cfg(windows)]
     {
         if let Ok(hwnd) = win.hwnd() {
-            desktop_pin::apply_overlay_desktop_pin("top-overlay", hwnd.0 as isize, false);
+            desktop_pin::apply_overlay_desktop_pin(&label, hwnd.0 as isize, false);
         }
     }
     // and straight to the front: the band it has to win is the topmost one
@@ -2488,47 +2604,57 @@ fn spawn_top_overlay(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-fn spawn_top_overlay_async(app: &AppHandle) {
+fn spawn_top_overlay_async(app: &AppHandle, index: usize) {
     let handle = app.clone();
     std::thread::spawn(move || {
         let h2 = handle.clone();
         if let Err(e) = handle.run_on_main_thread(move || {
-            if let Err(e) = spawn_top_overlay(&h2) {
-                log_line(&h2, &format!("spawn top-overlay FAILED: {e}"));
+            if let Err(e) = spawn_top_overlay(&h2, index) {
+                log_line(&h2, &format!("spawn {} FAILED: {e}", overlay_label(TOP_LAYER, index)));
             }
         }) {
-            log_line(&handle, &format!("main-thread dispatch FAILED for top-overlay: {e}"));
+            log_line(&handle, &format!("main-thread dispatch FAILED for the top layer: {e}"));
         }
     });
 }
 
-/// Bring the always-on-top layer in line with the records: it only exists while
-/// something is pinned, so an idle desktop is not paying for a whole second
-/// full-screen webview.
+/// Bring the always-on-top layers in line with the records: a screen with a pinned
+/// widget gets one, a screen with none takes its layer down — an idle screen is not
+/// paying for a whole second full-screen webview.
 fn sync_top_overlay(app: &AppHandle) {
-    let pinned: Vec<String> = app
-        .state::<AppState>()
-        .0
-        .lock()
-        .map(|g| {
-            g.widgets
-                .values()
-                .filter(|r| wants_on_top(r))
-                .map(|r| r.id.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if pinned.is_empty() {
-        if let Some(w) = app.get_webview_window("top-overlay") {
-            log_line(app, "no widget is pinned: taking the top layer down");
-            let _ = w.close();
+    let list = screens(app);
+    let mut pinned_on = vec![0usize; list.len()];
+    // Collected before anything is counted: holding the lock while creating windows is
+    // how a deadlock gets built.
+    let pinned: Vec<(f64, f64)> = {
+        let state = app.state::<AppState>();
+        let Ok(guard) = state.0.lock() else {
+            return;
+        };
+        guard
+            .widgets
+            .values()
+            .filter(|r| wants_on_top(r))
+            .map(|r| (r.x as f64, r.y as f64))
+            .collect()
+    };
+    for (x, y) in pinned {
+        if let Some(index) = screens::screen_of(&list, x, y) {
+            pinned_on[index] += 1;
         }
-        return;
     }
-    if app.get_webview_window("top-overlay").is_none() {
-        log_line(app, &format!("{} pinned widget(s): building the top layer", pinned.len()));
-        spawn_top_overlay_async(app);
+    for (index, count) in pinned_on.iter().enumerate() {
+        let label = overlay_label(TOP_LAYER, index);
+        let exists = app.get_webview_window(&label).is_some();
+        if *count > 0 && !exists {
+            log_line(app, &format!("{count} pinned widget(s): building {label}"));
+            spawn_top_overlay_async(app, index);
+        } else if *count == 0 && exists {
+            log_line(app, &format!("nothing is pinned on that screen: taking {label} down"));
+            if let Some(w) = app.get_webview_window(&label) {
+                let _ = w.close();
+            }
+        }
     }
 }
 
@@ -4532,15 +4658,42 @@ fn floaty_launch_target(target: String, app: AppHandle) -> Result<(), String> {
 /// Returns the folder id when a merge happened.
 #[tauri::command]
 fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) -> Option<String> {
-    // live rect of the dropped icon
+    // Where the drop is, as a point in record space.
+    //
+    // The page's coordinates are used *while they agree with the record about which
+    // screen the floatie is on*. After a drag that crossed to another screen they do not:
+    // the page clamps a drag to the screen it began on, so a drop onto the second screen
+    // would be vetted against the tiles at the first screen's edge — merging a real file
+    // with nothing on screen to explain it. The record is where the floatie actually is,
+    // because the drag handed it over on the way.
+    let list = screens(&app);
+    let (w, h, stored) = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().ok()?;
+        let rec = guard.widgets.get(&id)?;
+        let (w, h) = plugins::size(&rec.kind, &rec.data);
+        (w as i32, h as i32, (rec.x, rec.y))
+    };
+    let on_screen = |px: i32, py: i32| screens::screen_of(&list, px as f64, py as f64);
     let (cx, cy) = if let (Some(px), Some(py)) = (x, y) {
-        let (w, h) = {
+        let (px, py) = if on_screen(px, py) == on_screen(stored.0, stored.1) {
+            (px, py)
+        } else {
+            stored
+        };
+        // Nothing is dropped where no window draws it: the band between two screens at
+        // different scales belongs to none of them, so the floatie comes back first and
+        // the drop is judged where it actually is.
+        let (px, py) = if on_screen(px, py).is_none() {
+            rehome_stranded(&app);
             let state = app.state::<AppState>();
             let guard = state.0.lock().ok()?;
             let rec = guard.widgets.get(&id)?;
-            plugins::size(&rec.kind, &rec.data)
+            (rec.x, rec.y)
+        } else {
+            (px, py)
         };
-        (px + w as i32 / 2, py + h as i32 / 2)
+        (px + w / 2, py + h / 2)
     } else if let Some(me) = app.get_webview_window(&widget_label(&id)) {
         let (mp, ms) = (me.outer_position().ok()?, me.inner_size().ok()?);
         (mp.x + ms.width as i32 / 2, mp.y + ms.height as i32 / 2)
@@ -6510,33 +6663,15 @@ async fn floaty_log(msg: String, app: AppHandle) {
     log_line(&app, &format!("webview: {msg}"));
 }
 
-/// The rectangle the desktop covers, in logical px — the space a record's x/y are
-/// in. The overlay asks for this once and lays out widgets inside it.
 #[tauri::command]
-fn floaty_desktop_rect(app: AppHandle) -> diagnostics::Rect {
+fn floaty_desktop_rect(app: AppHandle) -> screens::Rect {
     let (x, y, w, h) = overlay_rect(&app);
-    diagnostics::Rect { x, y, w, h }
+    screens::Rect::new(x, y, w, h)
 }
 
-/// Every monitor, in logical px plus the scale factor the platform reports, with
-/// the primary marked. This is the *layout* view (the same space as a widget's
-/// position); the Diagnostics tab shows the physical one, which is what the
-/// platform and the window manager actually work in.
 #[tauri::command]
-fn floaty_monitors(app: AppHandle) -> Vec<diagnostics::Rect> {
-    app.available_monitors()
-        .unwrap_or_default()
-        .iter()
-        .map(|m| {
-            let scale = m.scale_factor();
-            diagnostics::Rect {
-                x: (m.position().x as f64 / scale).round(),
-                y: (m.position().y as f64 / scale).round(),
-                w: (m.size().width as f64 / scale).round(),
-                h: (m.size().height as f64 / scale).round(),
-            }
-        })
-        .collect()
+fn floaty_monitors(app: AppHandle) -> Vec<screens::Rect> {
+    screens(&app).iter().map(|s| s.logical).collect()
 }
 
 // ---------- diagnostics ----------
@@ -6711,50 +6846,6 @@ fn floaty_notify(title: String, body: String, app: AppHandle) -> Result<(), Stri
         .map_err(|e| format!("the notification was refused: {e}"))
 }
 
-/// The monitor whose rect a point belongs to, or the one nearest to it.
-///
-/// "Nearest" is what makes a floatie come back: a point that is on no screen at all
-/// is a point whose screen was unplugged, and the honest destination is the closest
-/// screen that still exists — not the primary, which may be the far one.
-fn nearest_monitor(rects: &[(f64, f64, f64, f64)], x: f64, y: f64) -> Option<usize> {
-    if rects.is_empty() {
-        return None;
-    }
-    let gap = |rect: &(f64, f64, f64, f64)| {
-        let (rx, ry, rw, rh) = *rect;
-        let dx = (rx - x).max(0.0).max(x - (rx + rw));
-        let dy = (ry - y).max(0.0).max(y - (ry + rh));
-        dx * dx + dy * dy
-    };
-    rects
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| gap(a).total_cmp(&gap(b)))
-        .map(|(index, _)| index)
-}
-
-/// A place inside `rect`, `margin` px from its edges, where all of a `w * h` floatie
-/// fits — so one that comes back is a floatie you can see, not one clinging to the
-/// edge with two thirds of itself hanging off the side.
-fn clamp_into(
-    rect: (f64, f64, f64, f64),
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    margin: f64,
-) -> (f64, f64) {
-    let (rx, ry, rw, rh) = rect;
-    let left = rx + margin;
-    let top = ry + margin;
-    // A floatie wider or taller than the screen it is coming back to cannot fit:
-    // hold it at the top-left rather than pushing it off the far edge, where the
-    // clamp would be inverted and `clamp` would panic.
-    let right = (rx + rw - margin - w).max(left);
-    let bottom = (ry + rh - margin - h).max(top);
-    (x.clamp(left, right).round(), y.clamp(top, bottom).round())
-}
-
 /// The arrangement changed: a display was plugged in, unplugged or re-scaled.
 ///
 /// Three things go stale at once, and all three are the user's problem: the overlay
@@ -6780,19 +6871,26 @@ pub fn display_arrangement_changed() {
     reconcile_desktop(&app);
 }
 
-/// Fit everything to the arrangement that exists now: the overlay window, the pages
+/// Fit everything to the arrangement that exists now: the overlay windows, the pages
 /// that hold a cached layout, and any floatie sitting off every screen.
 ///
-/// Three callers and one implementation: `WM_DISPLAYCHANGE`, startup, and the button
-/// in the Diagnostics tab — which is also how this gets tested without unplugging
-/// anything.
+/// Four callers and one implementation: `WM_DISPLAYCHANGE`, startup, the button in the
+/// Diagnostics tab — and the palette when it moves itself to another screen, which is
+/// also how this gets exercised without unplugging anything.
 fn reconcile_desktop(app: &AppHandle) -> Vec<String> {
-    let (x, y, w, h) = overlay_rect(app);
+    if let Err(e) = spawn_overlay_windows(app) {
+        log_line(app, &format!("monitors: could not build the overlays: {e}"));
+    }
+    fit_overlay_to_monitor(app);
+    close_extra_overlays(app);
+    let union = screens::union(&screens(app));
     log_line(
         app,
-        &format!("monitors: the desktop is now {x},{y} {w}x{h}"),
+        &format!(
+            "monitors: the desktop is now {},{} {}x{}",
+            union.x, union.y, union.w, union.h
+        ),
     );
-    fit_overlay_to_monitor(app);
     // Pages re-read the layout from this. `display` is "arrangement" rather than
     // "on"/"off" on purpose: a plugin watching the screen state ignores a value it
     // does not know rather than guessing, and this is not a screen state.
@@ -6800,7 +6898,7 @@ fn reconcile_desktop(app: &AppHandle) -> Vec<String> {
         "floaty-display-changed",
         serde_json::json!({
             "display": "arrangement",
-            "desktop": { "x": x, "y": y, "w": w, "h": h },
+            "desktop": { "x": union.x, "y": union.y, "w": union.w, "h": union.h },
         }),
     );
     rehome_stranded(app)
@@ -6808,16 +6906,16 @@ fn reconcile_desktop(app: &AppHandle) -> Vec<String> {
 
 /// Bring back every floatie whose screen is gone, and say how many.
 ///
-/// Two ways to end up off-screen, and both are silent: a display is unplugged while
-/// the desktop covers it (the arrangement shrinks and the record keeps its old
+/// Two ways to end up off-screen, and both are silent: a display is unplugged while the
+/// desktop covers it (the arrangement shrinks and the record keeps its old
 /// coordinates), or the app starts after that happened. Either way the record is
 /// `pinned`, so the physics will never move it, and nothing else in the app has an
 /// opinion about position — so without this it is simply not on the screen any more.
-/// Measured: two screens at 2.00/1.50, overlay `0,0 3200x960`, then the second one
-/// unplugged — the floaties that had been dragged there never came back.
+/// Measured: two screens at 2.00/1.50, second one unplugged, and the floaties that had
+/// been dragged there never came back.
 fn rehome_stranded(app: &AppHandle) -> Vec<String> {
-    let rects = logical_monitor_rects(&app.available_monitors().unwrap_or_default());
-    if rects.is_empty() {
+    let list = screens(app);
+    if list.is_empty() {
         return Vec::new();
     }
     let mut moved: Vec<String> = Vec::new();
@@ -6826,14 +6924,14 @@ fn rehome_stranded(app: &AppHandle) -> Vec<String> {
         let Ok(mut guard) = state.0.lock() else {
             return Vec::new();
         };
-        // What is already on each screen, so a floatie coming back lands *beside*
-        // its neighbours rather than under them.
-        let mut taken: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); rects.len()];
+        // What is already on each screen, so a floatie coming back lands *beside* its
+        // neighbours rather than under them.
+        let mut taken: Vec<Vec<screens::Rect>> = vec![Vec::new(); list.len()];
         for rec in guard.widgets.values() {
             let (x, y) = (rec.x as f64, rec.y as f64);
-            if let Some(index) = screen_at(&rects, x, y) {
+            if let Some(index) = screens::screen_of(&list, x, y) {
                 let (w, h) = plugins::size(&rec.kind, &rec.data);
-                taken[index].push((x, y, w, h));
+                taken[index].push(screens::Rect::new(x, y, w, h));
             }
         }
 
@@ -6842,15 +6940,9 @@ fn rehome_stranded(app: &AppHandle) -> Vec<String> {
         let mut stranded: Vec<(i32, i32, String, String, serde_json::Value)> = guard
             .widgets
             .values()
-            .filter(|rec| screen_at(&rects, rec.x as f64, rec.y as f64).is_none())
+            .filter(|rec| screens::screen_of(&list, rec.x as f64, rec.y as f64).is_none())
             .map(|rec| {
-                (
-                    rec.y,
-                    rec.x,
-                    rec.id.clone(),
-                    rec.kind.clone(),
-                    rec.data.clone(),
-                )
+                (rec.y, rec.x, rec.id.clone(), rec.kind.clone(), rec.data.clone())
             })
             .collect();
         stranded.sort_by_key(|(y, x, _, _, _)| (*y, *x));
@@ -6860,16 +6952,24 @@ fn rehome_stranded(app: &AppHandle) -> Vec<String> {
                 continue;
             };
             let (x, y) = (rec.x as f64, rec.y as f64);
-            let Some(index) = nearest_monitor(&rects, x, y) else {
+            let Some(index) = screens::nearest(&list, x, y) else {
                 continue;
             };
             // The widget's own size, from the manifest that owns it — the same
             // `size(kind, data)` a fresh widget is built from, so a panel and an icon
             // each come back clear of the edge by their own width, not by a guess.
             let (w, h) = plugins::size(&kind, &data);
-            let start = clamp_into(rects[index], x, y, w, h, REHOME_MARGIN);
-            let (nx, ny) = place_without_overlap(rects[index], w, h, start, &taken[index]);
-            taken[index].push((nx, ny, w, h));
+            let start = screens::clamp_into(list[index].logical, x, y, w, h, screens::MARGIN);
+            let (nx, ny) = screens::place_without_overlap(
+                list[index].logical,
+                w,
+                h,
+                start,
+                &taken[index],
+                screens::MARGIN,
+                screens::GAP,
+            );
+            taken[index].push(screens::Rect::new(nx, ny, w, h));
             if let Some(rec) = guard.widgets.get_mut(&id) {
                 rec.x = nx as i32;
                 rec.y = ny as i32;
@@ -6905,60 +7005,6 @@ fn rehome_stranded(app: &AppHandle) -> Vec<String> {
     moved
 }
 
-/// How far from the edge a floatie that comes back is placed. A window is wider
-/// than this, so a point this far in is a floatie you can see and grab.
-const REHOME_MARGIN: f64 = 24.0;
-/// The clear space left between two floaties that came back together.
-const REHOME_GAP: f64 = 8.0;
-
-/// Which screen a point is on, if any.
-fn screen_at(rects: &[(f64, f64, f64, f64)], x: f64, y: f64) -> Option<usize> {
-    rects
-        .iter()
-        .position(|r| x >= r.0 && x < r.0 + r.2 && y >= r.1 && y < r.1 + r.3)
-}
-
-/// Two rectangles overlap (touching edges do not count).
-fn rects_overlap(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
-    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
-}
-
-/// A place near `start` where this floatie does not land on top of another one.
-///
-/// Floaties that came back from a screen that is gone all arrive from beyond the same
-/// edge, so the clamp by itself puts every one of them at the same spot: three icons
-/// come home and the user sees one icon and two hidden behind it. They stack down the
-/// edge instead, and open a new column further in when the edge is full.
-fn place_without_overlap(
-    rect: (f64, f64, f64, f64),
-    w: f64,
-    h: f64,
-    start: (f64, f64),
-    taken: &[(f64, f64, f64, f64)],
-) -> (f64, f64) {
-    let (mut x, mut y) = start;
-    let bottom = rect.1 + rect.3 - REHOME_MARGIN - h;
-    let left = rect.0 + REHOME_MARGIN;
-    for _ in 0..128 {
-        if !taken
-            .iter()
-            .any(|other| rects_overlap(*other, (x, y, w, h)))
-        {
-            return (x.round(), y.round());
-        }
-        y += h + REHOME_GAP;
-        if y > bottom {
-            // The column is full: one step further in, back to the row it started at.
-            x -= w + REHOME_GAP;
-            y = start.1;
-            if x < left {
-                // Nowhere clear: the clamped spot is still better than nowhere.
-                return (start.0.round(), start.1.round());
-            }
-        }
-    }
-    (x.round(), y.round())
-}
 
 /// Fit the desktop to the screens that exist now, and bring back anything that was
 /// left off-screen. The Diagnostics tab's button: the same work a display change
@@ -6966,6 +7012,98 @@ fn place_without_overlap(
 #[tauri::command]
 fn floaty_rehome_floaties(app: AppHandle) -> Result<usize, String> {
     Ok(reconcile_desktop(&app).len())
+}
+
+/// Where a dragged floatie is now, in the space records live in.
+///
+/// The page works out the place and sends it: it knows the pointer's physical position
+/// (its own screen's origin plus the event's css px times its own scale factor) and the
+/// screens it can map that through. Deliberately *not* built on `cursor_position()` —
+/// measured on the mixed-DPI pair, that answers in a different space from window
+/// geometry (a pointer physically at 4000,667 came back as 2000,333), so a mapping
+/// built on it puts floaties in the wrong place while looking plausible.
+///
+/// Sent by the window that holds the pointer — which, thanks to pointer capture, is
+/// still the window the drag started in even while the pointer is over another screen.
+/// The record moves; when that puts it on a different screen the overlays are told, so
+/// the widget is handed from the window it left to the window it entered *mid-drag*
+/// rather than vanishing at the boundary and reappearing on release.
+/// A dragged floatie's place, sent to every overlay window on each move.
+///
+/// The window a drag *started* in keeps the pointer (the capture is there), while the
+/// window that *draws* the floatie may be the other one — so the place has to be pushed
+/// to both. `floaty-widget-updated` is no good for this: it re-mounts the floatie, which
+/// on every move would be a rebuild per frame.
+#[derive(Clone, serde::Serialize)]
+struct DragMoved {
+    id: String,
+    x: i32,
+    y: i32,
+}
+
+#[derive(serde::Serialize)]
+struct DragOwner {
+    index: Option<usize>,
+    screen: Option<String>,
+    x: f64,
+    y: f64,
+}
+
+#[tauri::command]
+fn floaty_drag_to(id: String, x: f64, y: f64, app: AppHandle) -> DragOwner {
+    let owner = drag_record_to(&app, &id, x, y);
+    let list = screens(&app);
+    DragOwner {
+        index: owner,
+        x: x.round(),
+        y: y.round(),
+        screen: owner.map(|i| list[i].name.clone()),
+    }
+}
+
+/// Move a record during a drag and hand it over when that changes which screen it is on.
+///
+/// The handover is the part that matters: the window the floatie left unmounts it and
+/// the one it entered mounts it, which only works because a record's owner is *derived*
+/// from its position rather than stored.
+fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Option<usize> {
+    let list = screens(app);
+    let (nx, ny) = (x.round(), y.round());
+    let mut handover: Option<WidgetRecord> = None;
+    {
+        let state = app.state::<AppState>();
+        let Ok(mut guard) = state.0.lock() else {
+            return None;
+        };
+        let rec = guard.widgets.get_mut(id)?;
+        let was = screens::screen_of(&list, rec.x as f64, rec.y as f64);
+        let now = screens::screen_of(&list, nx, ny);
+        rec.x = nx as i32;
+        rec.y = ny as i32;
+        if was != now {
+            handover = Some(rec.clone());
+        }
+    }
+    // Debounced by `persist`: a drag that ends off its own screen is not lost to a hard
+    // kill before the release path runs.
+    persist(app);
+    if let Some(rec) = handover {
+        app.emit("floaty-widget-updated", rec).ok();
+    }
+    // ...and on *every* move, not only when the owner changes: once the floatie has been
+    // handed to the other window, that window is the one drawing it, and it learns where
+    // the pointer is from here (measured: without this the floatie was handed over and
+    // then stood still for the rest of the drag, with the button still down).
+    app.emit(
+        "floaty-drag-moved",
+        DragMoved {
+            id: id.to_string(),
+            x: nx as i32,
+            y: ny as i32,
+        },
+    )
+    .ok();
+    screens::screen_of(&list, nx, ny)
 }
 
 /// Open the folder the log lives in, which is what a bug report asks for next.
@@ -7306,7 +7444,7 @@ pub fn run() {
 
             // Spawn overlay window as early as possible so WebView2 initializes
             // concurrently with disk scanning and plugin installation.
-            if let Err(e) = spawn_overlay_window(&handle) {
+            if let Err(e) = spawn_overlay_windows(&handle) {
                 log_line(&handle, &format!("spawn_overlay_window FAILED: {e}"));
             }
             // A pin survives a restart: whatever was pinned comes back in the top
@@ -7399,6 +7537,9 @@ pub fn run() {
             floaty_rehome_floaties,
             floaty_desktop_rect,
             floaty_monitors,
+            floaty_screens,
+            floaty_overlay_area,
+            floaty_drag_to,
             floaty_audio_start,
             floaty_audio_stop,
             floaty_audio_set_fps,
@@ -7496,119 +7637,6 @@ mod tests {
     /// that *are* the desktop. Applying it to the settings window is the bug
     /// this pins shut: its minimize button did nothing and the first drag step
     /// stripped its taskbar button.
-    #[test]
-    fn a_floatie_off_every_screen_comes_back_to_the_nearest_one() {
-        // A primary and a second screen to its right.
-        let two = vec![(0.0, 0.0, 1440.0, 960.0), (1440.0, 0.0, 1760.0, 960.0)];
-        assert_eq!(nearest_monitor(&two, 100.0, 100.0), Some(0));
-        assert_eq!(nearest_monitor(&two, 2000.0, 100.0), Some(1));
-        assert_eq!(nearest_monitor(&[], 0.0, 0.0), None);
-
-        // The second screen is unplugged. A floatie that was on it comes back onto the
-        // screen that still exists, at its nearest edge, *whole* — an icon is 92 wide,
-        // so 1440 - 24 - 92 = 1324: pinned to the right edge and fully visible, which
-        // 1416 (the corner) was not.
-        let alone = vec![(0.0, 0.0, 1440.0, 960.0)];
-        assert_eq!(nearest_monitor(&alone, 2000.0, 120.0), Some(0));
-        assert_eq!(clamp_into(alone[0], 2000.0, 120.0, 92.0, 112.0, 24.0), (1324.0, 120.0));
-        assert!(
-            1324.0 + 92.0 <= 1440.0,
-            "the whole icon is on the screen, not just its corner"
-        );
-
-        // One from above a screen comes down into it, keeping its column ...
-        assert_eq!(clamp_into(alone[0], 300.0, -400.0, 92.0, 112.0, 24.0), (300.0, 24.0));
-        // ... and a panel as tall as most of the screen fits by its own height.
-        assert_eq!(clamp_into(alone[0], 2000.0, 5000.0, 300.0, 330.0, 24.0), (1116.0, 606.0));
-        // Something bigger than the screen cannot be fitted: it is held at the
-        // top-left instead of being pushed off the far edge.
-        assert_eq!(clamp_into(alone[0], 2000.0, 5000.0, 5000.0, 5000.0, 24.0), (24.0, 24.0));
-
-        // Three screens, including one to the left: nearest is nearest, not first.
-        let three = vec![
-            (-1280.0, 0.0, 1280.0, 1024.0),
-            (0.0, 0.0, 1440.0, 960.0),
-            (1440.0, 0.0, 1760.0, 960.0),
-        ];
-        assert_eq!(nearest_monitor(&three, -3000.0, 100.0), Some(0));
-        assert_eq!(nearest_monitor(&three, 2600.0, 100.0), Some(2));
-        assert_eq!(
-            nearest_monitor(&three, 1000.0, 2000.0),
-            Some(1),
-            "below the middle screen, nearer to it than to either neighbour"
-        );
-        assert_eq!(clamp_into(three[0], -3000.0, 100.0, 92.0, 112.0, 24.0), (-1256.0, 100.0));
-    }
-
-    #[test]
-    fn floaties_that_come_back_together_do_not_land_on_top_of_each_other() {
-        let rect = (0.0, 0.0, 1440.0, 960.0);
-        let icon = (92.0, 112.0);
-        // Three icons from the screen that went away: the clamp puts all three here,
-        // which is one visible icon and two hidden behind it.
-        let start = clamp_into(rect, 2000.0, 100.0, icon.0, icon.1, 24.0);
-        assert_eq!(start, (1324.0, 100.0));
-
-        let mut taken: Vec<(f64, f64, f64, f64)> = Vec::new();
-        let first = place_without_overlap(rect, icon.0, icon.1, start, &taken);
-        taken.push((first.0, first.1, icon.0, icon.1));
-        let second = place_without_overlap(rect, icon.0, icon.1, start, &taken);
-        taken.push((second.0, second.1, icon.0, icon.1));
-        let third = place_without_overlap(rect, icon.0, icon.1, start, &taken);
-
-        assert_eq!(first, start, "the first one keeps the spot it was clamped to");
-        assert_eq!(second.1, 100.0 + 112.0 + 8.0, "the second goes below it");
-        assert_eq!(third.1, 100.0 + 2.0 * (112.0 + 8.0), "the third below that");
-        for (x, y) in [first, second, third] {
-            assert!(x >= 0.0 && x + icon.0 <= rect.2, "fully on the screen: {x}");
-            assert!(y >= 0.0 && y + icon.1 <= rect.3, "fully on the screen: {y}");
-        }
-        // Every pair is clear of the others.
-        let placed = [
-            (first.0, first.1, icon.0, icon.1),
-            (second.0, second.1, icon.0, icon.1),
-            (third.0, third.1, icon.0, icon.1),
-        ];
-        for a in 0..placed.len() {
-            for b in (a + 1)..placed.len() {
-                assert!(!rects_overlap(placed[a], placed[b]), "{a} overlaps {b}");
-            }
-        }
-
-        // A column that runs out of room continues further in, and stays inside.
-        let near_bottom = place_without_overlap(rect, icon.0, 112.0, (1324.0, 800.0), &[
-            (1324.0, 800.0, 92.0, 112.0),
-            (1324.0, 920.0, 92.0, 112.0),
-        ]);
-        assert!(near_bottom.0 + icon.0 <= rect.2 && near_bottom.1 + icon.1 <= rect.3);
-        assert!(!rects_overlap((near_bottom.0, near_bottom.1, icon.0, icon.1), (1324.0, 800.0, 92.0, 112.0)));
-    }
-
-    #[test]
-    fn the_desktop_is_the_smallest_box_holding_every_screen() {
-        // one screen: itself
-        assert_eq!(
-            union_rect(&[(0.0, 0.0, 1920.0, 1080.0)]),
-            (0.0, 0.0, 1920.0, 1080.0)
-        );
-        // a second screen to the right, taller than the first
-        assert_eq!(
-            union_rect(&[(0.0, 0.0, 1920.0, 1080.0), (1920.0, 0.0, 2560.0, 1440.0)]),
-            (0.0, 0.0, 4480.0, 1440.0)
-        );
-        // one to the left: the origin is negative, which is why the overlay is
-        // positioned rather than assumed to start at 0,0
-        assert_eq!(
-            union_rect(&[(0.0, 0.0, 1920.0, 1080.0), (-1280.0, 200.0, 1280.0, 1024.0)]),
-            (-1280.0, 0.0, 3200.0, 1224.0)
-        );
-        // one above, offset in y on both sides
-        assert_eq!(
-            union_rect(&[(0.0, 0.0, 1920.0, 1080.0), (300.0, -1080.0, 1920.0, 1080.0)]),
-            (0.0, -1080.0, 2220.0, 2160.0)
-        );
-    }
-
     #[test]
     fn the_desktop_layer_is_the_overlays_and_the_floatie_windows() {
         assert!(is_desktop_layer_label("desktop-overlay"));

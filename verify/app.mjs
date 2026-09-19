@@ -22,7 +22,7 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Session, listTargets, realErrors } from "./cdp.mjs";
+import { APP_PORT, Session, findTarget, listTargets, realErrors } from "./cdp.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -40,28 +40,49 @@ function flagValue(flag) {
 }
 const portAt = flagValue("--port");
 const pageAt = flagValue("--page");
-const port = portAt.length ? Number(args[portAt[1]]) : 9222;
+const port = portAt.length ? Number(args[portAt[1]]) : APP_PORT;
 /** Which page to talk to: the overlay by default, `#/palette` or any other hash. */
 const page = pageAt.length ? args[pageAt[1]] : "#/overlay";
-const skip = new Set([...portAt, ...pageAt]);
+const nthAt = flagValue("--nth");
+/** Which match, when several windows share a page: one overlay per screen. */
+const nth = nthAt.length ? Number(args[nthAt[1]]) : 0;
+const skip = new Set([...portAt, ...pageAt, ...nthAt]);
 // a bare `--` is how an argument is passed through npm, and it is not a command
 const rest = args.filter((a, i) => a !== "--" && !skip.has(i));
 const command = rest[0] ?? "health";
 
-const HEALTH = `(async () => {
+/**
+ * One overlay window's health.
+ *
+ * There is **one overlay per screen** (see `spawn_overlay_windows`), so a window is
+ * healthy when it mounts exactly the records that fall on its own screen — not when it
+ * mounts all of them. `shouldMount` is that count, computed the way the window does it.
+ */
+const WINDOW_HEALTH = `(async () => {
   const invoke = window.__TAURI_INTERNALS__.invoke;
+  const area = await invoke("floaty_overlay_area");
   const records = await invoke("floaty_list");
+  const screen = area ? area.screen : null;
+  const mine = screen
+    ? records.filter((r) =>
+        r.x >= screen.logical.x && r.x < screen.logical.x + screen.logical.w &&
+        r.y >= screen.logical.y && r.y < screen.logical.y + screen.logical.h)
+    : records;
   const slots = [...document.querySelectorAll("#desktop-canvas > *")];
   const ids = new Set(slots.map((el) => (el.id || "").replace(/^slot-/, "")));
   const tiles = [...document.querySelectorAll("img.tile-icon")];
   const folderImgs = [...document.querySelectorAll(".ftile img, .fmini img")];
   const failed = [...tiles, ...folderImgs].filter((i) => i.complete && i.naturalWidth === 0);
   return {
-    records: records.length,
+    screen: screen ? screen.name : "(no area reported)",
+    scale: screen ? screen.scale : 0,
+    dpr: window.devicePixelRatio,
+    total: records.length,
+    shouldMount: mine.length,
     mounted: slots.length,
-    missingSlots: records.filter((r) => !ids.has(r.id)).map((r) => r.id),
+    missing: mine.filter((r) => !ids.has(r.id)).map((r) => r.id),
+    strangers: [...ids].filter((id) => !mine.some((r) => r.id === id)),
     tileIcons: tiles.length,
-    folderIcons: folderImgs.length,
     iconsFailed: failed.length,
     iconSizes: [...new Set([...tiles, ...folderImgs].filter((i) => i.naturalWidth > 0)
       .map((i) => i.naturalWidth + "x" + i.naturalHeight))].sort(),
@@ -69,25 +90,58 @@ const HEALTH = `(async () => {
   };
 })()`;
 
+/**
+ * Every overlay window, checked as a window rather than as "the desktop".
+ *
+ * With two screens there are two overlays, and the interesting failure is not one of
+ * them being wrong on its own — it is a record that neither window drew, or one that
+ * both drew. So the sum is checked against the record list as well.
+ */
 async function health() {
-  const session = await Session.open(port, "#/overlay");
-  const report = await session.evaluate(HEALTH);
-  const errors = realErrors(session.errors);
-  await session.close();
+  const targets = (await listTargets(port)).filter(
+    (t) => t.type === "page" && t.url.endsWith("#/overlay"),
+  );
+  if (targets.length === 0) throw new Error("no overlay page is open");
 
   const problems = [];
-  if (report.records !== report.mounted)
-    problems.push(`${report.mounted} mounted for ${report.records} records`);
-  if (report.missingSlots.length)
-    problems.push(`no slot for: ${report.missingSlots.join(", ")}`);
-  if (report.iconsFailed) problems.push(`${report.iconsFailed} icon(s) failed to load`);
-  if (report.hidden !== "visible")
-    problems.push(`the page believes it is ${report.hidden} — timers will be throttled`);
-  for (const error of errors) problems.push(error);
+  const windows = [];
+  let mountedTotal = 0;
+  let expectedTotal = 0;
+  let total = 0;
 
-  console.log(JSON.stringify(report, null, 2));
+  for (let nth = 0; nth < targets.length; nth++) {
+    const session = await Session.open(port, "#/overlay", nth);
+    const report = await session.evaluate(WINDOW_HEALTH);
+    const errors = realErrors(session.errors);
+    await session.close();
+
+    windows.push(report);
+    mountedTotal += report.mounted;
+    expectedTotal += report.shouldMount;
+    total = Math.max(total, report.total);
+
+    const where = `${report.screen} @${report.scale}x (dpr ${report.dpr})`;
+    if (report.mounted !== report.shouldMount)
+      problems.push(`${where}: ${report.mounted} mounted, ${report.shouldMount} belong here`);
+    if (report.missing.length)
+      problems.push(`${where}: no slot for ${report.missing.join(", ")}`);
+    if (report.strangers.length)
+      problems.push(`${where}: drew a floatie that is not on this screen: ${report.strangers.join(", ")}`);
+    if (report.iconsFailed) problems.push(`${where}: ${report.iconsFailed} icon(s) failed to load`);
+    if (report.hidden !== "visible")
+      problems.push(`${where}: the page believes it is ${report.hidden} — timers will be throttled`);
+    for (const error of errors) problems.push(`${where}: ${error}`);
+  }
+
+  // Between the windows: every record is drawn exactly once, wherever it lives.
+  if (mountedTotal !== expectedTotal)
+    problems.push(`${mountedTotal} floaties drawn across ${targets.length} window(s) for ${expectedTotal} that belong to a screen`);
+  if (expectedTotal !== total)
+    problems.push(`${total - expectedTotal} floatie(s) are on no screen at all — run the Diagnostics tab's "bring back off-screen floaties"`);
+
+  console.log(JSON.stringify({ windows, records: total, drawn: mountedTotal }, null, 2));
   if (problems.length === 0) {
-    console.log("\noverlay healthy");
+    console.log(`\n${targets.length} overlay(s) healthy — ${mountedTotal} floatie(s) drawn, once each`);
     return 0;
   }
   console.log("");
@@ -97,8 +151,24 @@ async function health() {
 
 async function main() {
   if (command === "health") return await health();
+  if (command === "reload") {
+    // Frontend changes reach a running page only through Vite's HMR, and a long-lived
+    // overlay window stops applying it: without this, a probe can measure yesterday's
+    // code and report the fix as not working.
+    const targets = (await listTargets(port)).filter(
+      (t) => t.type === "page" && t.url.endsWith("#/overlay"),
+    );
+    if (targets.length === 0) throw new Error("no app page to reload");
+    for (let nth = 0; nth < targets.length; nth++) {
+      const session = await Session.open(port, "#/overlay", nth);
+      await session.send("Page.reload", { ignoreCache: true });
+      await session.close();
+    }
+    console.log(`reloaded ${targets.length} page(s)`);
+    return;
+  }
 
-  const session = await Session.open(port, rest[0] === "health" ? "#/overlay" : page);
+  const session = await Session.open(port, rest[0] === "health" ? "#/overlay" : page, nth);
   try {
     if (command === "js") {
       const expression = rest[1];
@@ -123,7 +193,7 @@ async function main() {
       for (const t of await listTargets(port)) console.log(`${t.type}  ${t.url}`);
       return 0;
     }
-    throw new Error(`verify:app <health|js|key|shot|targets> (got "${command}")`);
+    throw new Error(`verify:app <health|js|key|shot|targets|reload> (got "${command}")`);
   } finally {
     await session.close();
   }

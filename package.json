@@ -7,13 +7,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/check-plugins.mjs && tsc --noEmit && vite build",
+    "build": "node scripts/check-plugins.mjs && node scripts/check-examples.mjs && tsc --noEmit && vite build",
     "check:plugins": "node scripts/check-plugins.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "verify:panes": "node verify/panes.mjs",
     "verify:app": "node verify/app.mjs",
-    "verify:palette": "node verify/palette.mjs"
+    "verify:palette": "node verify/palette.mjs",
+    "verify:drag": "node verify/drag.mjs",
+    "check:examples": "node scripts/check-examples.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2",

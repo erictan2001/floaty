@@ -172,7 +172,10 @@ export function setWidgetPos(id: string, x: number, y: number, scale = 1, opts?:
     if (slot) {
       slot.x = x;
       slot.y = y;
-      slot.element.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      // record space in, this window's css px out: on the second screen the window's
+      // own origin is 1280px to the right of the arrangement's
+      const at = toWindow(x, y);
+      slot.element.style.transform = `translate3d(${at.x}px, ${at.y}px, 0)`;
       if (!overlayDragging) {
         scheduleHitRectsUpdate();
       }
@@ -247,6 +250,173 @@ export interface MonitorArea {
 }
 
 /**
+ * The screen this overlay window covers, and the desktop as a whole.
+ *
+ * An overlay is one window **per screen** (see `spawn_overlay_windows` in `lib.rs`), so
+ * the window's own (0,0) is its screen's top-left while records — and every position a
+ * widget deals with — are in the arrangement's space. `toWindow`/`toRecords` are where
+ * the two meet, and with one screen they are the identity.
+ */
+interface OverlayArea {
+  index: number;
+  screen: {
+    name: string;
+    primary: boolean;
+    scale: number;
+    physical: MonitorArea;
+    logical: MonitorArea;
+  };
+  desktop: MonitorArea;
+}
+
+let area: OverlayArea | null = null;
+let areaPromise: Promise<OverlayArea | null> | null = null;
+
+/** What is known about this window's screen right now (null before the first read). */
+export function overlayArea(): OverlayArea | null {
+  return area;
+}
+
+/**
+ * Ask the backend which screen this window is on. Cached per window; re-read when the
+ * arrangement changes.
+ */
+export function myArea(): Promise<OverlayArea | null> {
+  areaPromise ??= invoke<OverlayArea | null>("floaty_overlay_area")
+    .then((value) => {
+      area = value ?? null;
+      // Warm the screens here too: a drag places a floatie from the pointer's own
+      // position, which is mapped through the screen it is on, and a cold cache would
+      // silently fall back to the delta maths this exists to replace.
+      void screens();
+      return area;
+    })
+    .catch(() => null);
+  return areaPromise;
+}
+
+function dropAreaCache(): void {
+  areaPromise = null;
+  screenList = null;
+}
+
+/** A screen as `floaty_screens` reports it: the same monitor in both spaces. */
+interface ScreenInfo {
+  key: string;
+  name: string;
+  physical: MonitorArea;
+  logical: MonitorArea;
+  scale: number;
+  primary: boolean;
+}
+
+let screenList: ScreenInfo[] | null = null;
+
+/** Every monitor, cached — the drag needs them to place a floatie on any screen. */
+export async function screens(): Promise<ScreenInfo[]> {
+  if (!screenList) {
+    screenList = await invoke<ScreenInfo[]>("floaty_screens").catch(() => []);
+  }
+  return screenList ?? [];
+}
+
+/**
+ * Where the pointer is *physically*, from a pointer event in this window.
+ *
+ * The event's css px are in this window's own space and stay in it even while the
+ * pointer is captured outside the window — the ratio is anchored to this window's DPI
+ * context. That is what makes this exact where accumulating deltas was not: 400 css px
+ * past the right edge of a 200% screen is 800 physical px into the next screen, whose
+ * own scale may be anything.
+ */
+function pointerPhysical(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
+  const s = area?.screen;
+  if (!s) return null;
+  const scale = window.devicePixelRatio || s.scale;
+  return { x: s.physical.x + e.clientX * scale, y: s.physical.y + e.clientY * scale };
+}
+
+/**
+ * Where a drag of a desktop item is now, in record space.
+ *
+ * `null` when there are no screens to map through (a probe page, a window with no
+ * screen), in which case the caller keeps its own delta maths.
+ */
+export function dragPosition(ev: PointerEvent): { x: number; y: number } | null {
+  const spot = pointerPhysical(ev);
+  return spot ? physicalToVirtual(spot) : null;
+}
+
+/**
+ * The point of the item the pointer grabbed, so it stays under that point.
+ *
+ * Deltas are exact while the pointer stays on one screen and wrong the moment it
+ * crosses to another scale — and the screen-edge clamp that used to stop such a drag
+ * dead is what turned "drag an icon to the other screen" into "merge it with whatever
+ * sits at this screen's edge".
+ */
+export function dragGrab(ev: PointerEvent, x: number, y: number): { dx: number; dy: number } | null {
+  const at = dragPosition(ev);
+  return at ? { dx: at.x - x, dy: at.y - y } : null;
+}
+
+/** Is this record drawn by this window's screen? (true when there is no screen model) */
+export function isOnMyScreen(x: number, y: number): boolean {
+  return onMyScreen(x, y);
+}
+
+/**
+ * A physical point → record space, through the screen it is physically on.
+ *
+ * With no screen list yet (a page that has just been reloaded, the first move of the
+ * first drag) this falls back to *this window's own* screen rather than to nothing: a
+ * point on this screen maps the same way either way, and returning nothing would drop
+ * the drag back to the delta maths that the mapping exists to replace — measured, a
+ * first drag after a reload crossed the boundary and left the record behind, drawn by
+ * both windows at once.
+ */
+function physicalToVirtual(p: { x: number; y: number }): { x: number; y: number } | null {
+  const list = screenList?.length ? screenList : area ? [area.screen] : [];
+  if (!list.length) return null;
+  const on = list.find(
+    (s) =>
+      p.x >= s.physical.x &&
+      p.x < s.physical.x + s.physical.w &&
+      p.y >= s.physical.y &&
+      p.y < s.physical.y + s.physical.h,
+  );
+  if (!on) return null;
+  return {
+    x: on.logical.x + (p.x - on.physical.x) / on.scale,
+    y: on.logical.y + (p.y - on.physical.y) / on.scale,
+  };
+}
+
+/** The arrangement's space → this window's css px. */
+export function toWindow(x: number, y: number): { x: number; y: number } {
+  const origin = area?.screen.logical;
+  return origin ? { x: x - origin.x, y: y - origin.y } : { x, y };
+}
+
+/** This window's css px → the arrangement's space. */
+export function toRecords(x: number, y: number): { x: number; y: number } {
+  const origin = area?.screen.logical;
+  return origin ? { x: x + origin.x, y: y + origin.y } : { x, y };
+}
+
+/**
+ * Is this point drawn by this window?
+ *
+ * True when nothing is known yet, so a page that has not managed to ask (or a build
+ * where the command is missing) mounts everything rather than nothing.
+ */
+export function onMyScreen(x: number, y: number): boolean {
+  const screen = area?.screen.logical;
+  if (!screen) return true;
+  return x >= screen.x && x < screen.x + screen.w && y >= screen.y && y < screen.y + screen.h;
+}
+
+/**
  * The monitors, in logical px, as the backend last reported them.
  *
  * One overlay window covers every screen (see `overlay_rect` in `lib.rs`), so a
@@ -285,7 +455,10 @@ function followMonitors(): void {
   if (monitorsWatched) return;
   monitorsWatched = true;
   void listen("floaty-display-changed", () => {
-    void watchMonitors();
+    // this window's own screen may be a different one now, so the area is re-read
+    // before the list it is measured against
+    dropAreaCache();
+    void myArea().then(() => watchMonitors());
   }).catch(() => undefined);
 }
 
@@ -297,7 +470,11 @@ function followMonitors(): void {
  */
 export function monitorAt(x: number): MonitorArea {
   const hit = monitors.find((m) => x >= m.x && x < m.x + m.w);
-  return hit ?? monitorAreaSync();
+  if (hit) return hit;
+  // This window's own screen is the better answer than the whole arrangement: an
+  // overlay draws one screen, and a widget falling in it rests on that screen's floor.
+  const mine = area?.screen.logical;
+  return mine ?? monitorAreaSync();
 }
 
 /** The desktop rectangle without waiting for it (falls back to the window). */
@@ -315,12 +492,12 @@ export function monitorAreaSync(): MonitorArea {
 /** Current desktop area in logical px: every screen, not just the primary. */
 export async function monitorArea(): Promise<MonitorArea> {
   if (isOverlayMode()) {
-    // The backend's rectangle, not `innerWidth`: the window may be a few px off
-    // what Windows granted, and records live in the backend's space.
-    const rect = await watchMonitors()
-      .then(() => monitorAreaSync())
-      .catch(() => monitorAreaSync());
-    return rect;
+    // The screen this window covers, in record space. It used to be the window's own
+    // size, which equalled the whole desktop only while there was one window for the
+    // whole desktop.
+    await myArea().catch(() => null);
+    await watchMonitors().catch(() => []);
+    return area?.screen.logical ?? monitorAreaSync();
   }
   const s = await scaleFactor();
   try {
@@ -641,11 +818,30 @@ export function enableOverlayDrag(
       const slot = overlaySlots.get(id);
       if (!slot) return;
       e.stopPropagation();
+      // Capture on the body, not on the widget: the widget's slot is removed from the
+      // DOM the moment the pointer crosses onto another screen (that window owns it
+      // now), and capture on a removed element stops delivering moves — the drag would
+      // freeze at the boundary. The body is always there.
+      try {
+        (el.ownerDocument?.body ?? el).setPointerCapture(e.pointerId);
+      } catch {
+        /* a browser without pointer capture: the drag still works inside the window */
+      }
       const startX = slot.x;
       const startY = slot.y;
       const startSX = e.clientX;
       const startSY = e.clientY;
       let active = false;
+      // The point of the floatie the pointer is holding, in record space. Placing it from
+      // the pointer's own position is what survives the change of scale part way through
+      // a drag: accumulating deltas in the window the drag began in pushed a floatie
+      // dragged onto the second screen into the band between the two screens (1440 + px
+      // past the edge, where the second screen begins at 1920) — a place no window draws,
+      // so it disappeared for good.
+      void screens();
+      const at = pointerPhysical(e);
+      const v = at && physicalToVirtual(at);
+      const grab = v ? { dx: v.x - startX, dy: v.y - startY } : null;
 
       const onMove = (ev: PointerEvent) => {
         const dx = ev.clientX - startSX;
@@ -656,12 +852,43 @@ export function enableOverlayDrag(
           window.addEventListener("click", swallowClick, true);
           notifyDragging(true);
         }
+        const spot = pointerPhysical(ev);
+        const want = spot && physicalToVirtual(spot);
+        if (want && grab) {
+          const x = want.x - grab.dx;
+          const y = want.y - grab.dy;
+          // The backend is told on every move: it owns which screen the floatie is on and
+          // hands it between windows as that changes, in both directions.
+          void invoke("floaty_drag_to", { id, x, y }).catch(() => undefined);
+          if (onMyScreen(x, y)) setWidgetPos(id, x, y);
+          return;
+        }
+        // No screens to map through (or none under the pointer): the delta maths, which
+        // is exact while the pointer stays on one screen.
         setWidgetPos(id, startX + dx, startY + dy);
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
+        try {
+          (el.ownerDocument?.body ?? el).releasePointerCapture?.(e.pointerId);
+        } catch {
+          /* never captured */
+        }
+        // One last placement, so a drop just past the edge still lands on the screen the
+        // pointer is on rather than on the last position the moves saw.
+        if (active) {
+          const spot = pointerPhysical({ clientX: e.clientX, clientY: e.clientY });
+          const want = spot && physicalToVirtual(spot);
+          if (want && grab) {
+            void invoke("floaty_drag_to", {
+              id,
+              x: want.x - grab.dx,
+              y: want.y - grab.dy,
+            }).catch(() => undefined);
+          }
+        }
         if (active) {
           notifyDragging(false);
           // the click lands in the same gesture; drop the guard right after

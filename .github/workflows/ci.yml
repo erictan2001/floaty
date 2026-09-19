@@ -1,0 +1,86 @@
+name: ci
+
+# Everything the repo can check without a display: the plugin/type guards, the
+# backend tests, and the two page probes — which bring up the dev server and launch
+# their own headless Chrome.
+#
+# `verify:app` is deliberately absent: it talks to a *running* floaty over its debug
+# port, and a runner has no desktop to put one on. That probe stays a local tool (see
+# verify/README.md) and is the reason the pages are probed twice: once stubbed, once
+# against the real thing.
+#
+# The frontend is built before any Rust step on purpose: `tauri::generate_context!()`
+# reads `frontendDist` while `lib.rs` compiles and panics when `dist/` is missing —
+# the release workflow carries the same note.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    # Windows only, matching the app: the shell verbs, the Recycle Bin, WASAPI
+    # loopback and the desktop-layer window policy are all Win32, and so are half
+    # these tests.
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # the crate lives in src-tauri, so that is the workspace to cache
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      # The guards `npm run build` also runs, on their own so a failure says which.
+      - name: plugin ids, types and the widget api version
+        run: |
+          npm run check:plugins
+          npx tsc --noEmit
+
+      - name: build the frontend (the Rust side needs dist/)
+        run: npm run build
+
+      - name: backend tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      # One step, because a background process does not survive into the next one:
+      # the dev server is started, waited for, used by both probes, and left for the
+      # runner to reap. `shell: bash` means a failing probe fails the step.
+      - name: page probes (dev server + headless Chrome)
+        shell: bash
+        run: |
+          npm run dev -- --port 1420 --strictPort > dev-server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:1420 > /dev/null; then
+              echo "dev server up on 1420"
+              break
+            fi
+            sleep 1
+          done
+          npm run verify:panes -- http://localhost:1420
+          npm run verify:palette -- http://localhost:1420
+
+      - name: what the dev server said, if a probe failed
+        if: failure()
+        shell: bash
+        run: tail -50 dev-server.log 2>/dev/null || true

@@ -24,7 +24,15 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+/** The port `launchChrome` picks when a probe needs a browser of its own. */
 export const DEFAULT_PORT = 9333;
+/**
+ * The port the *app's* pages are on — the app is started with
+ * `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"`. Probes that
+ * drive the running app must use this one; probes that drive their own Chrome use
+ * `DEFAULT_PORT`. Mixing them up fails as "no running app", which is what happened.
+ */
+export const APP_PORT = 9222;
 
 /**
  * Console noise that is nobody's fault and would otherwise fail every run: a
@@ -45,12 +53,20 @@ export async function listTargets(port = DEFAULT_PORT) {
 }
 
 /** The page whose url ends with `suffix` — `#/overlay`, `settings.html#/general`, … */
-export async function findTarget(suffix, port = DEFAULT_PORT) {
+/**
+ * The first page whose url ends with `suffix`.
+ *
+ * `nth` picks among several matches, which a multi-monitor desktop needs: every
+ * overlay window is `index.html#/overlay`, so "#/overlay" alone is ambiguous once
+ * there is a second screen.
+ */
+export async function findTarget(suffix, port = DEFAULT_PORT, nth = 0) {
   const targets = await listTargets(port);
-  const hit = targets.find((t) => t.type === "page" && t.url.endsWith(suffix));
+  const matches = targets.filter((t) => t.type === "page" && t.url.endsWith(suffix));
+  const hit = matches[nth];
   if (!hit) {
     throw new Error(
-      `no page ending "${suffix}" on port ${port}; open targets: ` +
+      `no page ending "${suffix}" (number ${nth + 1} of ${matches.length}) on port ${port}; open targets: ` +
         targets
           .filter((t) => t.type === "page")
           .map((t) => t.url)
@@ -69,8 +85,8 @@ export class Session {
     this.errors = [];
   }
 
-  static async open(port = DEFAULT_PORT, suffix = "#/overlay") {
-    const target = await findTarget(suffix, port);
+  static async open(port = DEFAULT_PORT, suffix = "#/overlay", nth = 0) {
+    const target = await findTarget(suffix, port, nth);
     const socket = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
       socket.addEventListener("open", resolve, { once: true });
