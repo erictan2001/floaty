@@ -127,6 +127,7 @@ export const STUB = `(() => {
         ],
       };
       case "floaty_open_log_folder": return null;
+      case "floaty_rehome_floaties": return 0;
       case "floaty_palette_state": return { accelerator: "Ctrl+Alt+Space", live: true, visible: false };
       case "floaty_sync_files": return { added: 0, removed: 0, refreshed: 0 };
       case "floaty_icon": return "";
