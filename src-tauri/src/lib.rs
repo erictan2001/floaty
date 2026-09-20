@@ -8277,19 +8277,40 @@ fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Option<usize> {
     let list = screens(app);
     let (nx, ny) = (x.round(), y.round());
     let mut handover: Option<WidgetRecord> = None;
+    let mut stray = false;
     {
         let state = app.state::<AppState>();
         let Ok(mut guard) = state.0.lock() else {
             return None;
         };
         let rec = guard.widgets.get_mut(id)?;
-        let was = screens::screen_of(&list, rec.x as f64, rec.y as f64);
-        let now = screens::screen_of(&list, nx, ny);
-        rec.x = nx as i32;
-        rec.y = ny as i32;
-        if was != now {
-            handover = Some(rec.clone());
+        // A position on no screen is only ever a moment *inside* a drag. The band between two
+        // screens at different scales belongs to neither, and a drag crossing it has to be
+        // able to pass through — but with no gesture open nothing is holding the pointer, so
+        // this is where the widget would *stay*, and a widget on no screen is drawn by nobody:
+        // invisible and unclickable. Measured: the page's own release placed the widget after
+        // the gesture had ended, so its off-screen position landed on top of the re-home and
+        // the log claimed a repair that did not survive it. Refuse the write and put the
+        // widget back where a window can draw it.
+        if screens::screen_of(&list, nx, ny).is_none() && !undo::gesture_pending() {
+            stray = true;
+        } else {
+            let was = screens::screen_of(&list, rec.x as f64, rec.y as f64);
+            let now = screens::screen_of(&list, nx, ny);
+            rec.x = nx as i32;
+            rec.y = ny as i32;
+            if was != now {
+                handover = Some(rec.clone());
+            }
         }
+    }
+    if stray {
+        log_line(
+            app,
+            &format!("drag: {id} -> {nx},{ny} is on no screen with no drag open — refusing it"),
+        );
+        rehome_stranded(app, "stray move");
+        return None;
     }
     // Debounced by `persist`: a drag that ends off its own screen is not lost to a hard
     // kill before the release path runs.
