@@ -283,7 +283,9 @@ if (!keepOpen) {
     const diag = JSON.parse(
       await session.evaluate(`return JSON.stringify(await window.__TAURI_INTERNALS__.invoke("floaty_diagnostics"));`),
     );
-    const log = Array.isArray(diag.log) ? diag.log.join("\n") : String(diag.log ?? "");
+    // floaty_diagnostics carries the log as {path, bytes, lines[], rotated}: `log` itself is
+    // an object, and reading it as text silently finds nothing.
+    const log = (diag.log?.lines ?? []).join("\n");
     const heard = (log.match(/\[presence\] page quiet=true/g) ?? []).length;
     if (heard < 1) {
       problems.push(
