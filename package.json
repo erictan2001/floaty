@@ -17,6 +17,7 @@
     "verify:drag": "node verify/drag.mjs",
     "verify:presence": "node verify/presence.mjs",
     "verify:redo": "node verify/redo.mjs",
+    "verify:stranded": "node verify/stranded.mjs",
     "verify:panel-drag": "node verify/panel-drag.mjs",
     "check:examples": "node scripts/check-examples.mjs"
   },

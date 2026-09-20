@@ -5508,8 +5508,8 @@ fn floaty_dropped_inner(
         // Nothing is dropped where no window draws it: the band between two screens at
         // different scales belongs to none of them, so the floatie comes back first and
         // the drop is judged where it actually is.
-        let (px, py) = if on_screen(px, py).is_none() {
-            rehome_stranded(&app);
+        if on_screen(px, py).is_none() {
+            rehome_stranded(&app, "drop");
             let state = app.state::<AppState>();
             let guard = state.0.lock().ok()?;
             let rec = guard.widgets.get(&id)?;
@@ -7921,7 +7921,7 @@ fn reconcile_desktop(app: &AppHandle) -> Vec<String> {
             "desktop": { "x": union.x, "y": union.y, "w": union.w, "h": union.h },
         }),
     );
-    rehome_stranded(app)
+    rehome_stranded(app, "monitors")
 }
 
 /// Bring back every floatie whose screen is gone, and say how many.
@@ -7933,7 +7933,7 @@ fn reconcile_desktop(app: &AppHandle) -> Vec<String> {
 /// opinion about position — so without this it is simply not on the screen any more.
 /// Measured: two screens at 2.00/1.50, second one unplugged, and the floaties that had
 /// been dragged there never came back.
-fn rehome_stranded(app: &AppHandle) -> Vec<String> {
+fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
     let list = screens(app);
     if list.is_empty() {
         return Vec::new();
@@ -8017,7 +8017,7 @@ fn rehome_stranded(app: &AppHandle) -> Vec<String> {
     log_line(
         app,
         &format!(
-            "monitors: brought {} floatie(s) back onto a screen that still exists [{}]",
+            "{why}: brought {} floatie(s) back onto a screen that still exists [{}]",
             moved.len(),
             moved.join(", ")
         ),
@@ -8230,6 +8230,16 @@ fn floaty_gesture_begin(label: String, ids: Vec<String>, app: AppHandle) {
 /// The gesture is over: one step for what it actually changed, or no step at all.
 #[tauri::command]
 fn floaty_gesture_end(app: AppHandle) -> Option<String> {
+    // A gesture is the last chance to notice that it ended somewhere nothing draws. No
+    // overlay window covers the band between two screens at different scales — the desktop's
+    // own void — so a widget left there is drawn by nobody: invisible *and* unclickable, gone
+    // until floaty is restarted. Tiles re-home at the drop (`floaty_dropped_inner`); panels
+    // release through here instead and never did.
+    //
+    // Before the commit, not after: the step this gesture pushes has to hold the position the
+    // widget actually ends at. Committing first would leave the step's forward state pointing
+    // into the void, and redo would put the widget back where nothing can see it.
+    rehome_stranded(&app, "gesture");
     let pushed = undo::commit_gesture(&|id| {
         let state = app.state::<AppState>();
         let guard = state.0.lock().ok()?;
@@ -8650,7 +8660,7 @@ pub fn run() {
             // A display that went away while floaty was not running leaves records at
             // coordinates no screen covers, and they are pinned, so nothing else will
             // ever move them: bring them home before they are mounted.
-            rehome_stranded(&handle);
+            rehome_stranded(&handle, "startup");
 
             // spawn restored widgets, or a welcome note on first run
             let ids: Vec<WidgetRecord> = {
