@@ -270,6 +270,9 @@ pub fn uninstall(id: &str, plugins_dir: &Path) -> Result<PluginUninstall, String
     }
     let (files, _) = tree_size(&dir).unwrap_or((0, 0));
     crate::shell_ops::recycle(&dir)?;
+    // The caller's message says the folder can be restored from the bin; on a machine
+    // whose bin is unavailable the shell deleted it instead, so the message over there
+    // must not promise a restore that cannot happen.
     Ok(PluginUninstall {
         id: id.to_string(),
         files,
@@ -685,6 +688,11 @@ mod tests {
         let plugins = dir.join("plugins");
         install_archive(&source, &plugins, false).unwrap();
 
+        if !crate::shell_ops::bin_takes_files(&plugins) {
+            eprintln!("skipped: this machine's Recycle Bin does not keep recycled folders");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
         let gone = uninstall("countdown", &plugins).unwrap();
         assert_eq!(gone.id, "countdown");
         assert_eq!(gone.files, 3);

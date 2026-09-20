@@ -10,6 +10,7 @@ import {
   appWin,
   monitorArea,
   onMyScreen,
+  physicalToVirtual,
   overlaySlots,
   preventOverlap,
   registerOverlaySlot,
@@ -515,6 +516,29 @@ export function mountOverlay(root: HTMLElement): void {
 
   // the backend renamed/changed a widget on disk: remount it so the label,
   // icon and hit rects match the new name
+  // Files dropped from Explorer (or anywhere else) onto the desktop. The drop arrives as
+  // a *physical* position with nothing else attached, so it goes through the same
+  // per-screen mapping a drag uses and lands where it was dropped: on a folder floatie
+  // that means inside the folder, anywhere else means onto the desktop.
+  void (async () => {
+    try {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      await getCurrentWebview().onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type !== "drop" || !payload.paths?.length) return;
+        const at = physicalToVirtual({ x: payload.position.x, y: payload.position.y });
+        if (!at) return;
+        void invoke("floaty_drop_paths", {
+          paths: payload.paths,
+          x: Math.round(at.x),
+          y: Math.round(at.y),
+        }).catch(() => undefined);
+      });
+    } catch {
+      /* the webview bridge is not there: nothing to drop onto */
+    }
+  })();
+
   listen<WidgetRecord>("floaty-widget-updated", (e) => {
     const rec = e.payload;
     if (!rec) return;
@@ -644,9 +668,11 @@ export function mountOverlay(root: HTMLElement): void {
       });
   }).catch(() => undefined);
 
-  // Ctrl+Z anywhere on the desktop undoes the last change: a recycled file, an
-  // ungroup, a grouping, a tidy. Anything that takes typing keeps its own undo,
-  // so a focused field is left alone.
+  // Ctrl+Z *while this window has focus* — which, being the desktop layer, it usually
+  // does not: the window is no-activate by design, so it never takes focus from whatever
+  // you are working in, and therefore never sees a keystroke. The shortcut that works from
+  // anywhere is the global Ctrl+Alt+Z (see `UNDO_ACCELERATOR` in lib.rs). This handler is
+  // kept because it costs nothing and covers the case where focus does land here.
   window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
       const active = document.activeElement;

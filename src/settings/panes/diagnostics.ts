@@ -1,6 +1,6 @@
 /**
- * What floaty can say about itself: the sizes on disk, the monitors, the windows
- * it owns, the heartbeat table, and the end of the log.
+ * What floaty can say about itself: the presence state, the sizes on disk, the
+ * monitors, the windows it owns, the heartbeat table, and the end of the log.
  *
  * This pane exists for the moment something is wrong and the window is the only
  * thing still answering. Every number here is one a bug report has needed — which
@@ -91,6 +91,27 @@ interface DiagnosticsReport {
   repairs: RepairInfo[];
   monitors: MonitorInfo[];
   windows: WindowInfo[];
+}
+
+/** The state `floaty_presence` returns: why the desktop is hidden or quiet right now. */
+interface PresenceReport {
+  /** The desktop is off screen, because a fullscreen app is in front. */
+  hidden: boolean;
+  /** The floaties stay put, but stop animating and pause the audio capture. */
+  quiet: boolean;
+  /** Why: "fullscreen", "idle", or null when the desktop is behaving normally. */
+  reason: string | null;
+  idle_ms: number;
+  /** The window in front, in physical px — "1920x1080 at 0,0". */
+  foreground: string | null;
+  /** That window is the shell (desktop, taskbar, start menu) — never a reason to hide. */
+  foreground_shell: boolean;
+  /** ...or one of floaty's own windows, which is also never a reason to hide. */
+  foreground_ours: boolean;
+  hide_in_fullscreen: boolean;
+  quiet_when_idle: boolean;
+  /** How long "a while" is, in minutes; 0 means never. */
+  idle_minutes: number;
 }
 
 let host: HTMLElement | undefined;
@@ -200,6 +221,70 @@ async function bringBackOffscreen(): Promise<void> {
   }
 }
 
+/**
+ * One fact with a short marker ahead of its value, for the case where the value
+ * needs a reason spelled out beside it: the foreground window's marker says why it
+ * was, or was not, something that hides the desktop.
+ */
+function markedRow(label: string, value: string, mark: string, markCls: string): HTMLElement {
+  const line = el("div", "set-row diag-row");
+  line.append(
+    el("span", "set-label diag-key", label),
+    el("span", markCls, mark),
+    el("span", "diag-val", value),
+  );
+  return line;
+}
+
+/** The window in front, and whether the shell or one of floaty's own windows owns it. */
+function foregroundRow(presence: PresenceReport): HTMLElement {
+  if (!presence.foreground) return row("foreground", "no window in front");
+  // Shell and ours are the two that are never a reason to hide, so they get the
+  // marker; an ordinary app needs none, since the state row already says what
+  // happened to the desktop because of it.
+  if (presence.foreground_shell) {
+    return markedRow("foreground", presence.foreground, "shell", "diag-layer");
+  }
+  if (presence.foreground_ours) {
+    return markedRow("foreground", presence.foreground, "ours", "diag-layer diag-desktop");
+  }
+  return row("foreground", presence.foreground);
+}
+
+/**
+ * The live presence state and the rules behind it: why the desktop is hidden or
+ * quiet, and what was in front when it decided.
+ *
+ * Read-only, and drawn from the same refresh as the rest of the report — a snapshot
+ * taken when the pane draws, not a timer of its own.
+ */
+function presenceSection(presence: PresenceReport | null | undefined): HTMLElement {
+  const section = group(
+    "Getting out of the way",
+    "hiding and going quiet are separate answers. Hidden means a fullscreen app is in front and the overlays are off screen; quiet means nobody has touched the machine for a while, so the floaties stay put but stop animating and the audio capture pauses. A maximized window is not fullscreen — it leaves the taskbar visible — so a maximized window does not hide the desktop.",
+  );
+  if (!presence) {
+    section.body.append(
+      note("the presence state could not be read: floaty_presence did not answer."),
+    );
+    return section.root;
+  }
+  const state = presence.hidden ? "hidden" : presence.quiet ? "quiet" : "normal";
+  const facts = card(true);
+  facts.append(
+    row("state", state),
+    row("reason", presence.reason ?? "none"),
+    // "2m 14s" reads; a millisecond count does not.
+    row("idle", uptime(presence.idle_ms)),
+    foregroundRow(presence),
+    row("hide for a fullscreen app", presence.hide_in_fullscreen ? "on" : "off"),
+    row("go quiet when idle", presence.quiet_when_idle ? "on" : "off"),
+    row("idle after", presence.idle_minutes === 0 ? "never" : `${presence.idle_minutes} min`),
+  );
+  section.body.append(facts);
+  return section.root;
+}
+
 async function draw(): Promise<void> {
   if (!host || !host.isConnected) return;
   host.innerHTML = "";
@@ -215,7 +300,12 @@ async function draw(): Promise<void> {
   status = line;
   host.append(tools, line);
 
-  const report = await safe("read diagnostics", () => invoke<DiagnosticsReport>("floaty_diagnostics"));
+  // The two reads are independent, so they go together: one round trip's latency for
+  // both, and both ride the same refresh path the toolbar's button drives.
+  const [report, presence] = await Promise.all([
+    safe("read diagnostics", () => invoke<DiagnosticsReport>("floaty_diagnostics")),
+    safe("read presence", () => invoke<PresenceReport>("floaty_presence")),
+  ]);
   // A tab click or a data change can re-render the pane while this call is in
   // flight, so the answer is only painted onto a host that is still the one asked.
   if (!host || !host.isConnected) return;
@@ -225,6 +315,8 @@ async function draw(): Promise<void> {
     host.append(failure.root);
     return;
   }
+
+  const presenceEl = presenceSection(presence);
 
   const facts = card(true);
   facts.append(
@@ -343,14 +435,14 @@ async function draw(): Promise<void> {
     el("pre", "diag-log", report.log.lines.length > 0 ? report.log.lines.join("\n") : "the log is empty"),
   );
 
-  host.append(app.root, disk.root, monitors.root, windows.root, beats.root, tail.root);
+  host.append(presenceEl, app.root, disk.root, monitors.root, windows.root, beats.root, tail.root);
 }
 
 export const diagnosticsPane: Pane = {
   id: "diagnostics",
   label: "Diagnostics",
   title: "Diagnostics",
-  hint: "What floaty can say about itself: the sizes on disk, the monitors and windows it owns, the heartbeat table, and the end of the log.",
+  hint: "What floaty can say about itself: whether the desktop is hidden or quiet, the sizes on disk, the monitors and windows it owns, the heartbeat table, and the end of the log.",
   render(node) {
     host = node;
     void draw();

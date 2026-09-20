@@ -345,6 +345,8 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     // NOTE: no preventDefault() — canceling pointerdown kills click/dblclick.
     dragging = true;
     notifyDragging(true);
+    // the snapshot of where this icon was, before the drag overwrites it
+    void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
     wrap.classList.add("held");
     squash();
     // capture lazily on first real movement (see pet.ts: eager capture eats taps)
@@ -415,6 +417,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      void invoke("floaty_gesture_end").catch(() => undefined);
       try {
         const held = (document.body ?? wrap) as HTMLElement;
         if (held.hasPointerCapture(e.pointerId)) held.releasePointerCapture(e.pointerId);

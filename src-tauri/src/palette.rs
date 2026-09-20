@@ -219,9 +219,25 @@ pub fn register_shortcut(app: &AppHandle, accelerator: &str) -> Result<(), Strin
     // Only ours: unregistering everything is safe here because this is the only
     // global shortcut floaty registers.
     let _ = app.global_shortcut().unregister_all();
-    app.global_shortcut()
+    let registered = app
+        .global_shortcut()
         .register(shortcut)
-        .map_err(|e| format!("'{text}' could not be registered ({e})"))
+        .map_err(|e| format!("'{text}' could not be registered ({e})"));
+    // Every global key floaty holds is registered here, because `unregister_all` is how
+    // this function changes its mind: a key registered anywhere else would vanish the
+    // next time the launcher's row is touched. A key that is already taken is logged and
+    // survived rather than fatal — the launcher must still open if something else owns it.
+    for (key, what) in [
+        (crate::PASTE_ACCELERATOR, "clipboard"),
+        (crate::UNDO_ACCELERATOR, "undo"),
+    ] {
+        if let Ok(shortcut) = tauri_plugin_global_shortcut::Shortcut::from_str(key) {
+            if let Err(e) = app.global_shortcut().register(shortcut) {
+                crate::log_line(app, &format!("{what}: {key} is taken ({e})"));
+            }
+        }
+    }
+    registered
 }
 
 /// Whether the key in the settings is the key that is actually registered.

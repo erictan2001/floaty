@@ -42,6 +42,33 @@ pub enum DiskAction {
     Discard,
 }
 
+// ---------------------------------------------------------------------------------------
+// The rule every mutating action follows
+// ---------------------------------------------------------------------------------------
+//
+// **Snapshot exactly what you are about to change, immediately before you change it.**
+//
+// For an action that happens in one go — a delete, a grouping, a tidy, an ungroup — that
+// is `push` with the records it touches, called before the change. For a *gesture* it is
+// not: a drag or a resize writes the thing it is changing on every move, so by the time
+// the gesture ends, the state it started from has been overwritten. A gesture therefore
+// announces itself at the start (`begin_gesture`) and commits at the end
+// (`commit_gesture`), and the snapshot is of the state before the first move.
+//
+// Two properties are worth stating because getting either wrong is a bug a user notices:
+//
+// - **Scope.** A step covers the records it names and no others. A merge names two — the
+//   dragged item and the folder it went into — and only the first of them moved; writing
+//   the dragged item's old position over the folder's put the folder where the file had
+//   been.
+// - **No empty steps.** A gesture that changed nothing (a drag that came back to where it
+//   started, a click that never became a drag) must leave the stack alone, or Ctrl+Alt+Z
+//   spends presses doing nothing.
+//
+// A record that no longer exists when a gesture commits was consumed by an action that
+// took its own step (a merge removes the item it folded in), so the commit skips it rather
+// than adding a second step for the same press.
+
 /// One thing an action did to the disk, to reverse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskOp {
@@ -95,6 +122,78 @@ static STACK: LazyLock<Mutex<Vec<Step>>> = LazyLock::new(|| Mutex::new(Vec::new(
 
 /// Remember what an action is about to change. Returns the new depth, so the
 /// caller can log it.
+/// A gesture in flight: the records it is about to change, as they were before it started.
+static GESTURE: std::sync::Mutex<Option<(String, Vec<Restore>)>> = std::sync::Mutex::new(None);
+
+/// Announce a gesture — a drag, a resize, anything that writes what it is changing as it
+/// goes. The snapshot is taken here, before the first move, which is the only moment the
+/// "before" exists.
+pub fn begin_gesture(label: &str, restore: Vec<Restore>) {
+    // A second gesture starting before the first one ended (a lost pointerup) must not
+    // leave the first one pending: its snapshot is stale, and committing it later would
+    // push a step for changes nobody made.
+    abandon_gesture();
+    let mut slot = match GESTURE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *slot = Some((label.to_string(), restore));
+}
+
+/// Does this gesture need a step? Only if a record it named still exists and is not the
+/// record it started as. A record that is gone was consumed by an action that took its own
+/// step, and a record that is unchanged is a gesture that did not happen.
+pub fn changed_records(before: &[Restore], live: &dyn Fn(&str) -> Option<serde_json::Value>) -> Vec<Restore> {
+    before
+        .iter()
+        .filter(|snapshot| {
+            let Some(now) = live(&snapshot.id) else {
+                return false;
+            };
+            snapshot.record.as_ref() != Some(&now)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Commit the gesture: push one step for the records it actually changed, or nothing.
+/// Returns the label of the step pushed, if any.
+pub fn commit_gesture(
+    live: &dyn Fn(&str) -> Option<serde_json::Value>,
+) -> Option<String> {
+    let (label, before) = {
+        let mut slot = match GESTURE.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        slot.take()?
+    };
+    let changed = changed_records(&before, live);
+    if changed.is_empty() {
+        return None;
+    }
+    push(&label, changed);
+    Some(label)
+}
+
+/// Is a gesture in flight? A caller that moves a record without one still gets its own
+/// step, so the two paths cannot both fire for the same press.
+pub fn gesture_pending() -> bool {
+    match GESTURE.lock() {
+        Ok(guard) => guard.is_some(),
+        Err(poisoned) => poisoned.into_inner().is_some(),
+    }
+}
+
+/// Forget a gesture without pushing anything (the window it was running in went away).
+pub fn abandon_gesture() {
+    let mut slot = match GESTURE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *slot = None;
+}
+
 pub fn push(label: &str, restore: Vec<Restore>) -> usize {
     let mut stack = lock();
     stack.push(Step {
@@ -194,6 +293,45 @@ mod tests {
             id: id.to_string(),
             record: Some(serde_json::json!({ "id": id, "kind": "app", "x": 10, "y": 20 })),
         }
+    }
+
+    #[test]
+    fn a_gesture_only_pushes_a_step_for_what_it_changed() {
+        let snapshot = vec![
+            Restore {
+                id: "file-1".into(),
+                record: Some(serde_json::json!({ "id": "file-1", "x": 10, "y": 20 })),
+            },
+            Restore {
+                id: "folder-2".into(),
+                record: Some(serde_json::json!({ "id": "folder-2", "x": 300, "y": 400 })),
+            },
+        ];
+        // nothing moved: no step, so Ctrl+Alt+Z is not spent on a click
+        let same = |id: &str| {
+            snapshot
+                .iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.record.clone())
+        };
+        assert!(changed_records(&snapshot, &same).is_empty());
+
+        // one of them moved: that one, and only that one
+        let moved = |id: &str| {
+            if id == "file-1" {
+                Some(serde_json::json!({ "id": "file-1", "x": 99, "y": 20 }))
+            } else {
+                same(id)
+            }
+        };
+        let changed = changed_records(&snapshot, &moved);
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].id, "file-1");
+
+        // a record that is gone was consumed by an action with its own step (a merge), so
+        // it is not this gesture's to undo
+        let gone = |id: &str| if id == "file-1" { None } else { same(id) };
+        assert!(changed_records(&snapshot, &gone).is_empty());
     }
 
     #[test]

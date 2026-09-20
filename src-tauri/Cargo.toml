@@ -21,6 +21,9 @@ tauri-plugin-single-instance = "2.4.4"
 tauri-plugin-autostart = "2.5.1"
 # the launcher hotkey: one global shortcut, handled in Rust (no JS permissions needed)
 tauri-plugin-global-shortcut = "2"
+# updating in place: the updater checks a signed manifest and the process plugin restarts
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # WASAPI loopback capture for the audio visualizer (system output, not the mic)
 [target.'cfg(windows)'.dependencies]
@@ -31,6 +34,9 @@ windows = { version = "0.62", features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_IO",
     "Win32_System_Performance",
@@ -40,6 +46,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_Variant",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

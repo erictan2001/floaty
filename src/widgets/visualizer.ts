@@ -8,6 +8,7 @@ import {
   enableOverlayDrag,
   loadRecord,
   onSettings,
+  presenceIsQuiet,
   removeSelf,
   saveRecord,
   trackPosition,
@@ -265,7 +266,20 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     });
     addPinMenu(wrap, () => rec);
 
-    await invoke("floaty_audio_start", { fps: fps() }).catch(() => undefined);
+    // Capture is what costs while nothing is happening, so quiet stops it — and this is
+    // also the path back: Rust pauses the capture when the machine goes idle and the
+    // widget asks for it again when input returns (a pause, not a switch that stays off).
+    const syncCapture = () => {
+      if (presenceIsQuiet()) {
+        void invoke("floaty_audio_stop").catch(() => undefined);
+      } else {
+        void invoke("floaty_audio_start", { fps: fps() }).catch(() => undefined);
+      }
+    };
+    window.addEventListener("floaty-presence", syncCapture);
+    if (!presenceIsQuiet()) {
+      await invoke("floaty_audio_start", { fps: fps() }).catch(() => undefined);
+    }
     // if nothing arrives and capture is not running, say why instead of looking
     // like a broken flat line (loopback capture needs a default render device)
     window.setTimeout(() => {
