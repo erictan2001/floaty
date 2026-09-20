@@ -1,7 +1,8 @@
 /**
  * The settings that are about floaty itself rather than about a widget:
  * whether it stays put under Show desktop, whether it starts with Windows,
- * whether it asks before removing something, and how to stop it.
+ * whether it asks before removing something, when it gets out of the way, and
+ * how to stop it.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -23,6 +24,9 @@ interface UndoState {
   depth: number;
   label: string | null;
 }
+
+/** The span the backend stores for the idle timer. 0 minutes means never. */
+const IDLE_MINUTES_MAX = 600;
 
 let status: HTMLElement | undefined;
 let undoButton: HTMLButtonElement | undefined;
@@ -91,6 +95,58 @@ export const generalPane: Pane = {
       ),
     );
 
+    const away = group(
+      "Get out of the way",
+      "While a fullscreen app is in front — a game, a film — the desktop is not on screen at all, so the floaties step aside rather than draw over it, and come back the moment you leave. And once nobody has touched the machine for a while, floaty settles: the floaties stay exactly where they are, but the motion and the microphone capture stop until you are back. Neither one takes a floatie off the desktop.",
+    );
+    away.body.append(
+      toggleCard(
+        "Hide the desktop while a fullscreen app is in front",
+        "The fullscreen app gets the screen to itself; the floaties return when it does not. A maximized window is not fullscreen — it leaves the taskbar showing, so floaty stays.",
+        settings().hide_in_fullscreen,
+        (on) => void updateSettings({ hide_in_fullscreen: on }, { now: true }),
+      ),
+      toggleCard(
+        "Go quiet when idle",
+        "No key pressed and no mouse moved anywhere on the machine for the minutes below: the motion and the microphone capture stop, and start again the moment you are back.",
+        settings().quiet_when_idle,
+        (on) => void updateSettings({ quiet_when_idle: on }, { now: true }),
+      ),
+    );
+    const idleRow = el("div", "set-row");
+    const idleInput = el("input", "search");
+    idleInput.type = "number";
+    idleInput.min = "0";
+    idleInput.max = String(IDLE_MINUTES_MAX);
+    idleInput.step = "1";
+    idleInput.value = String(settings().idle_minutes);
+    // The backend clamps this to 0..600, so write it, then show what is actually
+    // in force rather than the number that was typed.
+    const commitIdle = async (): Promise<void> => {
+      const typed = idleInput.value.trim();
+      const minutes = Number(typed);
+      if (!typed || !Number.isFinite(minutes)) {
+        idleInput.value = String(settings().idle_minutes);
+        return;
+      }
+      const clamped = Math.min(IDLE_MINUTES_MAX, Math.max(0, Math.round(minutes)));
+      await updateSettings({ idle_minutes: clamped }, { now: true });
+      idleInput.value = String(settings().idle_minutes);
+    };
+    idleInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void commitIdle();
+      if (e.key === "Escape") idleInput.value = String(settings().idle_minutes);
+    });
+    idleInput.addEventListener("blur", () => void commitIdle());
+    idleRow.append(
+      textBlock(
+        "Quiet after (minutes)",
+        "0 means never: the floaties keep moving, and the capture keeps listening, however long the machine sits untouched.",
+      ),
+      idleInput,
+    );
+    away.body.append(idleRow);
+
     const launcher = group(
       "Launcher",
       "One key opens a search over your applications, the files in your pointed folder, and everything already floating on the desktop. Type, then Enter to open the top row — arrow keys move down the list, Escape closes it.",
@@ -141,7 +197,7 @@ export const generalPane: Pane = {
 
     const arrange = group(
       "Arrange and undo",
-      "Tidy lines the icons up on the grid — pinned ones in rows from the top, the rest stacked up from the floor, which is where gravity would leave them anyway. Panels and notes keep their places. Ctrl+Z on the desktop undoes the last change: a recycled file, an ungroup, a grouping, a tidy.",
+      "Tidy lines the icons up on the grid — pinned ones in rows from the top, the rest stacked up from the floor, which is where gravity would leave them anyway. Panels and notes keep their places. **Ctrl+Alt+Z** from anywhere undoes the last change: a moved icon, a grouping, an ungroup, a tidy, a recycled file.",
     );
     watchTidy();
     const arrangeRow = actionRow();
@@ -168,6 +224,54 @@ export const generalPane: Pane = {
     status = note("");
     arrange.body.append(arrangeRow, status);
 
+    const updates = group("Updates");
+    const updateRow = actionRow();
+    const updateStatus = note("");
+    const install = action("install and restart", async () => {
+      try {
+        await invoke("floaty_install_update");
+      } catch (err) {
+        if (updateStatus?.isConnected) updateStatus.textContent = String(err);
+      }
+    }, { busyLabel: "installing…" });
+    install.disabled = true;
+    updateRow.append(
+      action("check for updates", async () => {
+        try {
+          const report = await invoke<{
+            available: boolean;
+            current: string;
+            version?: string | null;
+            notes?: string | null;
+            error?: string | null;
+          }>("floaty_check_update");
+          if (!updateStatus?.isConnected) return;
+          if (report.error) {
+            // A check that could not be made is not "up to date", and saying so is the
+            // difference between a quiet failure and a wrong claim.
+            updateStatus.textContent = `could not check: ${report.error}`;
+            install.disabled = true;
+          } else if (report.available) {
+            updateStatus.textContent = `${report.version} is available — you have ${report.current}${
+              report.notes ? `: ${report.notes}` : ""
+            }`;
+            install.disabled = false;
+          } else {
+            updateStatus.textContent = `${report.current} is the newest version`;
+            install.disabled = true;
+          }
+        } catch (err) {
+          if (updateStatus?.isConnected) updateStatus.textContent = String(err);
+        }
+      }, { busyLabel: "checking…" }),
+      install,
+    );
+    updates.body.append(
+      note("Updates come from this project's releases and are signed: the installer is refused unless the signature matches the public key built into this copy. Nothing downloads or installs unless you ask."),
+      updateRow,
+      updateStatus,
+    );
+
     const app = group("Floaties");
     const row = actionRow();
     row.append(
@@ -178,6 +282,15 @@ export const generalPane: Pane = {
       row,
     );
 
-    node.append(desktop.root, startup.root, removal.root, launcher.root, arrange.root, app.root);
+    node.append(
+      desktop.root,
+      startup.root,
+      removal.root,
+      away.root,
+      launcher.root,
+      arrange.root,
+      updates.root,
+      app.root,
+    );
   },
 };

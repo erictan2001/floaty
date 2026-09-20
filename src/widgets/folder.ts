@@ -493,6 +493,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
     e.stopPropagation();
     dragging = true;
     notifyDragging(true);
+    void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
     // same held state the app tile uses: it is what lets the merge preview
     // shrink the dragged folder as it hovers another tile
     wrap.classList.add("held");
@@ -545,6 +546,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      void invoke("floaty_gesture_end").catch(() => undefined);
       try {
         const held = (document.body ?? wrap) as HTMLElement;
         if (held.hasPointerCapture(e.pointerId)) held.releasePointerCapture(e.pointerId);

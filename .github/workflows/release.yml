@@ -1,9 +1,26 @@
 name: release
 
 # A tag is the release. Push v0.2.0 and this checks the tree, builds the Windows
-# bundles for both x64 and ARM64 with the version taken from that tag, and attaches
-# them to the tag's GitHub release. It is the same path a manual run takes, except
-# that a manual run must name a tag that already exists instead of creating one.
+# bundles with the version taken from that tag, and attaches them *and* the signed
+# updater feed (`latest.json` plus the `.sig` files) to the tag's GitHub release. It is
+# the same path a manual run takes, except that a manual run must name a tag that
+# already exists instead of creating one.
+#
+# Both Windows architectures are built — `aarch64-pc-windows-msvc` on `windows-11-arm`
+# and `x86_64-pc-windows-msvc` on `windows-latest` — because the updater picks its
+# manifest entry by the target triple of the machine *running* the app, not by the
+# machine that built the release. A release that only wrote `windows-x86_64` into
+# `latest.json` leaves an ARM64 copy asking for `windows-aarch64` and failing with
+#
+#   None of the fallback platforms [windows-aarch64] were found in the response
+#   platforms object
+#
+# ...and an ARM64-only release leaves an x64 copy failing the same way in reverse. Each
+# leg runs on its native runner (an x64 target does not reliably link on the ARM64 image),
+# and the legs are serialised by `max-parallel: 1`: tauri-action *merges* its platform
+# entry into the `latest.json` already attached to the release rather than replacing it, so
+# run in parallel the two legs would each read a feed missing the other's key and the
+# release would end up single-architecture.
 #
 # The Rust side compiles the frontend *into* the binary: `tauri::generate_context!()`
 # reads `frontendDist` while `src/lib.rs` is being compiled, so any Rust step — `cargo
@@ -14,9 +31,12 @@ name: release
 # unless the frontend has been built first. That is why the frontend build sits above
 # the Rust steps and not only in `beforeBuildCommand`.
 #
-# Nothing here is signed: SmartScreen warns on first run until a certificate is
-# wired in (see "Signing" in the README — the thumbprint is per-machine, so it
-# belongs in a secret, not in this file).
+# The bundles are signed for the *updater*, which is not the same thing as signing them
+# for Windows: `TAURI_SIGNING_PRIVATE_KEY` (a repository secret) minisigns `latest.json`
+# and the updater archives, and the public key in `src-tauri/tauri.conf.json` is what
+# the running copy checks them against. SmartScreen still warns on first run until an
+# Authenticode certificate is wired in (see "Signing" in the README — the thumbprint is
+# per-machine, so it belongs in a secret, not in this file).
 #
 # To review a release before it goes public, set releaseDraft to true below.
 
@@ -30,8 +50,8 @@ on:
         required: true
         type: string
 
-# Creating the release and uploading the installers to it needs write access; the
-# default token has none.
+# Creating the release and uploading the installers and the feed to it needs write
+# access; the default token has none.
 permissions:
   contents: write
 
@@ -43,26 +63,35 @@ jobs:
   windows:
     # Windows only, matching the app: shell verbs, the Recycle Bin, WASAPI loopback
     # and the desktop-layer window policy are all Win32.
-    runs-on: windows-latest
+    #
+    # Both architectures, each on its *native* runner: an x64 target does not reliably
+    # link on the ARM64 image, and there is nothing to gain by asking it to when GitHub
+    # hosts both. The label for each is in the matrix below.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
 
     strategy:
       fail-fast: false
-      # Both jobs attach to the same release, so they run one after the other: the
-      # first creates the release, the second finds it. Building in parallel races
-      # two creators against each other for no gain — they are separate rust-cache
-      # entries either way.
+      # Serialised on purpose. tauri-action does not overwrite the feed: it downloads the
+      # `latest.json` already on the release, keeps its `platforms`, and adds this build's
+      # entry to them. That only accumulates if the legs run one after the other — in
+      # parallel they would each read a feed without the other's key and the release would
+      # end up single-architecture. `upload-version-json.ts` in tauri-action is the source
+      # for both halves of this.
       max-parallel: 1
       matrix:
         include:
-          - target: x86_64-pc-windows-msvc
-            arch: x64
-            # every Windows bundle type
-            bundles: ""
-          - target: aarch64-pc-windows-msvc
+          # Kept as a matrix so the runner, the target, the arch label and the bundle flags
+          # stay named in one place. NSIS only: WiX has no arm64 story worth relying on
+          # here, and the setup this project points people at is the NSIS one — which is
+          # also the bundle the updater feed signs.
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
             arch: arm64
-            # NSIS only: WiX has no arm64 story worth relying on here, and the setup
-            # this project points people at is the NSIS one.
+            bundles: "--bundles nsis"
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x86_64
             bundles: "--bundles nsis"
 
     steps:
@@ -88,15 +117,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          # cross-compiling arm64 from the x64 runner: the ARM64 MSVC toolset is in
-          # the windows-latest image, this is the Rust half of it
+          # The runner is ARM64 and so is the target, so nothing is cross-compiled here.
+          # It is named anyway: the build must not depend on what the runner happens to
+          # default to.
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           # the crate lives in src-tauri, so that is the workspace to cache
           workspaces: src-tauri -> target
-          # one cache per target: the two build trees share nothing
+          # keyed by target, so a build by hand for another architecture never shares
+          # a tree with this one
           key: ${{ matrix.target }}
           cache-on-failure: true
 
@@ -127,33 +158,49 @@ jobs:
       - name: build the frontend (the Rust side needs dist/)
         run: npm run build
 
-      # Only on x64: an arm64 test binary cannot execute on this runner, and a
-      # cross-compiled `cargo test` would have to skip the running part anyway.
+      # A tag whose tests fail gets no release. Each leg runs the tests natively — the
+      # ARM64 runner links and runs an aarch64 test binary, the x64 runner an x64 one —
+      # which is why this is no longer gated on the target.
       - name: rust tests
-        if: matrix.target == 'x86_64-pc-windows-msvc'
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: build and publish the release
+      - name: build, sign and publish the release
         id: build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The updater signing key. `TAURI_SIGNING_PRIVATE_KEY` takes the base64
+          # contents of the key file (`C:\Users\<you>\.tauri\floaty.key`) — a path works
+          # locally, but CI has no such file, so the secret holds the text itself.
+          # `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is empty because the key has no
+          # password: the CLI reads an unset password as an empty one in CI, and an empty
+          # secret is exactly that. See "Releasing an update" in the README.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: Floaty ${{ github.event.inputs.tag || github.ref_name }}
           releaseBody: |
-            Desktop widgets for Windows, built from `${{ github.event.inputs.tag || github.ref_name }}` — **x64** (`x86_64-pc-windows-msvc`) and **ARM64** (`aarch64-pc-windows-msvc`).
+            Desktop widgets for Windows, built from `${{ github.event.inputs.tag || github.ref_name }}` — **ARM64** (`aarch64-pc-windows-msvc`) and **x64** (`x86_64-pc-windows-msvc`).
 
-            **Install:** `Floaty_*_<arch>-setup.exe` is the NSIS installer for that architecture — `x64` on Intel/AMD, `arm64` on Windows on ARM. The `.msi` is x64 only; it is there for anyone who wants one. All of them are unsigned, so SmartScreen will warn — *More info* → *Run anyway*. Needs Windows 10/11 with the WebView2 runtime (Windows 11 ships it; the installer fetches it if it is missing).
+            **Install:** `Floaty_*_arm64-setup.exe` for Windows on ARM, `Floaty_*_x64-setup.exe` for Intel and AMD. Both are unsigned, so SmartScreen will warn — *More info* → *Run anyway*. Needs Windows 10/11 with the WebView2 runtime (Windows 11 ships it; the installer fetches it if it is missing).
 
-            The x64 `floaty.exe` is attached on its own as well, if you would rather not install anything.
+            **Updates:** this release also carries the signed updater feed — `latest.json` and the `.sig` signatures it points at — with an entry per architecture, so an ARM64 copy and an x64 copy each find their own. In a running copy: General tab → **Updates** → *check for updates*, then *install and restart*. See "Releasing an update" in the README.
           releaseDraft: false
           prerelease: false
-          # No updater plugin in this project, so there is no updater feed to write
-          uploadUpdaterJson: false
-          # also attach the bare floaty.exe — x64 only, since a plain binary has to
-          # name itself and two targets would fight over `floaty.exe`
-          uploadPlainBinary: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
+          # The updater feed. tauri-action writes `latest.json` out of the bundles it
+          # built and attaches it, with their `.sig` files, to this release — which is
+          # what `plugins > updater > endpoints` in the config downloads. Without it the
+          # endpoint 404s and every copy of floaty reports "could not check".
+          uploadUpdaterJson: true
+          # NSIS is the bundle the feed points at: it is the only one built here, and the
+          # config asks for `installMode: passive`.
+          updaterJsonPreferNsis: true
+          uploadUpdaterSignatures: true
+          # Two targets now, and both bundles are called `floaty.exe`: the plain binary
+          # would be uploaded twice under one name. The installers and the signed updater
+          # artifacts are what the release is for, so the raw exe is left off.
+          uploadPlainBinary: false
           args: --target ${{ matrix.target }} ${{ matrix.bundles }}
           retryAttempts: 2
 

@@ -368,6 +368,9 @@ export function isOnMyScreen(x: number, y: number): boolean {
 /**
  * A physical point → record space, through the screen it is physically on.
  *
+ * Exported because a drop from Explorer arrives as a physical position with no page
+ * event behind it, and that is the same mapping a drag needs.
+ *
  * With no screen list yet (a page that has just been reloaded, the first move of the
  * first drag) this falls back to *this window's own* screen rather than to nothing: a
  * point on this screen maps the same way either way, and returning nothing would drop
@@ -375,7 +378,7 @@ export function isOnMyScreen(x: number, y: number): boolean {
  * first drag after a reload crossed the boundary and left the record behind, drawn by
  * both windows at once.
  */
-function physicalToVirtual(p: { x: number; y: number }): { x: number; y: number } | null {
+export function physicalToVirtual(p: { x: number; y: number }): { x: number; y: number } | null {
   const list = screenList?.length ? screenList : area ? [area.screen] : [];
   if (!list.length) return null;
   const on = list.find(
@@ -451,6 +454,39 @@ export async function watchMonitors(): Promise<MonitorArea[]> {
  */
 let monitorsWatched = false;
 
+/**
+ * Quiet mode: nobody has touched the machine for a while (the decision is Rust's —
+ * `src-tauri/src/presence.rs`). This *is* the desktop, so the floaties stay where they
+ * are; what stops is the motion and the audio capture, which is where the watts are.
+ */
+let presenceQuiet = false;
+let presenceWatched = false;
+
+export function presenceIsQuiet(): boolean {
+  return presenceQuiet;
+}
+
+function followPresence(): void {
+  if (presenceWatched) return;
+  presenceWatched = true;
+  void listen<{ quiet?: boolean; hidden?: boolean; reason?: string | null }>(
+    "floaty-presence",
+    (e) => {
+      const quiet = e.payload?.quiet === true;
+      if (quiet === presenceQuiet) return;
+      presenceQuiet = quiet;
+      // The bob is a CSS animation, so going quiet is a class change — and coming back
+      // needs the same call that started it, or the desktop stays still for good.
+      for (const slot of overlaySlots.values()) {
+        applyFloatieAnimation(slot.element, slot.id, { x: slot.x, y: slot.y });
+      }
+      // Widgets that do their own work while nobody is watching (the visualizer's
+      // capture, a plugin's poll) get the same signal they can act on.
+      window.dispatchEvent(new CustomEvent("floaty-presence", { detail: e.payload }));
+    },
+  ).catch(() => undefined);
+}
+
 function followMonitors(): void {
   if (monitorsWatched) return;
   monitorsWatched = true;
@@ -459,6 +495,7 @@ function followMonitors(): void {
     // before the list it is measured against
     dropAreaCache();
     void myArea().then(() => watchMonitors());
+    followPresence();
   }).catch(() => undefined);
 }
 
@@ -530,6 +567,18 @@ export async function loadRecord(id: string): Promise<WidgetRecord | undefined> 
 }
 
 export async function saveRecord(rec: WidgetRecord): Promise<void> {
+  // A save carries a page-side copy of the record, and that copy can be older than the
+  // last drag: a widget saving unrelated data (a graph, a note's text) would otherwise
+  // write the position from before the drag, and the widget would jump back to where it
+  // used to be. The slot is where it actually is, so that is what is saved — in one place,
+  // because every widget that saves anything would otherwise have to remember this.
+  if (isOverlayMode()) {
+    const slot = overlaySlots.get(rec.id);
+    if (slot) {
+      rec.x = Math.round(slot.x);
+      rec.y = Math.round(slot.y);
+    }
+  }
   try {
     await invoke("floaty_save", { record: rec });
   } catch (err) {
@@ -818,6 +867,9 @@ export function enableOverlayDrag(
       const slot = overlaySlots.get(id);
       if (!slot) return;
       e.stopPropagation();
+      // Announced before the first move: this is the snapshot of where the widget was,
+      // and after one move it would be the place the drag had already taken it to.
+      void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
       // Capture on the body, not on the widget: the widget's slot is removed from the
       // DOM the moment the pointer crosses onto another screen (that window owns it
       // now), and capture on a removed element stops delivering moves — the drag would
@@ -843,7 +895,12 @@ export function enableOverlayDrag(
       const v = at && physicalToVirtual(at);
       const grab = v ? { dx: v.x - startX, dy: v.y - startY } : null;
 
+      // The last move the pointer made, for a release that carries no coordinates of its
+      // own (a cancel): a placement must never fall back to the pointerdown point.
+      let lastMove: PointerEvent | null = null;
+
       const onMove = (ev: PointerEvent) => {
+        lastMove = ev;
         const dx = ev.clientX - startSX;
         const dy = ev.clientY - startSY;
         if (!active) {
@@ -867,19 +924,25 @@ export function enableOverlayDrag(
         // is exact while the pointer stays on one screen.
         setWidgetPos(id, startX + dx, startY + dy);
       };
-      const onUp = () => {
+      const onUp = (up?: PointerEvent) => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
+        // One step for the gesture, if it changed anything at all.
+        void invoke("floaty_gesture_end").catch(() => undefined);
         try {
           (el.ownerDocument?.body ?? el).releasePointerCapture?.(e.pointerId);
         } catch {
           /* never captured */
         }
         // One last placement, so a drop just past the edge still lands on the screen the
-        // pointer is on rather than on the last position the moves saw.
+        // pointer is on rather than on the last position the moves saw. The coordinates
+        // must come from the release (or the last move), never from `e` — `e` is the
+        // pointerdown this handler closed over, so using it placed every panel back where
+        // the drag began.
         if (active) {
-          const spot = pointerPhysical({ clientX: e.clientX, clientY: e.clientY });
+          const at = up ?? lastMove ?? e;
+          const spot = pointerPhysical({ clientX: at.clientX, clientY: at.clientY });
           const want = spot && physicalToVirtual(spot);
           if (want && grab) {
             void invoke("floaty_drag_to", {
@@ -1092,6 +1155,12 @@ export interface FloatSettings {
   sysmon_interval: number;
   /** the key that opens the launcher palette, e.g. "Ctrl+Alt+Space" */
   palette_shortcut: string;
+  /** hide the desktop while a fullscreen app is in front */
+  hide_in_fullscreen: boolean;
+  /** stop animating when nobody has touched the machine */
+  quiet_when_idle: boolean;
+  /** how long "a while" is, in minutes; 0 means never */
+  idle_minutes: number;
 }
 
 export const DEFAULT_SETTINGS: FloatSettings = {
@@ -1115,6 +1184,9 @@ export const DEFAULT_SETTINGS: FloatSettings = {
   viz_fps: 30,
   sysmon_interval: 1000,
   palette_shortcut: "Ctrl+Alt+Space",
+  hide_in_fullscreen: true,
+  quiet_when_idle: true,
+  idle_minutes: 10,
 };
 
 /** A settings number, or the fallback when the field is missing or not one. */
@@ -1167,6 +1239,15 @@ export function applyFloatieAnimation(
   const ratio = clampNum(settingNum(s.animated_ratio, 100), 0, 100);
   const spread = clampNum(settingNum(s.float_spread, 10), 0, 100);
   const mode = s.animation_mode || "wave";
+
+  // Nobody is here: no bob, whatever the mode says. One class is the whole of it —
+  // `anim-static` is the mode that does not move — and the presence listener re-applies
+  // this call when input comes back.
+  if (presenceQuiet) {
+    wrap.classList.remove("anim-wave", "anim-sync", "anim-gentle", "anim-static");
+    wrap.classList.add("anim-static");
+    return;
+  }
 
   // One knob, one meaning: `--bob-amp` is how far the icon rises, and every
   // mode's keyframes travel exactly that far. It used to be multiplied by a
@@ -1360,6 +1441,8 @@ export function addResizeHandle(
     e.stopPropagation();
     e.preventDefault();
     notifyDragging(true);
+    // a resize is a gesture like a drag: snapshot the record before the first move
+    void invoke("floaty_gesture_begin", { label: "resize", ids: [rec.id] }).catch(() => undefined);
     void (async () => {
       let scale = 1;
       try {
@@ -1393,6 +1476,7 @@ export function addResizeHandle(
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
+        void invoke("floaty_gesture_end").catch(() => undefined);
         notifyDragging(false);
         rec.data["w"] = Math.round(wrap.offsetWidth);
         rec.data["h"] = Math.round(wrap.offsetHeight);

@@ -8,11 +8,13 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 
 mod audio;
 mod diagnostics;
+mod exchange;
 mod fs_watch;
 mod icons;
 mod palette;
 mod plugin_install;
 mod plugins;
+mod presence;
 mod screens;
 mod shell_ops;
 mod sysmon;
@@ -342,6 +344,15 @@ struct FloatSettings {
     /// The key that opens the launcher palette, e.g. "Ctrl+Alt+Space".
     #[serde(default = "default_palette_shortcut")]
     palette_shortcut: String,
+    /// Get out of the way: hide the desktop while a fullscreen app is in front.
+    #[serde(default = "default_true")]
+    hide_in_fullscreen: bool,
+    /// ...and stop animating when nobody has touched the machine for a while.
+    #[serde(default = "default_true")]
+    quiet_when_idle: bool,
+    /// How long "a while" is, in minutes. 0 means never.
+    #[serde(default = "default_idle_minutes")]
+    idle_minutes: u32,
     /// Plugin id -> the fingerprint of the folder the user approved, for plugins
     /// they installed themselves. A plugin whose files have changed since is asked
     /// about again: approving code is not approving whatever replaces it later.
@@ -367,6 +378,16 @@ const ICON_PIPELINE: u32 = 3;
 /// it is not spoken for.
 fn default_palette_shortcut() -> String {
     "Ctrl+Alt+Space".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Ten minutes of no input at all — not ten minutes of the *app* being idle, which is a
+/// different thing and would flatten the desktop while somebody reads a web page.
+fn default_idle_minutes() -> u32 {
+    10
 }
 
 fn default_icon_pipeline() -> u32 {
@@ -481,6 +502,650 @@ fn migrate_float_settings(value: &mut serde_json::Value) {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Files arriving from outside: a drop from Explorer, or a paste.
+// ---------------------------------------------------------------------------------------
+
+/// The folder floatie under a point in record space, if any — the same 12px inflation
+/// `floaty_dropped` uses, because a drop and the merge preview must agree.
+fn folder_under(app: &AppHandle, x: f64, y: f64) -> Option<(String, std::path::PathBuf)> {
+    let state = app.state::<AppState>();
+    let guard = state.0.lock().ok()?;
+    let mut hit: Option<(String, std::path::PathBuf)> = None;
+    for (id, rec) in guard.widgets.iter() {
+        if rec.kind != "folder" {
+            continue;
+        }
+        let (w, h) = plugins::size(&rec.kind, &rec.data);
+        let tile = exchange::Hit {
+            x: rec.x as f64,
+            y: rec.y as f64,
+            w,
+            h,
+        };
+        if !exchange::hits(&tile, x, y) {
+            continue;
+        }
+        let Some(path) = rec.data.get("path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let dir = std::path::PathBuf::from(path);
+        if dir.is_dir() {
+            // serde keeps the map sorted, so two overlapping folders resolve the same way
+            // here as they do in the drop rule
+            hit = Some((id.clone(), dir));
+            break;
+        }
+    }
+    hit.map(|(_, dir)| (String::new(), dir))
+}
+
+/// Files dropped onto the desktop from outside floaty — Explorer, another app, or a paste.
+///
+/// Where they land is where they were dropped: on a folder floatie means *into* that
+/// folder, anywhere else means into the folder the desktop is showing. The same volume
+/// moves and another volume copies, and a program from Program Files becomes a shortcut
+/// rather than leaving its install directory — `place_item_in_dir` already decides all of
+/// that for the two-floatie merge, so it decides it here too.
+///
+/// A path that is *already* on the desktop is not copied anywhere: it moves to where it
+/// was dropped, which is what a cut-and-paste of your own file should do.
+#[tauri::command]
+fn floaty_drop_paths(paths: Vec<String>, x: i32, y: i32, app: AppHandle) -> Result<String, String> {
+    let root = files_root_dir(&app).ok_or("no folder is being watched")?;
+    let incoming: Vec<std::path::PathBuf> = paths
+        .iter()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.exists())
+        .collect();
+    if incoming.is_empty() {
+        return Err("nothing that still exists was dropped".into());
+    }
+    let dest_dir = folder_under(&app, x as f64, y as f64)
+        .map(|(_, dir)| dir)
+        .unwrap_or_else(|| root.clone());
+    let into_a_folder = dest_dir != root;
+    let mut landed: Vec<String> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
+    for path in &incoming {
+        let inside = path.starts_with(&root);
+        if inside && !into_a_folder {
+            // already here: this drop is a move, not an import
+            landed.push(path.to_string_lossy().into_owned());
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // Where a drop lands is the *desktop's* rule, not the merge's: the merge is about
+        // two things the user already has, where a shortcut is the conservative answer —
+        // dropping a file has to bring the file, the way Explorer would.
+        let how = exchange::arrival(path, inside, &dest_dir);
+        match how {
+            exchange::Arrival::Move | exchange::Arrival::Copy => {
+                let dest = exchange::unique_destination(&dest_dir, &name);
+                // a folder across volumes is not copied here (a recursive copy is not a
+                // drop's job) — the failure is reported instead of a half-copied directory
+                let copying = how == exchange::Arrival::Copy;
+                let result = if copying && !path.is_dir() {
+                    std::fs::copy(path, &dest).map(|_| ())
+                } else if copying {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "a folder on another drive is left where it is",
+                    ))
+                } else {
+                    std::fs::rename(path, &dest)
+                };
+                match result {
+                    Ok(()) => {
+                        log_line(
+                            &app,
+                            &format!(
+                                "{}: {} -> {}",
+                                if copying {
+                                    "copied onto the desktop"
+                                } else {
+                                    "moved onto the desktop"
+                                },
+                                path.display(),
+                                dest.display()
+                            ),
+                        );
+                        landed.push(dest.to_string_lossy().into_owned());
+                    }
+                    Err(why) => refused.push(format!("{}: {why}", path.display())),
+                }
+            }
+            exchange::Arrival::Shortcut => {
+                let item = FolderItem {
+                    name,
+                    target: path.to_string_lossy().into_owned(),
+                    icon: String::new(),
+                    is_dir: path.is_dir(),
+                };
+                match place_item_in_dir(&dest_dir, &item, Some(&root)) {
+                    Ok((placed, log)) => {
+                        log_line(&app, &log);
+                        landed.push(placed.target);
+                    }
+                    Err(why) => refused.push(why),
+                }
+            }
+        }
+    }
+    if landed.is_empty() {
+        return Err(refused.join("; "));
+    }
+    // The watcher's own pass: whatever arrived gets a record, the same way a file dropped
+    // into the root from Explorer always has.
+    let _ = sync_root(None, app.clone(), true);
+    // ...and then the records are placed where the pointer was, cascading so that five
+    // files dropped together are not five floaties under one another.
+    let placed = place_arrived(&app, &landed, x, y);
+    let what = if into_a_folder {
+        format!("into {}", dest_dir.display())
+    } else {
+        "onto the desktop".to_string()
+    };
+    let mut report = format!("{} item(s) {what}", landed.len());
+    if placed > 0 {
+        report.push_str(&format!(", {placed} placed at the drop"));
+    }
+    if !refused.is_empty() {
+        report.push_str(&format!(" — refused: {}", refused.join("; ")));
+    }
+    Ok(report)
+}
+
+/// Put the records for these paths where the drop happened, spread out, and tell the
+/// pages. Returns how many were placed.
+fn place_arrived(app: &AppHandle, landed: &[String], x: i32, y: i32) -> usize {
+    let list = screens(app);
+    let mut placed = 0usize;
+    let mut moved: Vec<WidgetRecord> = Vec::new();
+    {
+        let state = app.state::<AppState>();
+        let Ok(mut guard) = state.0.lock() else {
+            return 0;
+        };
+        for (index, target) in landed.iter().enumerate() {
+            // A file record keeps its path in `target` and a folder in `path`; either way
+            // this is the record for the file that just arrived.
+            let Some(id) = guard
+                .widgets
+                .iter()
+                .find(|(_, r)| {
+                    ["path", "target"].iter().any(|key| {
+                        r.data
+                            .get(*key)
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|p| p.eq_ignore_ascii_case(target))
+                    })
+                })
+                .map(|(id, _)| id.clone())
+            else {
+                continue;
+            };
+            let step = index as i32 * 26;
+            let (mut nx, mut ny) = (x + step, y + step);
+            // a drop near an edge must not push the floatie off the screen
+            let (w, h) = guard
+                .widgets
+                .get(&id)
+                .map(|r| plugins::size(&r.kind, &r.data))
+                .unwrap_or((92.0, 112.0));
+            if let Some(screen) = screens::screen_of(&list, nx as f64, ny as f64) {
+                let area = &list[screen].logical;
+                // clamp, with the upper bound never below the lower: a floatie wider than
+                // the screen would otherwise panic here rather than sit at its corner
+                let max_x = (area.x + area.w - w).max(area.x);
+                let max_y = (area.y + area.h - h).max(area.y);
+                nx = (nx as f64).clamp(area.x, max_x) as i32;
+                ny = (ny as f64).clamp(area.y, max_y) as i32;
+            }
+            if let Some(rec) = guard.widgets.get_mut(&id) {
+                rec.x = nx;
+                rec.y = ny;
+                moved.push(rec.clone());
+                placed += 1;
+            }
+        }
+    }
+    for rec in moved {
+        let _ = app.emit("floaty-widget-updated", rec);
+    }
+    if placed > 0 {
+        persist(app);
+    }
+    placed
+}
+
+/// Paste onto the desktop: the clipboard's files, or a path copied as text.
+#[tauri::command]
+fn floaty_clipboard_paste(x: i32, y: i32, app: AppHandle) -> Result<String, String> {
+    let mut paths: Vec<std::path::PathBuf> = exchange::clipboard_files();
+    let from = if paths.is_empty() {
+        match exchange::clipboard_text() {
+            Some(text) => {
+                paths = exchange::paths_from_text(&text);
+                "text"
+            }
+            None => "",
+        }
+    } else {
+        "files"
+    };
+    if paths.is_empty() {
+        return Err("the clipboard has no files (or a path) on it".into());
+    }
+    let report = floaty_drop_paths(
+        paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        x,
+        y,
+        app.clone(),
+    )?;
+    log_line(&app, &format!("paste: {report} (clipboard held {from})"));
+    Ok(report)
+}
+
+/// Put these floaties' files on the clipboard, so Explorer and every other app can paste
+/// them. `cut` stages the same list for floaty's own next paste, which *moves* them.
+#[tauri::command]
+fn floaty_clipboard_copy(ids: Vec<String>, cut: bool, app: AppHandle) -> Result<usize, String> {
+    let paths: Vec<std::path::PathBuf> = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().map_err(|_| "busy".to_string())?;
+        ids.iter()
+            .filter_map(|id| guard.widgets.get(id))
+            // `target` for a file, `path` for a folder — the same two keys the drop
+            // placement reads, because a widget's file lives wherever its kind says it does
+            .filter_map(|rec| {
+                ["target", "path"]
+                    .iter()
+                    .find_map(|key| rec.data.get(*key).and_then(|v| v.as_str()))
+            })
+            .map(std::path::PathBuf::from)
+            .collect()
+    };
+    if paths.is_empty() {
+        return Err("nothing to copy".into());
+    }
+    exchange::set_clipboard_files(&paths)?;
+    CUT.store(if cut {
+        paths.clone()
+    } else {
+        Vec::new()
+    });
+    log_line(
+        &app,
+        &format!(
+            "clipboard: {} item(s) {}",
+            paths.len(),
+            if cut { "cut" } else { "copied" }
+        ),
+    );
+    Ok(paths.len())
+}
+
+/// The key that pastes the clipboard onto the desktop, under the pointer.
+///
+/// Global rather than a page shortcut for the same reason the launcher has one: the
+/// desktop window is deliberately no-activate, so it can never receive a keystroke.
+const PASTE_ACCELERATOR: &str = "Ctrl+Alt+V";
+
+/// What an update check found, in the terms the settings row can show.
+#[derive(serde::Serialize)]
+struct UpdateReport {
+    available: bool,
+    current: String,
+    version: Option<String>,
+    notes: Option<String>,
+    /// Why the check could not be made — a published app that cannot reach GitHub should
+    /// say so rather than looking up to date.
+    error: Option<String>,
+}
+
+/// Ask the release feed whether there is a newer floaty.
+///
+/// Rust rather than the updater's JS API on purpose: the check and the install are not
+/// things the *page* should be trusted with, and keeping them here means no new webview
+/// permission and no new global key.
+#[tauri::command]
+async fn floaty_check_update(app: AppHandle) -> UpdateReport {
+    use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    let updater = match app.updater() {
+        Ok(updater) => updater,
+        Err(e) => {
+            return UpdateReport {
+                available: false,
+                current,
+                version: None,
+                notes: None,
+                error: Some(format!("no update feed is configured ({e})")),
+            }
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => UpdateReport {
+            available: true,
+            current,
+            version: Some(update.version.clone()),
+            notes: update.body.clone(),
+            error: None,
+        },
+        Ok(None) => UpdateReport {
+            available: false,
+            current,
+            version: None,
+            notes: None,
+            error: None,
+        },
+        Err(e) => UpdateReport {
+            available: false,
+            current,
+            version: None,
+            notes: None,
+            // Offline, a corporate proxy, a manifest that does not parse: all of it is
+            // "could not check", none of it is "you are up to date".
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Download and install the update the check found, then restart into it.
+#[tauri::command]
+async fn floaty_install_update(app: AppHandle) -> Result<String, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "there is no newer version".to_string())?;
+    let version = update.version.clone();
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("floaty-update-installed", serde_json::json!({ "version": version }));
+    log_line(&app, &format!("update: {version} installed, restarting"));
+    app.restart();
+}
+
+/// The key that undoes the last change from anywhere.
+///
+/// Not a bare Ctrl+Z, and that is a trade worth naming: a *global* Ctrl+Z would take undo
+/// away from every other application on the machine, which is not a price a desktop
+/// decoration gets to charge. The desktop window is no-activate by design — it must never
+/// take focus from what you are doing — so it cannot see a keystroke of its own; the
+/// page's own Ctrl+Z handler only ever fires if focus lands there anyway. Hence a modified
+/// global key, beside the launcher's and the paste key's.
+const UNDO_ACCELERATOR: &str = "Ctrl+Alt+Z";
+
+/// Undo the last change, driven by the shortcut rather than a page.
+fn undo_from_shortcut(app: &AppHandle) {
+    match tauri::async_runtime::block_on(floaty_undo(app.clone())) {
+        Ok(report) => log_line(
+            app,
+            &format!(
+                "undo: '{}' ({} left to undo)",
+                report.label, report.remaining
+            ),
+        ),
+        Err(why) => log_line(app, &format!("undo: {why}")),
+    }
+}
+
+/// Paste the clipboard onto the desktop where the pointer is.
+pub(crate) fn paste_at_cursor(app: &AppHandle) -> Result<String, String> {
+    let (px, py) = cursor_physical(app).ok_or("the pointer's place could not be read")?;
+    // The numbers go in the message: this is the one place a scaled cursor reading turns
+    // into a place on a screen, and when it goes wrong that is the only thing worth seeing.
+    let (x, y) = virtual_at_physical(app, px, py)
+        .ok_or_else(|| format!("no screen to paste onto (the pointer reads as {px},{py})"))?;
+    floaty_clipboard_paste(x.round() as i32, y.round() as i32, app.clone())
+}
+
+/// The floaties that were cut, held here rather than in the clipboard: a cut is a promise
+/// about *our* next paste, and pretending otherwise by rewriting the clipboard's drop
+/// effect is how a paste into another app moves a file the user only meant to copy.
+static CUT: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+trait CutStore {
+    fn store(&self, paths: Vec<std::path::PathBuf>);
+}
+
+impl CutStore for std::sync::Mutex<Vec<std::path::PathBuf>> {
+    fn store(&self, paths: Vec<std::path::PathBuf>) {
+        if let Ok(mut guard) = self.lock() {
+            *guard = paths;
+        }
+    }
+}
+
+/// Where the pointer is, in physical px.
+///
+/// `cursor_position()` answers in the *primary monitor's* logical units — measured on a
+/// 2x/1.5x pair, a pointer physically at 4000,667 came back as 2000,333 — and everything
+/// else here (window rects, monitor rects, record positions) is physical. Scaling it back
+/// up is what makes a hotkey paste land under the pointer on either screen.
+fn cursor_physical(app: &AppHandle) -> Option<(f64, f64)> {
+    let cursor = app.cursor_position().ok()?;
+    let list = screens(app);
+    let on_a_screen = |x: f64, y: f64| {
+        list.iter().any(|s| {
+            x >= s.physical.x
+                && x < s.physical.x + s.physical.w
+                && y >= s.physical.y
+                && y < s.physical.y + s.physical.h
+        })
+    };
+    // `cursor_position()` has been measured in two spaces on this machine: physical, and
+    // the *primary monitor's* logical units (a pointer physically at 4000,667 read as
+    // 2000,333 when the reading came through a virtualised path). Rather than assume
+    // which one this is, take the reading that actually lands on a screen — with two
+    // monitors at different scales the arrangement decides, and either answer is right.
+    if on_a_screen(cursor.x, cursor.y) {
+        return Some((cursor.x, cursor.y));
+    }
+    let primary = list.iter().find(|s| s.primary)?;
+    Some((cursor.x * primary.scale, cursor.y * primary.scale))
+}
+
+/// The record-space place a physical point is, for a hotkey with no page behind it.
+fn virtual_at_physical(app: &AppHandle, px: f64, py: f64) -> Option<(f64, f64)> {
+    let list = screens(app);
+    let index = list
+        .iter()
+        .position(|s| {
+            px >= s.physical.x
+                && px < s.physical.x + s.physical.w
+                && py >= s.physical.y
+                && py < s.physical.y + s.physical.h
+        })
+        // A pointer the platform will not place (a scaled reading, a cursor parked off the
+        // arrangement) still has to paste *somewhere*: the screen it is nearest to in y,
+        // which is where a person would look for it.
+        .or_else(|| {
+            list.iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let da = (py - (a.physical.y + a.physical.h / 2.0)).abs();
+                    let db = (py - (b.physical.y + b.physical.h / 2.0)).abs();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i)
+        })?;
+    let screen = &list[index];
+    Some((
+        screen.logical.x + (px - screen.physical.x) / screen.scale,
+        screen.logical.y + (py - screen.physical.y) / screen.scale,
+    ))
+}
+
+// ---------------------------------------------------------------------------------------
+// Presence: getting out of the way of a fullscreen app, and going quiet when idle.
+// ---------------------------------------------------------------------------------------
+
+/// The state as last applied. The watcher decides every couple of seconds; only a
+/// *change* does anything, so an already-quiet desktop is not re-flattened every poll.
+static PRESENCE: std::sync::Mutex<Option<presence::State>> = std::sync::Mutex::new(None);
+
+/// The rules in force, kept here so the watcher does not read the settings file 30 times
+/// a minute. Written at startup and whenever the settings are saved.
+static PRESENCE_RULES: std::sync::Mutex<Option<presence::Rules>> = std::sync::Mutex::new(None);
+
+fn set_presence_rules(rules: presence::Rules) {
+    if let Ok(mut guard) = PRESENCE_RULES.lock() {
+        *guard = Some(rules);
+    }
+}
+
+fn presence_rules() -> presence::Rules {
+    PRESENCE_RULES
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+        .unwrap_or_default()
+}
+
+fn rules_from(settings: &FloatSettings) -> presence::Rules {
+    presence::Rules {
+        hide_for_fullscreen: settings.hide_in_fullscreen,
+        quiet_when_idle: settings.quiet_when_idle,
+        idle_after: std::time::Duration::from_secs(settings.idle_minutes.min(600) as u64 * 60),
+    }
+}
+
+/// Every window that draws the desktop — one per screen, plus the per-screen top layers.
+fn desktop_layer_windows(app: &AppHandle) -> Vec<tauri::WebviewWindow> {
+    app.webview_windows()
+        .into_iter()
+        .filter(|(label, _)| is_desktop_layer_label(label))
+        .map(|(_, window)| window)
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+struct PresenceReport {
+    hidden: bool,
+    quiet: bool,
+    reason: Option<String>,
+    idle_ms: u64,
+    /// The window in front, as the decision saw it — the field that explains a state
+    /// nobody expected, so the diagnostics tab and a probe can both read it.
+    foreground: Option<String>,
+    foreground_shell: bool,
+    foreground_ours: bool,
+    hide_in_fullscreen: bool,
+    quiet_when_idle: bool,
+    idle_minutes: u32,
+}
+
+fn presence_observations(app: &AppHandle) -> (presence::Observations, presence::State) {
+    let screens: Vec<presence::Rect> = screens(app)
+        .iter()
+        .map(|s| presence::Rect::new(s.physical.x, s.physical.y, s.physical.w, s.physical.h))
+        .collect();
+    let own: Vec<isize> = desktop_layer_windows(app)
+        .iter()
+        .filter_map(|w| w.hwnd().ok().map(|h| h.0 as isize))
+        .collect();
+    let observed = presence::observe(screens, &own);
+    let state = presence::decide(
+        observed.foreground.as_ref(),
+        &observed.screens,
+        &presence_rules(),
+        observed.idle_ms,
+    );
+    (observed, state)
+}
+
+/// Put the desktop where the decision says it should be, and say so once.
+fn apply_presence(app: &AppHandle, state: presence::State) {
+    let previous = PRESENCE.lock().ok().and_then(|mut guard| guard.replace(state));
+    if previous == Some(state) {
+        return;
+    }
+    for window in desktop_layer_windows(app) {
+        if state.hidden {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+        }
+    }
+    if state.quiet {
+        // The loopback capture is the one thing that costs while nothing is happening;
+        // the visualizer asks for it again when the machine wakes up (it listens for
+        // the same event), so this is a pause rather than a switch that stays off.
+        audio::stop();
+    }
+    let _ = app.emit(
+        "floaty-presence",
+        serde_json::json!({
+            "hidden": state.hidden,
+            "quiet": state.quiet,
+            "reason": state.reason,
+        }),
+    );
+    match state.reason {
+        Some(why) => log_line(
+            app,
+            &format!(
+                "presence: {} ({why}) — desktop {}",
+                if state.hidden { "hidden" } else { "quiet" },
+                if state.hidden { "off screen" } else { "on screen, still" }
+            ),
+        ),
+        None => log_line(app, "presence: back to normal input and no fullscreen app"),
+    }
+}
+
+/// Watch the machine, from a thread of its own: the poll is two Win32 calls and a
+/// comparison, so it is cheap enough to keep running, and cheap enough to leave alone
+/// when it decides nothing has changed.
+fn start_presence_watch(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        let (_, state) = presence_observations(&app);
+        apply_presence(&app, state);
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+    });
+}
+
+/// The presence state, for the diagnostics tab and for probes.
+#[tauri::command]
+fn floaty_presence(app: AppHandle) -> PresenceReport {
+    let settings = load_settings(&app);
+    let (observed, state) = presence_observations(&app);
+    let fg = observed.foreground.as_ref();
+    PresenceReport {
+        hidden: state.hidden,
+        quiet: state.quiet,
+        reason: state.reason.map(|r| r.to_string()),
+        idle_ms: observed.idle_ms,
+        foreground: fg.map(|f| {
+            format!(
+                "{}x{} at {},{}",
+                f.rect.w.round(),
+                f.rect.h.round(),
+                f.rect.x.round(),
+                f.rect.y.round()
+            )
+        }),
+        foreground_shell: fg.is_some_and(|f| f.shell),
+        foreground_ours: fg.is_some_and(|f| f.ours),
+        hide_in_fullscreen: settings.hide_in_fullscreen,
+        quiet_when_idle: settings.quiet_when_idle,
+        idle_minutes: settings.idle_minutes,
+    }
+}
+
 fn load_settings(app: &AppHandle) -> FloatSettings {
     let path = settings_file(app);
     // Read through `Value` first so an old file can be migrated; anything that
@@ -537,6 +1202,9 @@ fn load_settings(app: &AppHandle) -> FloatSettings {
             viz_fps: default_viz_fps(),
             sysmon_interval: default_sysmon_interval(),
             palette_shortcut: default_palette_shortcut(),
+            hide_in_fullscreen: default_true(),
+            quiet_when_idle: default_true(),
+            idle_minutes: default_idle_minutes(),
             plugin_trust: std::collections::HashMap::new(),
             icon_pipeline: default_icon_pipeline(),
         },
@@ -590,6 +1258,10 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
             Some(accelerator) => accelerator,
             None => stored.palette_shortcut.clone(),
         },
+        hide_in_fullscreen: settings.hide_in_fullscreen,
+        quiet_when_idle: settings.quiet_when_idle,
+        // Ten hours is not a threshold, it is a typo; zero means never.
+        idle_minutes: settings.idle_minutes.min(600),
         // The approvals are the backend's own bookkeeping, like icon_pipeline: a
         // settings form that does not show them must not be able to clear them.
         plugin_trust: stored.plugin_trust.clone(),
@@ -652,6 +1324,9 @@ fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> FloatSettings
     if stored.palette_shortcut.trim() != s.palette_shortcut.trim() {
         apply_palette_shortcut(&app);
     }
+    // The presence watcher reads its rules from memory, not from this file every two
+    // seconds, so a change here is what it notices.
+    set_presence_rules(rules_from(&s));
     s
 }
 
@@ -4656,8 +5331,34 @@ fn floaty_launch_target(target: String, app: AppHandle) -> Result<(), String> {
 /// Called (fire-and-forget) when an app icon is dropped after a manual drag.
 /// If the drop point lands on another icon/folder window, merge them.
 /// Returns the folder id when a merge happened.
+/// The page's "I let go here". The merge itself lives in `floaty_dropped_inner`.
+///
+/// This wrapper is where a *move* becomes undoable: a drop that merges takes its own
+/// checkpoint inside (with the same remembered origin), and a drop that does not is still
+/// a change to the desktop — the icon is somewhere new, and undoing that means putting it
+/// back on the spot it came from.
 #[tauri::command]
 fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) -> Option<String> {
+    let origin = drag_origin(&id);
+    let merged = floaty_dropped_inner(id.clone(), x, y, app.clone(), origin);
+    // A page that announced a gesture has already been snapshotted at pointerdown, and
+    // commits it at pointerup; recording a second step here would spend two Ctrl+Alt+Z
+    // presses on one drag. A move that arrives without a gesture — a plugin, a script, a
+    // probe — still gets its own step.
+    if merged.is_none() && !undo::gesture_pending() {
+        record_move(&app, &id, origin);
+    }
+    forget_drag_origin(&id);
+    merged
+}
+
+fn floaty_dropped_inner(
+    id: String,
+    x: Option<i32>,
+    y: Option<i32>,
+    app: AppHandle,
+    origin: Option<(i32, i32)>,
+) -> Option<String> {
     // Where the drop is, as a point in record space.
     //
     // The page's coordinates are used *while they agree with the record about which
@@ -4742,7 +5443,24 @@ fn floaty_dropped(id: String, x: Option<i32>, y: Option<i32>, app: AppHandle) ->
     // Everything above is a read; from here on real files move, so this is the
     // point where a merge becomes undoable. The folder the merge may create is
     // noted by id below (`undo::add_created`), since it does not exist yet.
-    checkpoint(&app, "merge", &[&id, &target_id]);
+    // The dragged icon is snapshotted at the place the drag *started* from, not the place
+    // it was dropped — which, for a merge, is inside the folder it just went into. Undo
+    // puts the file back out of the folder; this is what puts the icon back with it.
+    log_line(
+        &app,
+        &format!(
+            "merge: {id} into {target_id} — dragged from {}",
+            origin
+                .map(|(x, y)| format!("{x},{y}"))
+                .unwrap_or_else(|| "an unknown place".to_string())
+        ),
+    );
+    checkpoint_with_origin(
+        &app,
+        "merge",
+        &[&id, &target_id],
+        origin.map(|(x, y)| (id.as_str(), x, y)),
+    );
 
     // snapshot the dragged item, then remove it (tombstone blocks its late
     // saves from resurrecting it)
@@ -6539,10 +7257,24 @@ fn floaty_delete(id: String, app: AppHandle) -> Result<String, String> {
         && (kind == "file" || kind == "folder" || kind == "app");
     checkpoint(&app, "delete", &[&id]);
     let note = if managed {
-        shell_ops::recycle(std::path::Path::new(&path))?;
-        // one press puts the file back out of the bin and the floatie with it
-        undo::add_disk(undo::DiskOp::recycled(&path));
-        format!("moved '{}' to the recycle bin", path)
+        // Where the file went is *reported*, not assumed: `FOF_ALLOWUNDO` asks for the
+        // bin, and a volume whose bin is disabled (or too small for the file) deletes
+        // outright. The undo entry is only honest when it really is in the bin.
+        match shell_ops::recycle_checked(std::path::Path::new(&path))? {
+            shell_ops::Recycled::ToBin => {
+                // one press puts the file back out of the bin and the floatie with it
+                undo::add_disk(undo::DiskOp::recycled(&path));
+                format!("moved '{}' to the recycle bin", path)
+            }
+            shell_ops::Recycled::Permanently => {
+                // No disk entry: an "unrecycle" that cannot work is worse than no undo at
+                // all, and the message is the only honest thing left to give.
+                format!(
+                    "deleted '{}' for good — this drive's Recycle Bin would not take it",
+                    path
+                )
+            }
+        }
     } else {
         format!("removed the floatie; '{}' stays on disk", path)
     };
@@ -7066,7 +7798,184 @@ fn floaty_drag_to(id: String, x: f64, y: f64, app: AppHandle) -> DragOwner {
 /// The handover is the part that matters: the window the floatie left unmounts it and
 /// the one it entered mounts it, which only works because a record's owner is *derived*
 /// from its position rather than stored.
+/// The place a dragged floatie started from, until its drop is dealt with.
+///
+/// The record's own position cannot answer this: a drag writes it on every move — that is
+/// how the floatie follows the pointer — so by the time a drop happens the "before" has
+/// been overwritten many times over. Undo has to put the icon back on the spot the user
+/// took it from, which is what undoing a move means, so the first move of a drag is where
+/// it is remembered.
+static DRAG_ORIGIN: std::sync::Mutex<Option<(String, i32, i32)>> = std::sync::Mutex::new(None);
+
+/// Remember where this floatie was, once per drag.
+fn remember_drag_origin(app: &AppHandle, id: &str) {
+    let already = {
+        let slot = match DRAG_ORIGIN.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        slot.as_ref().is_some_and(|(oid, _, _)| oid == id)
+    };
+    if already {
+        return;
+    }
+    // read the position *before* taking the other lock: two locks held at once in two
+    // orders is how a deadlock gets written
+    let origin = {
+        let state = app.state::<AppState>();
+        let guard = match state.0.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.widgets.get(id).map(|rec| (rec.x, rec.y))
+    };
+    if let Some((x, y)) = origin {
+        let mut slot = match DRAG_ORIGIN.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = Some((id.to_string(), x, y));
+    }
+}
+
+/// Where the drag that is in flight started, for this id.
+fn drag_origin(id: &str) -> Option<(i32, i32)> {
+    let slot = match DRAG_ORIGIN.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    slot.as_ref()
+        .filter(|(oid, _, _)| oid == id)
+        .map(|(_, x, y)| (*x, *y))
+}
+
+/// A drag is over (dropped, merged, or abandoned): the remembered place is spent.
+fn forget_drag_origin(id: &str) {
+    let mut slot = match DRAG_ORIGIN.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if slot.as_ref().is_some_and(|(oid, _, _)| oid == id) {
+        *slot = None;
+    }
+}
+
+/// Does the remembered origin belong to this record? Only the one the drag moved.
+///
+/// A merge checkpoints two records — the dragged item and the folder it went into — and
+/// only the first of them moved. Writing the origin over both is what put a user's folder
+/// on the spot their file had come from, so the rule is a function with a test rather than
+/// a condition buried in a loop.
+fn origin_applies(dragged: &str, id: &str) -> bool {
+    dragged == id
+}
+
+/// A checkpoint that records *the dragged* record as it was before the drag.
+///
+/// `checkpoint` reads the live records, which after a drag is the place the drag left them
+/// in. Undo of a move has to land on the old place, so the remembered origin is written
+/// over that one record's position.
+///
+/// The id in `origin` matters: a merge checkpoints two records — the dragged item and the
+/// folder it went into — and only the first of them moved. Writing the origin over both put
+/// the folder on the dragged item's old spot, which is what a user sees as "undoing put my
+/// folder where the file was".
+fn checkpoint_with_origin(
+    app: &AppHandle,
+    label: &str,
+    ids: &[&str],
+    origin: Option<(&str, i32, i32)>,
+) {
+    let restore: Vec<undo::Restore> = {
+        let state = app.state::<AppState>();
+        let guard = match state.0.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        ids.iter()
+            .map(|id| undo::Restore {
+                id: (*id).to_string(),
+                record: guard.widgets.get(*id).map(|rec| {
+                    let mut value = serde_json::to_value(rec).unwrap_or(serde_json::Value::Null);
+                    // only the record the drag moved: the others keep their live position
+                    if let (Some((dragged, x, y)), Some(map)) = (origin, value.as_object_mut()) {
+                        if origin_applies(dragged, id) {
+                            map.insert("x".into(), serde_json::json!(x));
+                            map.insert("y".into(), serde_json::json!(y));
+                        }
+                    }
+                    value
+                }),
+            })
+            .collect()
+    };
+    undo::push(label, restore);
+}
+
+/// A gesture is starting: snapshot exactly the records it is about to move.
+///
+/// Called on pointerdown — the only moment the "before" exists, because a drag writes the
+/// record on every move. The rule this serves is at the top of `undo.rs`.
+#[tauri::command]
+fn floaty_gesture_begin(label: String, ids: Vec<String>, app: AppHandle) {
+    let restore: Vec<undo::Restore> = {
+        let state = app.state::<AppState>();
+        let guard = match state.0.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        ids.iter()
+            .map(|id| undo::Restore {
+                id: id.clone(),
+                record: guard.widgets.get(id).and_then(|rec| serde_json::to_value(rec).ok()),
+            })
+            .collect()
+    };
+    let label = if label.trim().is_empty() {
+        "move".to_string()
+    } else {
+        label.trim().to_string()
+    };
+    undo::begin_gesture(&label, restore);
+}
+
+/// The gesture is over: one step for what it actually changed, or no step at all.
+#[tauri::command]
+fn floaty_gesture_end(app: AppHandle) -> Option<String> {
+    let pushed = undo::commit_gesture(&|id| {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().ok()?;
+        guard.widgets.get(id).and_then(|rec| serde_json::to_value(rec).ok())
+    });
+    if let Some(label) = pushed.as_deref() {
+        persist(&app);
+        log_line(&app, &format!("gesture: '{label}' is undoable now"));
+    }
+    pushed
+}
+
+/// A drag that ended without a merge still moved a floatie: that is undoable too.
+fn record_move(app: &AppHandle, id: &str, origin: Option<(i32, i32)>) {
+    let Some((ox, oy)) = origin else {
+        return;
+    };
+    let now = {
+        let state = app.state::<AppState>();
+        let guard = match state.0.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.widgets.get(id).map(|rec| (rec.x, rec.y))
+    };
+    // a drop that landed where it started is not a change worth an undo step
+    if now.is_none() || now == Some((ox, oy)) {
+        return;
+    }
+    checkpoint_with_origin(app, "move", &[id], Some((id, ox, oy)));
+}
+
 fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Option<usize> {
+    remember_drag_origin(app, id);
     let list = screens(app);
     let (nx, ny) = (x.round(), y.round());
     let mut handover: Option<WidgetRecord> = None;
@@ -7215,15 +8124,46 @@ pub fn run() {
         // plugins through the widget api, so no notification permission reaches
         // any page.
         .plugin(tauri_plugin_notification::init())
+        // Updating in place: the manifest is signed and so is the payload, and the public
+        // key that checks both lives in `tauri.conf.json`. The private key is the user's
+        // (see the README) — nothing here can sign anything.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // The launcher hotkey. Registered and handled in Rust, so the palette page
         // needs no plugin permission to use it — and a press only shows a window,
         // which cannot fail in a way worth telling anyone about.
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        show_palette(app);
+                .with_handler(|app, shortcut, event| {
+                    if event.state != tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        return;
                     }
+                    // One handler for every global key floaty holds: the launcher's, and
+                    // the paste key.
+                    let is = |text: &str| {
+                        std::str::FromStr::from_str(text)
+                            .ok()
+                            .is_some_and(|key: tauri_plugin_global_shortcut::Shortcut| &key == shortcut)
+                    };
+                    if is(UNDO_ACCELERATOR) {
+                        // off the main thread: undo moves files
+                        let handle = app.clone();
+                        std::thread::spawn(move || undo_from_shortcut(&handle));
+                        return;
+                    }
+                    let paste = is(PASTE_ACCELERATOR);
+                    if paste {
+                        // off the main thread: the paste moves files and takes the
+                        // clipboard, neither of which belongs on the pumping thread
+                        let handle = app.clone();
+                        std::thread::spawn(move || {
+                            if let Err(why) = paste_at_cursor(&handle) {
+                                log_line(&handle, &format!("paste: {why}"));
+                            }
+                        });
+                        return;
+                    }
+                    show_palette(app);
                 })
                 .build(),
         )
@@ -7249,6 +8189,9 @@ pub fn run() {
             watch_display_by_callback(&handle);
             start_pump_watchdog();
             start_top_layer_watchdog();
+            // Get out of the way of a fullscreen app, and go quiet when nobody is here.
+            set_presence_rules(rules_from(&load_settings(&handle)));
+            start_presence_watch(handle.clone());
             log_line(&handle, "=== floaty starting ===");
             log_line(&handle, &format!("backend build {}", env!("FLOATY_BUILD_MARK")));
 
@@ -7495,6 +8438,14 @@ pub fn run() {
             floaty_palette_hide,
             floaty_show_palette,
             floaty_palette_state,
+            floaty_presence,
+            floaty_drop_paths,
+            floaty_clipboard_paste,
+            floaty_clipboard_copy,
+            floaty_gesture_begin,
+            floaty_gesture_end,
+            floaty_check_update,
+            floaty_install_update,
             floaty_open_with,
             floaty_reveal,
             floaty_properties,
@@ -7573,6 +8524,14 @@ mod tests {
 
     /// A settings file written before `start_on_boot` existed has to keep loading:
     /// the new field defaults to off, and everything the file did say survives.
+    #[test]
+    fn a_merge_undo_only_moves_the_record_that_was_dragged() {
+        // the folder the file went into did not move, so the remembered origin is not its
+        // to use: doing that is what "undoing put my folder where the file was" means
+        assert!(origin_applies("file-7", "file-7"));
+        assert!(!origin_applies("file-7", "folder-33"));
+    }
+
     #[test]
     fn an_old_settings_file_leaves_start_on_boot_off() {
         let old = r#"{ "gravity": 1200.0, "animated_ratio": 0.0, "stay_on_desktop": false }"#;

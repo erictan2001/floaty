@@ -220,9 +220,12 @@ const before = await source.session.evaluate(
    const r = l.find((x) => x.id === ${JSON.stringify(id)}); return r ? [r.x, r.y] : null;`,
 );
 // A merge is a real file move, so the undo stack is how this probe can tell that
-// dragging a floatie onto another screen did *not* quietly fold it into a folder.
+// dragging a floatie onto another screen did *not* quietly fold it into a folder. The
+// *label* matters, not the depth: a drag that merely moves something is undoable too, so a
+// deeper stack on its own means nothing (reading it as a merge is a false alarm this
+// probe has already raised once).
 const undoBefore = await source.session.evaluate(
-  `const s = await window.__TAURI_INTERNALS__.invoke("floaty_undo_state"); return s ? s.depth : 0;`,
+  `const s = await window.__TAURI_INTERNALS__.invoke("floaty_undo_state"); return s ? s.label : null;`,
 );
 if (!before) await skip(`no record ${id}`);
 
@@ -351,12 +354,12 @@ if (drawn.length === 1 && drawn[0] !== after?.screen) {
   problems.push(`drawn by the window on ${drawn[0]} but stored as being on ${after.screen}`);
 }
 const undoAfter = await source.session.evaluate(
-  `const s = await window.__TAURI_INTERNALS__.invoke("floaty_undo_state"); return s ? s.depth : 0;`,
+  `const s = await window.__TAURI_INTERNALS__.invoke("floaty_undo_state"); return s ? s.label : null;`,
 );
-if (undoAfter > undoBefore) {
+if (undoAfter === "merge" && undoBefore !== "merge") {
   problems.push(
-    `the drag ran a merge (undo stack ${undoBefore} → ${undoAfter}) — a real file was moved ` +
-      "by a drag that only meant to put the floatie on the other screen",
+    "the drag ran a merge — a real file was moved by a drag that only meant to put the " +
+      "floatie on the other screen",
   );
 }
 const errors = realErrors(source.session.errors);
@@ -367,7 +370,11 @@ const expected =
 if (problems.length) {
   await failed(
     `dragged ${id} from ${source.screen} to ${other.screen} and back (${expected})`,
-    [...problems, `measured: ${JSON.stringify(after)} drawn by ${drawn.join(", ") || "nobody"}`],
+    [
+      ...problems,
+      `measured: ${JSON.stringify(after)} drawn by ${drawn.join(", ") || "nobody"}`,
+      `the pointer left it at ${aim.back.expect.x},${aim.back.expect.y} on ${source.screen}`,
+    ],
   );
 }
 

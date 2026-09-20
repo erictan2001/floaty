@@ -8,6 +8,71 @@ use std::path::{Path, PathBuf};
 /// Move a file or directory to the Recycle Bin (undoable, exactly like
 /// deleting from Explorer). Falls back to an error the caller can surface.
 #[cfg(windows)]
+/// What actually happened to a recycled path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Recycled {
+    /// It is in a Recycle Bin, where it can be put back.
+    ToBin,
+    /// Windows deleted it outright. `FOF_ALLOWUNDO` *asks* for the bin; it does not
+    /// promise one, and a CI runner, a session with no shell, or a volume whose bin is
+    /// disabled or too small all answer by deleting for good. Reporting that as
+    /// "recycled" is how a removal feature quietly becomes a shredder.
+    Permanently,
+}
+
+/// Is this path in a Recycle Bin right now? The same lookup `restore_from_bin` does.
+#[cfg(windows)]
+fn in_bin(path: &str) -> bool {
+    bin_entries()
+        .iter()
+        .any(|(_, _, original, _)| same_path(original, path))
+}
+
+/// Does this machine's Recycle Bin keep what it is given? Asked, not assumed.
+///
+/// A CI runner (no shell session, no per-volume bin), a volume with the bin disabled,
+/// and a file too large for the bin all answer by deleting outright, whatever
+/// `FOF_ALLOWUNDO` asks for. The bin-dependent tests would then fail for a reason that
+/// is not the app's fault — which is exactly what happened on the Windows runner.
+#[cfg(all(test, windows))]
+pub(crate) fn bin_takes_files(dir: &Path) -> bool {
+    let probe = dir.join("floaty-bin-probe.txt");
+    if std::fs::write(&probe, b"probe").is_err() {
+        return false;
+    }
+    let text = probe.to_string_lossy().to_string();
+    let took_it = recycle(&probe).is_ok() && in_bin(&text);
+    if took_it {
+        // put the bin back as it was found
+        let _ = restore_from_bin(&text);
+    }
+    let _ = std::fs::remove_file(&probe);
+    took_it
+}
+
+/// Recycle a path and say which of the two things happened.
+#[cfg(windows)]
+pub fn recycle_checked(path: &Path) -> Result<Recycled, String> {
+    recycle(path)?;
+    let text = path.to_string_lossy().to_string();
+    // The bin's index is written by the shell, and not always before the operation
+    // returns: a file that turns up in a moment has not been deleted for good.
+    for attempt in 0..6 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        if in_bin(&text) {
+            return Ok(Recycled::ToBin);
+        }
+    }
+    Ok(Recycled::Permanently)
+}
+
+#[cfg(not(windows))]
+pub fn recycle_checked(_path: &Path) -> Result<Recycled, String> {
+    Err("recycling is windows-only".into())
+}
+
 pub fn recycle(path: &Path) -> Result<(), String> {
     use windows::Win32::UI::Shell::{
         SHFileOperationW, SHFILEOPSTRUCTW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI,
@@ -434,11 +499,16 @@ mod tests {
     #[cfg(windows)]
     fn a_recycled_directory_comes_back_with_its_contents() {
         let dir = temp_dir("restore-dir");
+        if !bin_takes_files(&dir) {
+            eprintln!("skipped: this machine's Recycle Bin does not keep recycled folders");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
         let folder = dir.join("Grouped");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("inside.txt"), b"still here").unwrap();
 
-        recycle(&folder).unwrap();
+        assert_eq!(recycle_checked(&folder).unwrap(), Recycled::ToBin);
         assert!(!folder.exists());
 
         restore_from_bin(&folder.to_string_lossy()).expect("the bin should hold the folder");
@@ -457,10 +527,19 @@ mod tests {
     #[cfg(windows)]
     fn a_recycled_file_can_be_put_back() {
         let dir = temp_dir("restore");
+        if !bin_takes_files(&dir) {
+            eprintln!("skipped: this machine's Recycle Bin does not keep recycled files");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
         let victim = dir.join("throwaway-restore.txt");
         std::fs::write(&victim, b"put me back").unwrap();
 
-        recycle(&victim).expect("shell delete should succeed");
+        assert_eq!(
+            recycle_checked(&victim).expect("shell delete should succeed"),
+            Recycled::ToBin,
+            "the probe said this bin keeps files, so this one has to be in it"
+        );
         assert!(!victim.exists());
 
         restore_from_bin(&victim.to_string_lossy()).expect("the bin should hold it");
