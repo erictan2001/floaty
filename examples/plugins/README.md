@@ -7,9 +7,8 @@ read.
 
 | Example | What it is | What it is worth reading for |
 | --- | --- | --- |
-| [countdown](countdown) | a widget that keeps to itself: counts down to a date you pick | a whole widget in ~150 commented lines — state in the record, a self-cleaning timer, and the standard drag / menu / resize affordances |
+| [countdown](countdown) | a widget that keeps to itself: counts down to a moment you name and pick | a whole widget in ~200 commented lines — two fields edited in place (a text field and a date picker, with the focus rules between them written out), state in the record, a timer floaty owns (`api.every`), and the standard drag / menu / resize affordances |
 | [trail](trail) | a widget that acts on the desktop: draw a path and the floaties line up along it | the harder half — taking the mouse away from the desktop, moving *other* widgets, and arrangements you can save and load back |
-| [reminder](reminder) | a widget that speaks up: shows the next reminder and raises a Windows notification when it is due | the `"apiVersion": 2` members — `api.notify`, `api.every` / `api.after` (timers the widget owns) and `api.on(id, "display", …)` to catch up after the screen was off — with the once-per-occurrence guard written out |
 
 ## Installing one
 
@@ -46,12 +45,12 @@ object `mount(root, id, api)` is handed, which is the surface documented in
   their own.
 - **The standard affordances** — `api.enableDrag`, `api.addPinMenu`,
   `api.addResizeHandle`: what every floatie has, added in three lines each.
-- **The `"apiVersion": 2` members** (reminder) — `api.notify` for a Windows
-  notification, `api.every` / `api.after` for repeating and one-shot timers the
-  widget owns (floaty clears them when it goes, so there is no reaper interval to
-  write), and `api.on(id, event, …)` for floaty's own events, `"display"` among
-  them. A manifest that says `2` gets them; one that says `1` still loads and
-  gets none of them.
+- **The `"apiVersion": 2` members** (countdown) — `api.every` for a timer the
+  widget owns (floaty clears it when the widget goes, so there is no reaper
+  interval to write — and no timer left behind if the overlay unmounts the widget
+  without telling the module). `api.after`, `api.notify` and `api.on(id, event, …)`
+  are the one-shot, notification and event parts of the same set. A manifest that
+  says `2` gets them; one that says `1` still loads and gets none of them.
 - **Acting on other floaties** (trail) — `api.invoke("floaty_list")` to read the
   desktop, `api.setPos` / `api.record.save` to move an item and keep its record
   in step, and `floaty_refresh` to make the ones already on screen re-read their

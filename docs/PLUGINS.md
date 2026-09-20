@@ -226,7 +226,7 @@ it simply does not see these.
 
 `id` is the widget record id you were mounted with — the same one
 `api.record.load` takes. Every timer and listener is keyed by it.
-`examples/plugins/reminder` shows the whole set in use.
+`examples/plugins/countdown` shows `api.every` in use.
 
 The events are floaty's own, not a private channel between plugins: `"settings"`
 (the settings changed), `"widget-updated"` (a record was rewritten — a rename on
