@@ -963,18 +963,17 @@ export function enableOverlayDrag(
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
-        // One step for the gesture, if it changed anything at all.
-        void invoke("floaty_gesture_end").catch(() => undefined);
-        try {
-          (el.ownerDocument?.body ?? el).releasePointerCapture?.(e.pointerId);
-        } catch {
-          /* never captured */
-        }
         // One last placement, so a drop just past the edge still lands on the screen the
         // pointer is on rather than on the last position the moves saw. The coordinates
         // must come from the release (or the last move), never from `e` — `e` is the
         // pointerdown this handler closed over, so using it placed every panel back where
         // the drag began.
+        //
+        // It has to happen *before* the gesture ends. The backend re-homes a widget the
+        // release left on no screen, and a placement arriving after the commit writes the
+        // off-screen position straight back on top of the repair: the log says "brought
+        // back" and the widget is still gone. Placing first also puts this last position
+        // inside the gesture, so the one undo step holds it.
         if (active) {
           const at = up ?? lastMove ?? e;
           const spot = pointerPhysical({ clientX: at.clientX, clientY: at.clientY });
@@ -986,6 +985,13 @@ export function enableOverlayDrag(
               y: want.y - grab.dy,
             }).catch(() => undefined);
           }
+        }
+        // One step for the gesture, if it changed anything at all.
+        void invoke("floaty_gesture_end").catch(() => undefined);
+        try {
+          (el.ownerDocument?.body ?? el).releasePointerCapture?.(e.pointerId);
+        } catch {
+          /* never captured */
         }
         if (active) {
           notifyDragging(false);
