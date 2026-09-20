@@ -61,7 +61,13 @@ export const STUB = `(() => {
       }
       case "floaty_palette_run": return { note: "" };
       case "floaty_palette_hide": return null;
-      case "plugin:event|listen": return 1;
+      case "plugin:event|listen": {
+        // The harness fires these itself — this is how the palette gets summoned — so
+        // remember which callback the page handed over for each event name.
+        const id = Number(args?.handler);
+        if (Number.isFinite(id) && typeof args?.event === "string") listeners.set(args.event, id);
+        return Number.isFinite(id) ? id : 1;
+      }
       case "plugin:event|emit": return null;
       case "plugin:event|emit_to": return null;
       case "floaty_log": return null;
@@ -70,7 +76,16 @@ export const STUB = `(() => {
     }
   };
   const callbacks = new Map();
+  const listeners = new Map();
   let nextCb = 1;
+  /** Deliver a Tauri event the way the backend does: { event, id, payload }. */
+  window.__FIRE__ = (event, payload) => {
+    const id = listeners.get(event);
+    const cb = id === undefined ? undefined : callbacks.get(id);
+    if (typeof cb !== "function") return false;
+    cb({ event, id, payload });
+    return true;
+  };
   // every call with its arguments, not just its name: what a run was handed is
   // the assertion, and the command name alone cannot say it
   window.__CALLS__ = [];
@@ -311,6 +326,31 @@ try {
     `selected=${narrowed.selected} marked=${narrowed.marked}`,
   );
 
+  // Summoning the palette again is not a remount: the window is shown, the page has to ask
+  // again. This is the bug that shipped — `blank()` emptied the list and nothing refilled
+  // it, so the palette opened empty and stayed empty until the first keystroke.
+  const fired = await session.evaluate(`window.__FIRE__("floaty-palette-shown", {})`);
+  await wait(400);
+  const summoned = await session.evaluate(MEASURE);
+  check(
+    "summoning the palette shows every row again without typing",
+    summoned.input === "" && summoned.titles.join(" | ") === HITS.map((h) => h.title).join(" | "),
+    `fired=${fired} input=${JSON.stringify(summoned.input)} rows=${summoned.titles.length}`,
+  );
+  check(
+    "the summon asked the backend for the empty query again",
+    lastSearch(summoned)?.args?.query === "" && of(summoned, "floaty_palette_search").length > of(narrowed, "floaty_palette_search").length,
+    JSON.stringify(lastSearch(summoned)?.args ?? null),
+  );
+  check(
+    "the summoned list starts on its first row, focused",
+    summoned.selected === 0 && summoned.marked === 1 && summoned.focused,
+    `selected=${summoned.selected} marked=${summoned.marked} focused=${summoned.focused}`,
+  );
+
+  await press("ctrl+a");
+  await session.send("Input.insertText", { text: "arc" });
+  await wait(400);
   await press("enter");
   await wait(300);
   const ran = await session.evaluate(MEASURE);
