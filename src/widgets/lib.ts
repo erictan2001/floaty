@@ -469,10 +469,19 @@ export function presenceIsQuiet(): boolean {
 function followPresence(): void {
   if (presenceWatched) return;
   presenceWatched = true;
-  void listen<{ quiet?: boolean; hidden?: boolean; reason?: string | null }>(
-    "floaty-presence",
-    (e) => {
-      const quiet = e.payload?.quiet === true;
+  void listen<{
+    quiet?: boolean;
+    hidden?: boolean;
+    reason?: string | null;
+    machine?: { quiet?: boolean; hidden?: boolean };
+  }>("floaty-presence", (e) => {
+      // What a page acts on is the *machine's* answer, not its own screen's. The audio
+      // capture and the motion are shared, and the state arrives per screen: a screen
+      // covered by a fullscreen app is quiet on its own, so acting on that stopped the
+      // capture for every screen — the visualizer on the screen that was still showing went
+      // dead, and nothing started it again, because the machine had never gone quiet.
+      // The screen's own answer is still in the payload for anything that wants it.
+      const quiet = e.payload?.machine?.quiet ?? e.payload?.quiet === true;
       if (quiet === presenceQuiet) return;
       presenceQuiet = quiet;
       // The bob is a CSS animation, so going quiet is a class change — and coming back
@@ -481,8 +490,13 @@ function followPresence(): void {
         applyFloatieAnimation(slot.element, slot.id, { x: slot.x, y: slot.y });
       }
       // Widgets that do their own work while nobody is watching (the visualizer's
-      // capture, a plugin's poll) get the same signal they can act on.
-      window.dispatchEvent(new CustomEvent("floaty-presence", { detail: e.payload }));
+      // capture, a plugin's poll) get the same signal they can act on — with the machine's
+      // answer as `quiet`, so a plugin does not have to know which screen it is on.
+      window.dispatchEvent(
+        new CustomEvent("floaty-presence", {
+          detail: { ...e.payload, quiet, screenQuiet: e.payload?.quiet === true },
+        }),
+      );
     },
   ).catch(() => undefined);
 }
@@ -870,15 +884,10 @@ export function enableOverlayDrag(
       // Announced before the first move: this is the snapshot of where the widget was,
       // and after one move it would be the place the drag had already taken it to.
       void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
-      // Capture on the body, not on the widget: the widget's slot is removed from the
-      // DOM the moment the pointer crosses onto another screen (that window owns it
-      // now), and capture on a removed element stops delivering moves — the drag would
-      // freeze at the boundary. The body is always there.
-      try {
-        (el.ownerDocument?.body ?? el).setPointerCapture(e.pointerId);
-      } catch {
-        /* a browser without pointer capture: the drag still works inside the window */
-      }
+      // The pointer capture is taken on the first move, not here — see `onMove`. Taking it
+      // now would move the browser's `click` target up to the body (the common ancestor of
+      // a captured down and up), and the widget's own click action would never fire: the
+      // countdown would not open its date picker, the visualizer would not cycle modes.
       const startX = slot.x;
       const startY = slot.y;
       const startSX = e.clientX;
@@ -906,6 +915,18 @@ export function enableOverlayDrag(
         if (!active) {
           if (Math.abs(dx) < threshold && Math.abs(dy) < threshold) return;
           active = true;
+          // This is the moment a drag starts, and so the moment to capture the pointer: on
+          // the *body*, not on the widget, because the widget's slot is removed from the DOM
+          // when the drag crosses onto another screen (that window owns it now) and capture
+          // on a removed element stops delivering moves — the drag would freeze at the
+          // boundary. Doing it here rather than at pointerdown is what keeps a tap
+          // clickable: while the capture is held, `click` is fired at the capturing element,
+          // so the widget under the pointer never sees it.
+          try {
+            (el.ownerDocument?.body ?? el).setPointerCapture(ev.pointerId);
+          } catch {
+            /* a browser without pointer capture: the drag still works inside the window */
+          }
           window.addEventListener("click", swallowClick, true);
           notifyDragging(true);
         }

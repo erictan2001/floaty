@@ -354,8 +354,15 @@ even columns — a mid-screen slot for an icon that falls would be a place it le
 the moment it was mounted again. Panels and notes keep their places and the grid
 lays itself around them. **Ctrl+Alt+Z** from anywhere, or the undo button in the
 General tab, puts back the last change: a removed floatie, a recycled file (out of
-the Recycle Bin, by name), an ungroup, a grouping, or a tidy. The stack holds the
-last sixteen changes of the running session; nothing is written to disk for it.
+the Recycle Bin, by name), an ungroup, a grouping, or a tidy. **Ctrl+Shift+Z** — or
+the redo button beside it — replays an undone change, files and all: the same file
+goes back into the same folder, and nothing else moves. Both stacks hold the last
+sixteen changes of the running session; nothing is written to disk for them.
+
+Both keys are *global*, so floaty takes them from every other application while it
+is running. That is the price of the desktop never taking focus: a window that must
+not steal focus cannot see a keystroke of its own, so the only way it can hear one is
+to claim it from the OS. The launcher's key is configurable; these two are not.
 
 Right-click any floatie for its menu: pin on top (a real second layer, above all
 normal windows, persisted per widget), or remove it. "Stay on the desktop"
@@ -523,7 +530,8 @@ src-tauri/src/
   screens.rs    the monitors in both spaces (physical and logical) and the mapping
   diagnostics.rs the log (rotation, tail, sizes) and the report the pane renders
   icons.rs      stored icons: files named by content, and the urls that point at them
-  undo.rs       what the last few changes were, so one press can put them back
+  undo.rs       what the last few changes were, so one press can put them back — and
+                what they left behind, so the next press can replay them
   fs_watch.rs   the root-folder watcher
   audio.rs      WASAPI loopback capture for the visualizer
   sysmon.rs     CPU / GPU / RAM sampling

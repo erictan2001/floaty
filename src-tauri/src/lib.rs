@@ -888,6 +888,10 @@ async fn floaty_install_update(app: AppHandle) -> Result<String, String> {
 /// global key, beside the launcher's and the paste key's.
 const UNDO_ACCELERATOR: &str = "Ctrl+Alt+Z";
 
+/// The key that replays an undone change. Same reasoning as the undo key, same modifier
+/// family: a global shortcut has to be one no other application expects to keep.
+const REDO_ACCELERATOR: &str = "Ctrl+Shift+Z";
+
 /// Undo the last change, driven by the shortcut rather than a page.
 fn undo_from_shortcut(app: &AppHandle) {
     match tauri::async_runtime::block_on(floaty_undo(app.clone())) {
@@ -899,6 +903,20 @@ fn undo_from_shortcut(app: &AppHandle) {
             ),
         ),
         Err(why) => log_line(app, &format!("undo: {why}")),
+    }
+}
+
+/// Redo the last undone change, driven by the shortcut rather than a page.
+fn redo_from_shortcut(app: &AppHandle) {
+    match tauri::async_runtime::block_on(floaty_redo(app.clone())) {
+        Ok(report) => log_line(
+            app,
+            &format!(
+                "redo: '{}' ({} left to redo)",
+                report.label, report.remaining
+            ),
+        ),
+        Err(why) => log_line(app, &format!("redo: {why}")),
     }
 }
 
@@ -5665,7 +5683,7 @@ fn floaty_dropped_inner(
     }) {
         // The folder is new on disk, so undoing this grouping has to take it
         // away again — after the items inside it have been moved back out.
-        undo::add_disk(undo::DiskOp::discard(&dir.to_string_lossy()));
+        undo::add_disk(undo::DiskOp::discard_dir(&dir.to_string_lossy()));
         let sources = [titem.target.clone(), dragged.target.clone()];
         let mut placed: Vec<FolderItem> = Vec::new();
         let mut moved: Vec<(String, String)> = Vec::new();
@@ -7120,6 +7138,61 @@ fn step_changes_anything(guard: &StoreData, step: &undo::Step) -> bool {
     })
 }
 
+/// Apply one thing an action did to the disk, *forward* — what a redo does.
+///
+/// The mirror of `reverse_disk`, and the two share their operations: a `Move` applies
+/// `from` -> `to` here and `to` -> `from` there, so a step means the same thing in both
+/// directions and only the way it is applied differs.
+fn apply_disk(op: &undo::DiskOp) -> Result<String, String> {
+    match op.action {
+        undo::DiskAction::Unrecycle => {
+            let path = std::path::Path::new(&op.from);
+            if !path.exists() {
+                return Err(format!("'{}' is not there to remove again", op.from));
+            }
+            match shell_ops::recycle_checked(path) {
+                Ok(shell_ops::Recycled::ToBin) => Ok(format!("'{}' to the Recycle Bin", op.from)),
+                // The shell silently hard-deletes where there is no usable bin, so say what
+                // actually happened rather than claiming a bin move (see `shell_ops::recycle`).
+                Ok(shell_ops::Recycled::Permanently) => Ok(format!(
+                    "'{}' deleted again (this machine has no usable Recycle Bin)",
+                    op.from
+                )),
+                Err(err) => Err(format!("'{}': {err}", op.from)),
+            }
+        }
+        undo::DiskAction::Move => {
+            let from = std::path::Path::new(&op.from);
+            let to = std::path::Path::new(&op.to);
+            if !from.exists() {
+                return Err(format!("'{}' is not there to move", op.from));
+            }
+            if to.exists() {
+                return Err(format!("'{}' is in the way", op.to));
+            }
+            std::fs::rename(from, to).map_err(|e| format!("'{}' -> '{}': {e}", op.from, op.to))?;
+            Ok(format!("'{}' -> '{}'", op.from, op.to))
+        }
+        undo::DiskAction::Discard => {
+            // The action created this, so redo has to make it again. Only a directory can be
+            // made again: a shortcut floaty wrote into a folder has no stored target, and
+            // inventing one would put the wrong file on the desktop.
+            let path = std::path::Path::new(&op.from);
+            if path.exists() {
+                return Ok(format!("'{}' is there again already", op.from));
+            }
+            if !op.dir {
+                return Err(format!(
+                    "'{}' cannot be made again: floaty wrote it as a shortcut or a copy, and only the folder a grouping makes can be rebuilt",
+                    op.from
+                ));
+            }
+            std::fs::create_dir_all(path).map_err(|e| format!("'{}': {e}", op.from))?;
+            Ok(format!("'{}' made again", op.from))
+        }
+    }
+}
+
 /// Reverse one thing an action did to the disk.
 fn reverse_disk(op: &undo::DiskOp) -> Result<String, String> {
     match op.action {
@@ -7159,6 +7232,89 @@ fn reverse_disk(op: &undo::DiskOp) -> Result<String, String> {
     }
 }
 
+/// The records a step names, as they are right now.
+///
+/// This is what the *other* direction has to restore: a step holds the state it goes to, so
+/// the inverse of a step is the state it finds.
+fn live_record(app: &AppHandle) -> impl Fn(&str) -> Option<serde_json::Value> + '_ {
+    move |id: &str| {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .widgets
+            .get(id)
+            .and_then(|rec| serde_json::to_value(rec).ok())
+    }
+}
+
+/// Put a step's records into the store: the ones it names come back, the ones it created go
+/// away. Returns how many of each, and the ids to re-emit whether they exist now or not.
+///
+/// Shared by undo and redo, because a step means the same thing in both directions — only
+/// the state it carries differs.
+fn apply_step_records(app: &AppHandle, step: &undo::Step) -> (usize, usize, Vec<String>) {
+    let mut restored = 0usize;
+    let mut removed = 0usize;
+    let mut touched: Vec<String> = Vec::new();
+    {
+        let state = app.state::<AppState>();
+        let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        for entry in &step.restore {
+            match &entry.record {
+                Some(json) => match serde_json::from_value::<WidgetRecord>(json.clone()) {
+                    Ok(rec) => {
+                        // A restored record has to be allowed to live again: the tombstone
+                        // is there to stop dying windows from resurrecting a removed
+                        // widget, and this one is not dying, it is coming home.
+                        guard.dead.remove(&rec.id);
+                        guard.widgets.insert(rec.id.clone(), rec);
+                        restored += 1;
+                        touched.push(entry.id.clone());
+                    }
+                    Err(err) => log_line(
+                        app,
+                        &format!("step: {} could not be read back: {err}", entry.id),
+                    ),
+                },
+                None => {
+                    if guard.widgets.remove(&entry.id).is_some() {
+                        removed += 1;
+                    }
+                    guard.dead.insert(entry.id.clone());
+                    touched.push(entry.id.clone());
+                }
+            }
+        }
+    }
+    (restored, removed, touched)
+}
+
+/// Rebuild exactly what changed. A remount covers both cases — a widget that was never on
+/// screen and one that is, since the page unmounts first — and a folder takes its item list
+/// with it.
+fn emit_step_changes(app: &AppHandle, touched: &[String]) {
+    let (now_here, now_gone): (Vec<WidgetRecord>, Vec<String>) = {
+        let state = app.state::<AppState>();
+        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        touched.iter().fold(
+            (Vec::new(), Vec::new()),
+            |(mut here, mut gone), id| {
+                match guard.widgets.get(id).cloned() {
+                    Some(rec) => here.push(rec),
+                    None => gone.push(id.clone()),
+                }
+                (here, gone)
+            },
+        )
+    };
+    for rec in &now_here {
+        app.emit("floaty-widget-updated", rec).ok();
+    }
+    for id in &now_gone {
+        hide_widget(app, id);
+    }
+}
+
 /// Undo the last change: the records, and the files they stand for.
 ///
 /// The files go first. If one of them cannot be put back — the Recycle Bin was
@@ -7183,6 +7339,11 @@ async fn floaty_undo(app: AppHandle) -> Result<undo::UndoReport, String> {
             }
         }
 
+        // The state this undo is about to overwrite is the "after" of the action being
+        // undone, and this is the only moment it exists: nothing recorded it when the action
+        // ran. It becomes the step that redoes this one.
+        let forward = undo::inverse_of(&step, &live_record(&app));
+
         let mut files: Vec<String> = Vec::new();
         for op in step.disk.iter().rev() {
             match reverse_disk(op) {
@@ -7195,65 +7356,12 @@ async fn floaty_undo(app: AppHandle) -> Result<undo::UndoReport, String> {
             }
         }
 
-        let mut restored = 0usize;
-        let mut removed = 0usize;
-        let mut touched: Vec<String> = Vec::new();
-        {
-            let state = app.state::<AppState>();
-            let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
-            for entry in &step.restore {
-                match &entry.record {
-                    Some(json) => match serde_json::from_value::<WidgetRecord>(json.clone()) {
-                        Ok(rec) => {
-                            // A restored record has to be allowed to live again:
-                            // the tombstone is there to stop dying windows from
-                            // resurrecting a removed widget, and this one is not
-                            // dying, it is coming home.
-                            guard.dead.remove(&rec.id);
-                            guard.widgets.insert(rec.id.clone(), rec);
-                            restored += 1;
-                            touched.push(entry.id.clone());
-                        }
-                        Err(err) => log_line(
-                            &app,
-                            &format!("undo: {} could not be read back: {err}", entry.id),
-                        ),
-                    },
-                    None => {
-                        if guard.widgets.remove(&entry.id).is_some() {
-                            removed += 1;
-                        }
-                        guard.dead.insert(entry.id.clone());
-                        touched.push(entry.id.clone());
-                    }
-                }
-            }
-        }
+        let (restored, removed, touched) = apply_step_records(&app, &step);
         persist(&app);
-
-        // Rebuild exactly what changed. A remount covers both cases — a widget
-        // that was never on screen and one that is, since the page unmounts
-        // first — and a folder takes its item list with it.
-        let (now_here, now_gone): (Vec<WidgetRecord>, Vec<String>) = {
-            let state = app.state::<AppState>();
-            let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
-            touched.iter().fold(
-                (Vec::new(), Vec::new()),
-                |(mut here, mut gone), id| {
-                    match guard.widgets.get(id).cloned() {
-                        Some(rec) => here.push(rec),
-                        None => gone.push(id.clone()),
-                    }
-                    (here, gone)
-                },
-            )
-        };
-        for rec in &now_here {
-            app.emit("floaty-widget-updated", rec).ok();
-        }
-        for id in &now_gone {
-            hide_widget(&app, id);
-        }
+        emit_step_changes(&app, &touched);
+        // Only after the work succeeded: a redo that could not finish leaves the future
+        // unreachable rather than half-applied.
+        undo::push_redo(forward);
 
         let remaining = undo::depth();
         log_line(
@@ -7279,12 +7387,87 @@ async fn floaty_undo(app: AppHandle) -> Result<undo::UndoReport, String> {
     }
 }
 
-/// What the next undo would reverse, for the settings window's button.
+/// What the next undo would reverse — and what the next redo would replay — for the
+/// settings window's buttons.
 #[tauri::command]
 fn floaty_undo_state() -> undo::UndoState {
     undo::UndoState {
         depth: undo::depth(),
         label: undo::last_label(),
+        redo_depth: undo::redo_depth(),
+        redo_label: undo::redo_label(),
+    }
+}
+
+/// Redo the last undone change: the files and the records, forward.
+///
+/// The mirror of `floaty_undo`, sharing both of its pieces: `apply_disk` the other way
+/// round, and a step whose records are the state the action left behind — written by the
+/// undo, because that is the only moment it exists. A new action clears the future
+/// (`undo::push`), so a redo can never replay a step built on records that have since
+/// changed.
+#[tauri::command]
+async fn floaty_redo(app: AppHandle) -> Result<undo::UndoReport, String> {
+    loop {
+        let Some(step) = undo::pop_redo() else {
+            return Err("nothing left to redo".into());
+        };
+        {
+            let state = app.state::<AppState>();
+            let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            if !step_changes_anything(&guard, &step) {
+                log_line(
+                    &app,
+                    &format!("redo: '{}' would change nothing; skipped", step.label),
+                );
+                continue;
+            }
+        }
+
+        // What this redo overwrites is the "before" of the action, and it goes back on the
+        // undo stack — the two keys trade the same step back and forth.
+        let back = undo::inverse_of(&step, &live_record(&app));
+
+        let mut files: Vec<String> = Vec::new();
+        // Forward order, which is what the action did: the folder a grouping made is created
+        // before the items move into it (the undo walks the same list backwards).
+        for op in step.disk.iter() {
+            match apply_disk(op) {
+                Ok(what) => files.push(what),
+                Err(err) => {
+                    log_line(&app, &format!("redo: '{}' FAILED: {err}", step.label));
+                    undo::restore_redo_top(step);
+                    return Err(err);
+                }
+            }
+        }
+
+        let (restored, removed, touched) = apply_step_records(&app, &step);
+        persist(&app);
+        emit_step_changes(&app, &touched);
+        undo::push_from_redo(back);
+
+        let remaining = undo::redo_depth();
+        log_line(
+            &app,
+            &format!(
+                "redo: '{}' — {restored} record(s) back, {removed} removed, {} file move(s){}; {remaining} left to redo",
+                step.label,
+                files.len(),
+                if files.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", files.join("; "))
+                },
+            ),
+        );
+        return Ok(undo::UndoReport {
+            label: step.label,
+            restored,
+            removed,
+            files,
+            remaining,
+        });
     }
 }
 
@@ -8256,6 +8439,12 @@ pub fn run() {
                         std::thread::spawn(move || undo_from_shortcut(&handle));
                         return;
                     }
+                    if is(REDO_ACCELERATOR) {
+                        // off the main thread, for the same reason
+                        let handle = app.clone();
+                        std::thread::spawn(move || redo_from_shortcut(&handle));
+                        return;
+                    }
                     let paste = is(PASTE_ACCELERATOR);
                     if paste {
                         // off the main thread: the paste moves files and takes the
@@ -8536,6 +8725,7 @@ pub fn run() {
             floaty_remove,
             floaty_delete,
             floaty_undo,
+            floaty_redo,
             floaty_undo_state,
             floaty_undo_checkpoint,
             floaty_palette_search,

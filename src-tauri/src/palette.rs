@@ -230,6 +230,7 @@ pub fn register_shortcut(app: &AppHandle, accelerator: &str) -> Result<(), Strin
     for (key, what) in [
         (crate::PASTE_ACCELERATOR, "clipboard"),
         (crate::UNDO_ACCELERATOR, "undo"),
+        (crate::REDO_ACCELERATOR, "redo"),
     ] {
         if let Ok(shortcut) = tauri_plugin_global_shortcut::Shortcut::from_str(key) {
             if let Err(e) = app.global_shortcut().register(shortcut) {
