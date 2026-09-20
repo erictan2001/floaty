@@ -9,11 +9,22 @@
  */
 import { APP_PORT, Session, listTargets } from "./cdp.mjs";
 
-const id = process.argv[2];
+let id = process.argv[2];
 const port = Number(process.argv[3] ?? APP_PORT);
-if (!id) {
-  console.error("usage: node panel-drag.mjs <id> [port]");
-  process.exit(2);
+if (!id || id.startsWith("--")) {
+  // No id: take the first panel. The snap-back was panel-only, so a panel is the point.
+  const probe = await Session.open(port, "#/overlay", 0);
+  const panel = await probe.evaluate(`const l = await window.__TAURI_INTERNALS__.invoke("floaty_list");
+    const kinds = ["sysmon", "clock", "visualizer", "pet", "note"];
+    const p = l.find(r => kinds.includes(r.kind));
+    return p ? p.id : null;`);
+  await probe.close();
+  if (!panel) {
+    console.error("panel-drag: no panel on this desktop (sysmon, clock, note, visualizer or pet)");
+    process.exit(2);
+  }
+  id = panel;
+  console.log(`panel-drag: picked ${id}`);
 }
 
 const targets = (await listTargets(port)).filter(
@@ -45,11 +56,20 @@ const at = () =>
   session.evaluate(`const r = (await window.__TAURI_INTERNALS__.invoke("floaty_list")).find(x => x.id === ${JSON.stringify(id)});
     return r ? [r.x, r.y] : null;`);
 
+// Grab it where a person would: a panel with a title bar is dragged by the bar (the middle
+// of a note is its text area, and dragging text must not move the note — the app is right
+// to refuse, and a probe that grabs the middle proves nothing).
 const box = await session.evaluate(`(() => {
   const el = document.getElementById("slot-" + ${JSON.stringify(id)});
-  const r = el.getBoundingClientRect();
-  return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+  const target = el.querySelector(".bar") ?? el;
+  const r = target.getBoundingClientRect();
+  return {
+    x: Math.round(r.x + r.width / 2),
+    y: Math.round(r.y + r.height / 2),
+    grabbed: target === el ? "the panel" : "its title bar",
+  };
 })()`);
+console.log(`grabbing ${box.grabbed}`);
 
 const before = await at();
 console.log(`${id} before: ${before}`);

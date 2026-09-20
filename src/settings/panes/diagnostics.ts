@@ -94,8 +94,18 @@ interface DiagnosticsReport {
 }
 
 /** The state `floaty_presence` returns: why the desktop is hidden or quiet right now. */
+interface PresenceScreen {
+  /** The desktop layer's label — `desktop-overlay`, `desktop-overlay-1`, … */
+  label: string;
+  /** The monitor's own name, when the label maps to one. */
+  screen: string | null;
+  hidden: boolean;
+  quiet: boolean;
+  reason: string | null;
+}
+
 interface PresenceReport {
-  /** The desktop is off screen, because a fullscreen app is in front. */
+  /** Hidden on *any* screen — `screens` says which. */
   hidden: boolean;
   /** The floaties stay put, but stop animating and pause the audio capture. */
   quiet: boolean;
@@ -108,6 +118,8 @@ interface PresenceReport {
   foreground_shell: boolean;
   /** ...or one of floaty's own windows, which is also never a reason to hide. */
   foreground_ours: boolean;
+  /** One entry per desktop layer: the decision is per screen, because the windows are. */
+  screens: PresenceScreen[];
   hide_in_fullscreen: boolean;
   quiet_when_idle: boolean;
   /** How long "a while" is, in minutes; 0 means never. */
@@ -269,10 +281,17 @@ function presenceSection(presence: PresenceReport | null | undefined): HTMLEleme
     );
     return section.root;
   }
+  const screens = presence.screens ?? [];
+  const hiddenCount = screens.filter((s) => s.hidden).length;
   const state = presence.hidden ? "hidden" : presence.quiet ? "quiet" : "normal";
   const facts = card(true);
   facts.append(
-    row("state", state),
+    // Each screen decides for itself, so "hidden" on a two-screen desktop is only half the
+    // story: say how much of the desktop went away.
+    row(
+      "state",
+      hiddenCount > 0 && screens.length > 1 ? `${state} (${hiddenCount} of ${screens.length} screens)` : state,
+    ),
     row("reason", presence.reason ?? "none"),
     // "2m 14s" reads; a millisecond count does not.
     row("idle", uptime(presence.idle_ms)),
@@ -282,6 +301,19 @@ function presenceSection(presence: PresenceReport | null | undefined): HTMLEleme
     row("idle after", presence.idle_minutes === 0 ? "never" : `${presence.idle_minutes} min`),
   );
   section.body.append(facts);
+  // One line per desktop layer. A fullscreen app on one screen takes that screen's desktop
+  // away and leaves every other screen alone, so this is the field that shows the rule.
+  if (screens.length > 1) {
+    const perScreen = card(true);
+    for (const screen of screens) {
+      const what = screen.hidden ? "hidden" : screen.quiet ? "quiet" : "on screen";
+      const why = screen.reason ? ` — ${screen.reason}` : "";
+      perScreen.append(
+        row(screen.screen ? `${screen.label} (${screen.screen})` : screen.label, `${what}${why}`),
+      );
+    }
+    section.body.append(perScreen);
+  }
   return section.root;
 }
 
