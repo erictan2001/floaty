@@ -101,12 +101,29 @@ pub fn is_shell_class(class: &str) -> bool {
     SHELL_CLASSES.iter().any(|c| class.eq_ignore_ascii_case(c))
 }
 
-/// The decision: hidden beats quiet, and neither applies when the rules are off.
-pub fn decide(foreground: Option<&Foreground>, screens: &[Rect], rules: &Rules, idle_ms: u64) -> State {
+/// The decision for **one screen**.
+///
+/// `hidden` is per screen, because the overlays are: a fullscreen app in front of *this*
+/// screen takes this screen's desktop away and leaves every other screen alone — one
+/// monitor playing a game fullscreen is no reason for the icons on the other one to
+/// vanish. `quiet` stays machine-wide, because idle is a property of the machine and not
+/// of a monitor.
+///
+/// A screen that is hidden is also quiet: nothing of its desktop is on screen, so there is
+/// nothing there to animate. That is per screen too, so a fullscreen video on one screen
+/// does not stop the other screen's visualizer.
+pub fn decide_for(
+    foreground: Option<&Foreground>,
+    screen: Option<&Rect>,
+    rules: &Rules,
+    idle_ms: u64,
+) -> State {
     let fullscreen = rules.hide_for_fullscreen
-        && foreground
-            .filter(|f| !f.shell && !f.ours)
-            .is_some_and(|f| screens.iter().any(|s| f.rect.covers(s, FULLSCREEN_SLACK)));
+        && screen.is_some_and(|screen| {
+            foreground
+                .filter(|f| !f.shell && !f.ours)
+                .is_some_and(|f| f.rect.covers(screen, FULLSCREEN_SLACK))
+        });
     if fullscreen {
         return State {
             hidden: true,
@@ -124,6 +141,54 @@ pub fn decide(foreground: Option<&Foreground>, screens: &[Rect], rules: &Rules, 
     }
 }
 
+/// The rule at its simplest, for a caller with no screen of its own: is a fullscreen app
+/// in front of *any* screen?
+///
+/// The app places windows with `decide_for` (one answer per screen) and stops the shared
+/// audio with `summarise` (an answer for the machine), so this is the one that reads best
+/// in a test — the rule itself, without the per-screen bookkeeping.
+pub fn decide(
+    foreground: Option<&Foreground>,
+    screens: &[Rect],
+    rules: &Rules,
+    idle_ms: u64,
+) -> State {
+    let states: Vec<State> = screens
+        .iter()
+        .map(|screen| decide_for(foreground, Some(screen), rules, idle_ms))
+        .collect();
+    let covered = states.iter().any(|s| s.hidden);
+    let idle = states.iter().all(|s| s.quiet) && !covered;
+    State {
+        hidden: covered,
+        quiet: covered || idle,
+        reason: if covered {
+            Some("fullscreen")
+        } else if idle {
+            Some("idle")
+        } else {
+            None
+        },
+    }
+}
+
+/// One answer for the whole machine, from the per-screen ones.
+///
+/// `hidden` and `quiet` are *all* screens, not any: the audio capture and the motion are
+/// shared, so they stop only when there is no screen left that would use them — a
+/// fullscreen video on one screen must not stop the other screen's visualizer. The reason
+/// is the first one that applies, so a log line reads like a sentence.
+pub fn summarise(states: &[State]) -> State {
+    if states.is_empty() {
+        return State::default();
+    }
+    State {
+        hidden: states.iter().all(|s| s.hidden),
+        quiet: states.iter().all(|s| s.quiet),
+        reason: states.iter().find_map(|s| s.reason),
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // The machine, as Win32 describes it.
 // ---------------------------------------------------------------------------------------
@@ -133,11 +198,10 @@ pub fn decide(foreground: Option<&Foreground>, screens: &[Rect], rules: &Rules, 
 pub struct Observations {
     pub foreground: Option<Foreground>,
     pub idle_ms: u64,
-    pub screens: Vec<Rect>,
 }
 
 #[cfg(windows)]
-pub fn observe(screens: Vec<Rect>, own: &[isize]) -> Observations {
+pub fn observe(own: &[isize]) -> Observations {
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::System::SystemInformation::GetTickCount;
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
@@ -182,17 +246,15 @@ pub fn observe(screens: Vec<Rect>, own: &[isize]) -> Observations {
         Observations {
             foreground,
             idle_ms,
-            screens,
         }
     }
 }
 
 #[cfg(not(windows))]
-pub fn observe(screens: Vec<Rect>, _own: &[isize]) -> Observations {
+pub fn observe(_own: &[isize]) -> Observations {
     Observations {
         foreground: None,
         idle_ms: 0,
-        screens,
     }
 }
 
@@ -228,6 +290,58 @@ mod tests {
         // a fullscreen app on the *second* screen is just as good a reason
         let fg = fullscreen_on(2880.0, 1920.0, 1080.0);
         assert_eq!(decide(Some(&fg), &pair(), &rules(), 0).reason, Some("fullscreen"));
+    }
+
+    #[test]
+    fn a_fullscreen_app_takes_only_its_own_screen() {
+        let screens = pair();
+        // Fullscreen on the second screen: the first screen's desktop is still there. This
+        // was the bug — one global answer meant a fullscreen app anywhere hid every
+        // screen's overlay, and the icons on the other monitor vanished until the desktop
+        // was clicked.
+        let fg = fullscreen_on(2880.0, 1920.0, 1080.0);
+        let first = decide_for(Some(&fg), Some(&screens[0]), &rules(), 0);
+        let second = decide_for(Some(&fg), Some(&screens[1]), &rules(), 0);
+        assert!(!first.hidden, "a fullscreen app on the other screen must not hide this one");
+        assert!(second.hidden, "the screen it is on goes away");
+        // ...and the other way round.
+        let fg = fullscreen_on(0.0, 2880.0, 1920.0);
+        assert!(decide_for(Some(&fg), Some(&screens[0]), &rules(), 0).hidden);
+        assert!(!decide_for(Some(&fg), Some(&screens[1]), &rules(), 0).hidden);
+        // A screen we could not identify is left alone: hiding the desktop on a guess is
+        // worse than leaving it up.
+        assert!(!decide_for(Some(&fg), None, &rules(), 0).hidden);
+    }
+
+    #[test]
+    fn the_machine_goes_quiet_only_when_no_screen_is_left() {
+        let screens = pair();
+        // One screen hidden by a fullscreen app, the other still showing its desktop: the
+        // shared audio capture keeps running, because the other screen's visualizer wants
+        // it. This is why the machine answer is `all` and not `any`.
+        let fg = fullscreen_on(2880.0, 1920.0, 1080.0);
+        let one = summarise(&[
+            decide_for(Some(&fg), Some(&screens[0]), &rules(), 0),
+            decide_for(Some(&fg), Some(&screens[1]), &rules(), 0),
+        ]);
+        assert!(!one.hidden && !one.quiet, "one screen left is enough to keep the audio");
+        assert_eq!(one.reason, Some("fullscreen"));
+        // Every screen hidden: nothing left to animate or to listen for. Two fullscreen
+        // apps, one per screen — which is what it takes, now that each screen decides.
+        let first = fullscreen_on(0.0, 2880.0, 1920.0);
+        let all = summarise(&[
+            decide_for(Some(&first), Some(&screens[0]), &rules(), 0),
+            decide_for(Some(&fg), Some(&screens[1]), &rules(), 0),
+        ]);
+        assert!(all.hidden && all.quiet);
+        // Idle is machine-wide, so it makes every screen quiet and hides none.
+        let idle = summarise(&[
+            decide_for(None, Some(&screens[0]), &rules(), 600_000),
+            decide_for(None, Some(&screens[1]), &rules(), 600_000),
+        ]);
+        assert!(!idle.hidden && idle.quiet);
+        assert_eq!(idle.reason, Some("idle"));
+        assert_eq!(summarise(&[]), State::default());
     }
 
     #[test]
