@@ -437,6 +437,11 @@ let desktop: MonitorArea | null = null;
  */
 export async function watchMonitors(): Promise<MonitorArea[]> {
   followMonitors();
+  // ...and the presence listener, which is not the display listener's business: it used to
+  // be registered only from inside the display-changed handler, so on a normal boot nothing
+  // was listening at all. The page's quiet flag then never changed, and the visualizer —
+  // the one thing that has to start the audio capture again — never heard the machine wake.
+  followPresence();
   try {
     desktop = (await invoke<MonitorArea>("floaty_desktop_rect")) ?? desktop;
     monitors = (await invoke<MonitorArea[]>("floaty_monitors")) ?? monitors;
@@ -469,6 +474,12 @@ export function presenceIsQuiet(): boolean {
 function followPresence(): void {
   if (presenceWatched) return;
   presenceWatched = true;
+  // One line each way, because this is the seam that failed silently: the listener was never
+  // registered on boot, so the page's quiet flag never changed and nothing restarted the
+  // audio capture when the machine woke up — with nothing in the log to say so.
+  void invoke("floaty_log", { msg: "[presence] page is following the machine's quiet" }).catch(
+    () => undefined,
+  );
   void listen<{
     quiet?: boolean;
     hidden?: boolean;
@@ -484,6 +495,9 @@ function followPresence(): void {
       const quiet = e.payload?.machine?.quiet ?? e.payload?.quiet === true;
       if (quiet === presenceQuiet) return;
       presenceQuiet = quiet;
+      void invoke("floaty_log", {
+        msg: `[presence] page quiet=${quiet} — ${quiet ? "motion and audio off" : "motion and audio back"}`,
+      }).catch(() => undefined);
       // The bob is a CSS animation, so going quiet is a class change — and coming back
       // needs the same call that started it, or the desktop stays still for good.
       for (const slot of overlaySlots.values()) {
