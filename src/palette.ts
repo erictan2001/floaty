@@ -272,6 +272,11 @@ export function mountPalette(root: HTMLElement): void {
   void listen("floaty-palette-shown", () => {
     blank();
     refocus();
+    // `blank()` dropped the rows, so ask again: an empty query is the whole first page
+    // (see `palette::rank`). Without this the palette opens empty and stays empty until
+    // the first keystroke — and the window is built once and only shown, so the ask at
+    // mount time never happens again.
+    search();
   })
     .then((unlisten) => {
       stopShown = unlisten;
