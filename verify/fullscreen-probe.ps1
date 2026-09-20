@@ -16,6 +16,8 @@ public class FsProbe {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
 }
 "@
 Add-Type -AssemblyName System.Windows.Forms
@@ -56,6 +58,23 @@ for ($i = 0; $i -lt 20; $i++) {
   Start-Sleep -Milliseconds 150
   if ([FsProbe]::GetForegroundWindow() -eq $h) { $got = $true; break }
 }
+if (-not $got) {
+  # Still refused: the foreground lock is per-process and only real input to *this* window
+  # releases it. A click on the probe itself is that input — it lands on a topmost window
+  # covering the screen, so nothing else can receive it.
+  [void][FsProbe]::BringWindowToTop($h)
+  $cx = $bounds.X + [int]($bounds.Width / 2)
+  $cy = $bounds.Y + [int]($bounds.Height / 2)
+  [FsProbe]::mouse_event(0x8000, $cx, $cy, 0, [UIntPtr]::Zero)   # MOVE | ABSOLUTE
+  Start-Sleep -Milliseconds 60
+  [FsProbe]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)       # LEFTDOWN
+  [FsProbe]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)       # LEFTUP
+  for ($i = 0; $i -lt 10; $i++) {
+    [void][FsProbe]::SetForegroundWindow($h)
+    Start-Sleep -Milliseconds 150
+    if ([FsProbe]::GetForegroundWindow() -eq $h) { $got = $true; break }
+  }
+}
 "probe open - pid $PID, hwnd $h, foreground $got"
 # A status file as well as stdout: when this is launched without a console (from a script),
 # stdout can vanish, and the caller still needs to know whether the window really is in
@@ -63,4 +82,6 @@ for ($i = 0; $i -lt 20; $i++) {
 "pid=$PID screen=$Index foreground=$got hwnd=$h size=$($bounds.Width)x$($bounds.Height) at=$($bounds.X),$($bounds.Y)" |
   Set-Content -Path $status -Encoding ascii
 
-while ($true) { Start-Sleep -Seconds 1 }
+# A bounded life: whoever started this may not be able to close it (its console is its own
+# process), so it must not be able to outlive the check that wanted it.
+for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Seconds 1 }

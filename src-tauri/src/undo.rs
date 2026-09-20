@@ -42,6 +42,7 @@ pub enum DiskAction {
     Discard,
 }
 
+
 // ---------------------------------------------------------------------------------------
 // The rule every mutating action follows
 // ---------------------------------------------------------------------------------------
@@ -70,11 +71,15 @@ pub enum DiskAction {
 // than adding a second step for the same press.
 
 /// One thing an action did to the disk, to reverse.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskOp {
     pub action: DiskAction,
     pub from: String,
     pub to: String,
+    /// Only meaningful for `Discard`: was it a directory? Defaulted, so an op built without
+    /// saying still round-trips.
+    #[serde(default)]
+    pub dir: bool,
 }
 
 impl DiskOp {
@@ -84,6 +89,7 @@ impl DiskOp {
             action: DiskAction::Unrecycle,
             from: path.to_string(),
             to: String::new(),
+            dir: false,
         }
     }
 
@@ -93,15 +99,27 @@ impl DiskOp {
             action: DiskAction::Move,
             from: from.to_string(),
             to: to.to_string(),
+            dir: false,
         }
     }
 
-    /// The action created `path`.
+    /// The action created the file `path` (a shortcut or a copy written into a folder).
     pub fn discard(path: &str) -> Self {
         Self {
             action: DiskAction::Discard,
             from: path.to_string(),
             to: String::new(),
+            dir: false,
+        }
+    }
+
+    /// The action created the directory `path` (the folder a grouping made).
+    pub fn discard_dir(path: &str) -> Self {
+        Self {
+            action: DiskAction::Discard,
+            from: path.to_string(),
+            to: String::new(),
+            dir: true,
         }
     }
 }
@@ -119,6 +137,14 @@ pub struct Step {
 const MAX_STEPS: usize = 16;
 
 static STACK: LazyLock<Mutex<Vec<Step>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// The way forward: steps that were undone, newest last.
+///
+/// A step here is the *inverse* of one on the undo stack — it holds the state the undo
+/// overwrote, which is the state the action left behind. It is built at the moment of the
+/// undo (`inverse_of`), because that is the only moment the "after" of the action exists:
+/// nothing recorded it when the action ran.
+static REDO: LazyLock<Mutex<Vec<Step>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Remember what an action is about to change. Returns the new depth, so the
 /// caller can log it.
@@ -195,16 +221,84 @@ pub fn abandon_gesture() {
 }
 
 pub fn push(label: &str, restore: Vec<Restore>) -> usize {
-    let mut stack = lock();
-    stack.push(Step {
+    // A new action makes the future that was undone unreachable: the state redo would go
+    // forward to is built on records that have since changed. Standard undo behaviour, and
+    // the only safe one — a redo that replayed an old step would write stale records.
+    clear_redo();
+    push_from_redo(Step {
         label: label.to_string(),
         restore,
         disk: Vec::new(),
-    });
+    })
+}
+
+/// Put a step on the undo stack without touching the redo stack — how a redo hands back the
+/// step that would undo it again.
+pub fn push_from_redo(step: Step) -> usize {
+    let mut stack = lock();
+    stack.push(step);
     while stack.len() > MAX_STEPS {
         stack.remove(0);
     }
     stack.len()
+}
+
+/// The step that goes the other way from `step`: the same action and the same disk
+/// operations, with the records as they are *now*.
+///
+/// Applying a step means "put the store into this state", so a step's records are the state
+/// it goes *to*. Undoing a step written before an action restores the "before"; the inverse,
+/// written while undoing, holds the "after" — which is exactly what redo needs. The disk
+/// operations are shared: `Move` applies `from` -> `to` forwards and backwards the other way,
+/// so only the direction of application differs.
+pub fn inverse_of(step: &Step, live: &dyn Fn(&str) -> Option<serde_json::Value>) -> Step {
+    Step {
+        label: step.label.clone(),
+        restore: step
+            .restore
+            .iter()
+            .map(|entry| Restore {
+                id: entry.id.clone(),
+                record: live(&entry.id),
+            })
+            .collect(),
+        disk: step.disk.clone(),
+    }
+}
+
+pub fn push_redo(step: Step) -> usize {
+    let mut stack = lock_redo();
+    stack.push(step);
+    while stack.len() > MAX_STEPS {
+        stack.remove(0);
+    }
+    stack.len()
+}
+
+pub fn pop_redo() -> Option<Step> {
+    lock_redo().pop()
+}
+
+/// Put a redo back on top — a redo that could not finish stays available, the way an undo
+/// that could not finish does.
+pub fn restore_redo_top(step: Step) {
+    lock_redo().push(step);
+}
+
+pub fn redo_depth() -> usize {
+    lock_redo().len()
+}
+
+pub fn redo_label() -> Option<String> {
+    lock_redo().last().map(|s| s.label.clone())
+}
+
+fn clear_redo() {
+    lock_redo().clear();
+}
+
+fn lock_redo() -> std::sync::MutexGuard<'static, Vec<Step>> {
+    REDO.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Note a file move on the newest step (the one this command just pushed).
@@ -242,11 +336,12 @@ pub fn last_label() -> Option<String> {
     lock().last().map(|s| s.label.clone())
 }
 
-/// Forget everything. Tests need it; nothing in the app does, because a step
+/// Forget everything, both ways. Tests need it; nothing in the app does, because a step
 /// that has been applied is popped and a step that has not is still true.
 #[cfg(test)]
 pub fn clear() {
     lock().clear();
+    clear_redo();
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Vec<Step>> {
@@ -264,7 +359,8 @@ pub struct UndoReport {
     pub removed: usize,
     /// Files that moved back, described for a human.
     pub files: Vec<String>,
-    /// Steps left on the stack.
+    /// Steps left in the direction that was applied: undos still available after an undo,
+    /// redos still available after a redo.
     pub remaining: usize,
 }
 
@@ -274,6 +370,10 @@ pub struct UndoState {
     pub depth: usize,
     /// The action the next undo would reverse.
     pub label: Option<String>,
+    /// How many undone actions can be replayed.
+    pub redo_depth: usize,
+    /// The action the next redo would replay.
+    pub redo_label: Option<String>,
 }
 
 #[cfg(test)]
@@ -332,6 +432,81 @@ mod tests {
         // it is not this gesture's to undo
         let gone = |id: &str| if id == "file-1" { None } else { same(id) };
         assert!(changed_records(&snapshot, &gone).is_empty());
+    }
+
+    #[test]
+    fn the_inverse_of_a_step_is_the_state_the_undo_overwrites() {
+        let step = Step {
+            label: "move".into(),
+            restore: vec![restore("file-1")],
+            disk: vec![DiskOp::moved("C:\\d\\f.txt", "C:\\d\\dir\\f.txt")],
+        };
+        // The action left the file somewhere else. That is the state redo goes back to, and
+        // an undo is the only place it exists: nothing recorded it when the action ran.
+        let live = |id: &str| {
+            (id == "file-1")
+                .then(|| serde_json::json!({ "id": "file-1", "kind": "file", "x": 99, "y": 20 }))
+        };
+        let forward = inverse_of(&step, &live);
+        assert_eq!(forward.label, "move");
+        assert_eq!(
+            forward.restore[0].record,
+            Some(serde_json::json!({ "id": "file-1", "kind": "file", "x": 99, "y": 20 }))
+        );
+        // The disk operations are the same ones: `Move` applies from -> to forwards and the
+        // other way backwards, so only the direction of application differs.
+        assert_eq!(forward.disk, step.disk);
+        // An id that is not there now (the action removed it) redoes as a removal.
+        assert!(inverse_of(&step, &|_id| None).restore[0].record.is_none());
+    }
+
+    #[test]
+    fn a_new_action_clears_the_future() {
+        let _turn = lock();
+        clear();
+        push("move", vec![restore("app-1")]);
+        let step = pop().unwrap();
+        push_redo(inverse_of(&step, &|id| Some(serde_json::json!({ "id": id }))));
+        assert_eq!(redo_depth(), 1);
+        assert_eq!(redo_label().as_deref(), Some("move"));
+
+        push("delete", vec![restore("app-2")]);
+        assert_eq!(redo_depth(), 0, "a new action makes the future unreachable");
+        assert_eq!(depth(), 1);
+
+        // Redoing hands the step back to the undo stack, and the two stacks trade one step:
+        // the future is spent, and what was undone is undoable again.
+        clear();
+        push("one", vec![restore("a")]);
+        push("two", vec![restore("b")]);
+        let undone = pop().unwrap();
+        push_redo(inverse_of(&undone, &|id| Some(serde_json::json!({ "id": id }))));
+        let forward = pop_redo().unwrap();
+        push_from_redo(inverse_of(&forward, &|id| Some(serde_json::json!({ "id": id }))));
+        assert_eq!(depth(), 2);
+        assert_eq!(redo_depth(), 0);
+
+        // A redo that could not finish stays where it was, like an undo that could not.
+        push_redo(forward);
+        assert_eq!(redo_depth(), 1);
+        let taken = pop_redo().unwrap();
+        restore_redo_top(taken);
+        assert_eq!(redo_depth(), 1);
+    }
+
+    #[test]
+    fn both_stacks_are_capped() {
+        let _turn = lock();
+        clear();
+        for i in 0..(MAX_STEPS + 4) {
+            push_redo(Step {
+                label: format!("step-{i}"),
+                restore: Vec::new(),
+                disk: Vec::new(),
+            });
+        }
+        assert_eq!(redo_depth(), MAX_STEPS);
+        assert_eq!(redo_label().as_deref(), Some("step-19"));
     }
 
     #[test]

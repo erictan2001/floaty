@@ -27,6 +27,14 @@ const keepOpen = process.argv.includes("--keep-open");
 const PROBE = fileURLToPath(new URL("./fullscreen-probe.ps1", import.meta.url));
 
 const session = await Session.open(APP_PORT, "#/overlay", 0);
+/** Whether the shared audio capture is up — the thing a per-screen answer must not break. */
+const audioRunning = async () => {
+  const text = await session.evaluate(
+    `return JSON.stringify(await window.__TAURI_INTERNALS__.invoke("floaty_audio_status"));`,
+  );
+  return JSON.parse(text) === true;
+};
+
 const presence = () =>
   session.evaluate(`return JSON.stringify(await window.__TAURI_INTERNALS__.invoke("floaty_presence"));`).then(JSON.parse);
 const windows = async () => {
@@ -107,7 +115,18 @@ if (layers.length < 2) {
   console.error("presence: needs two desktop layers — this desktop has one screen, or the app is not running");
   process.exit(2);
 }
-if (before.machineHidden) problems.push(`the desktop was already hidden before the probe: ${before.foreground}`);
+// A fullscreen app already in front makes every assertion below meaningless — the desktop
+// is hidden before the probe opens anything, and the "came back" checks measure that app,
+// not the probe. Refuse, and say what to close.
+const alreadyHidden = Object.entries(before.byLabel).filter(([, isHidden]) => isHidden).map(([l]) => l);
+if (alreadyHidden.length) {
+  console.error(
+    `presence: ${alreadyHidden.join(", ")} is already hidden by a fullscreen app in front ` +
+      `(${before.foreground}) — close it and run this again`,
+  );
+  await session.close();
+  process.exit(2);
+}
 
 // One screen at a time, in the order the app labels them.
 for (const [index, label] of layers.entries()) {
@@ -134,6 +153,16 @@ for (const [index, label] of layers.entries()) {
         `a fullscreen window on ${label} made the whole machine quiet — the other screen's audio must keep running`,
       );
     }
+    // The capture is shared and the state is per screen: a covered screen must not stop it.
+    // Acting on the screen's own answer killed the visualizer on the screen that was still
+    // showing, and nothing started it again because the machine had never gone quiet.
+    // ...and only while the machine itself is awake: an idle machine is *supposed* to have
+    // the capture stopped, so asserting on it then would fail for the right reason.
+    if (!state.machineQuiet && !(await audioRunning())) {
+      problems.push(
+        `a fullscreen window on ${label} stopped the shared audio capture while ${others.map(([l]) => l).join(", ")} still showed a desktop`,
+      );
+    }
     // The state is stored before the window is hidden, so a reader can see "hidden" a poll
     // before the hide lands. Wait for the fact this is asserting rather than sampling once.
     let visible = await windows();
@@ -149,7 +178,8 @@ for (const [index, label] of layers.entries()) {
     }
     console.log(
       `  ${label} (${screen}): hidden${others.length ? `, ${others.map(([l]) => l).join(", ")} left alone` : ""}` +
-        ` — window visible=${visible[label] === false ? "no" : "yes"}, machine quiet=${state.machineQuiet}`,
+        ` — window visible=${visible[label] === false ? "no" : "yes"}, machine quiet=${state.machineQuiet},` +
+        ` audio capture up=${await audioRunning()}`,
     );
   }
   if (keepOpen) {
@@ -157,8 +187,9 @@ for (const [index, label] of layers.entries()) {
     break;
   }
   closeProbe(probe.status);
-  // ...and everything comes back
-  const back = await waitFor((s) => Object.values(s.byLabel).every((h) => !h), "both back");
+  // ...and everything comes back. Long enough to cover the probe closing itself, in case
+  // closing it by pid did not take (its console is its own process).
+  const back = await waitFor((s) => Object.values(s.byLabel).every((h) => !h), "both back", 100);
   if (!back) problems.push(`the desktop did not come back after closing the probe on ${label}`);
 }
 

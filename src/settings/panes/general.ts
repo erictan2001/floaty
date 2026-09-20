@@ -19,10 +19,14 @@ interface PaletteState {
   visible: boolean;
 }
 
-/** What the next undo would reverse, as the backend reports it. */
+/** What the next undo would reverse — and the next redo would replay — as reported. */
 interface UndoState {
+  /** Steps left to undo, and the action the next one would reverse. */
   depth: number;
   label: string | null;
+  /** Steps left to redo, and the action the next one would replay. */
+  redo_depth: number;
+  redo_label: string | null;
 }
 
 /** The span the backend stores for the idle timer. 0 minutes means never. */
@@ -30,20 +34,36 @@ const IDLE_MINUTES_MAX = 600;
 
 let status: HTMLElement | undefined;
 let undoButton: HTMLButtonElement | undefined;
+let redoButton: HTMLButtonElement | undefined;
 let watchingTidy = false;
 
-/** The undo button says what it would undo, because "undo" alone says nothing. */
+/**
+ * The undo and redo buttons say what they would do, because "undo" alone says nothing —
+ * and because the two are one history seen from two places: undoing makes a redo
+ * available, redoing makes the undo available again.
+ */
 async function refreshUndo(): Promise<void> {
   const button = undoButton;
-  if (!button) return;
+  const redo = redoButton;
+  if (!button && !redo) return;
   const state = await invoke<UndoState>("floaty_undo_state").catch(() => undefined);
-  if (!state || button !== undoButton) return;
-  button.disabled = state.depth === 0;
-  button.textContent = state.depth === 0
-    ? "nothing to undo yet"
-    : state.label
-      ? `undo ${state.label}`
-      : `undo (${state.depth})`;
+  if (!state) return;
+  if (button && button === undoButton) {
+    button.disabled = state.depth === 0;
+    button.textContent = state.depth === 0
+      ? "nothing to undo yet"
+      : state.label
+        ? `undo ${state.label}`
+        : `undo (${state.depth})`;
+  }
+  if (redo && redo === redoButton) {
+    redo.disabled = (state.redo_depth ?? 0) === 0;
+    redo.textContent = (state.redo_depth ?? 0) === 0
+      ? "nothing to redo"
+      : state.redo_label
+        ? `redo ${state.redo_label}`
+        : `redo (${state.redo_depth})`;
+  }
 }
 
 /** The desktop does the tidying; this pane only asks and reports the count. */
@@ -52,7 +72,7 @@ function watchTidy(): void {
   watchingTidy = true;
   void listen<{ count: number }>("floaty-tidy-done", (e) => {
     if (status?.isConnected) {
-      status.textContent = `tidied ${e.payload?.count ?? 0} floatie(s) — Ctrl+Z, or undo below, puts them back`;
+      status.textContent = `tidied ${e.payload?.count ?? 0} floatie(s) — Ctrl+Alt+Z, or undo below, puts them back`;
     }
   }).catch(() => undefined);
 }
@@ -214,12 +234,26 @@ export const generalPane: Pane = {
         .finally(() => void refreshUndo());
     });
     undoButton = undo;
+    const redo = el("button", "pill", "redo");
+    redo.addEventListener("click", () => {
+      redo.disabled = true;
+      void invoke<{ label: string }>("floaty_redo")
+        .then((report) => {
+          if (status?.isConnected) status.textContent = `redid '${report.label}'`;
+        })
+        .catch((err) => {
+          if (status?.isConnected) status.textContent = String(err);
+        })
+        .finally(() => void refreshUndo());
+    });
+    redoButton = redo;
     void refreshUndo();
     arrangeRow.append(
       action("tidy the desktop", () => emit("floaty-tidy-requested"), {
         busyLabel: "tidying…",
       }),
       undo,
+      redo,
     );
     status = note("");
     arrange.body.append(arrangeRow, status);
