@@ -5,7 +5,7 @@
 # would correctly decide nothing and the test would prove nothing.
 #
 # Usage: powershell -File fullscreen-probe.ps1 <screen-index>
-param([int]$Index = 0)
+param([int]$Index = 0, [switch]$All)
 
 Add-Type @"
 using System;
@@ -28,10 +28,22 @@ Add-Type -AssemblyName System.Windows.Forms
 $status = Join-Path $env:TEMP "floaty-probe\probe-status.txt"
 "pid=$PID starting" | Set-Content -Path $status -Encoding ascii
 
-$all = [System.Windows.Forms.Screen]::AllScreens
-if ($Index -ge $all.Count) { "screen $Index does not exist ($($all.Count) present)"; exit 2 }
-$bounds = $all[$Index].Bounds
-"opening a fullscreen probe on screen $Index : $($bounds.Width)x$($bounds.Height) at $($bounds.X),$($bounds.Y)"
+$screens = [System.Windows.Forms.Screen]::AllScreens
+if ($All) {
+  # One window over the whole virtual desktop. Two probes, one per screen, fight for the
+  # foreground — and never both cover at once, so the machine never goes quiet. A window
+  # spanning every screen covers each of them, which is what the rule asks.
+  $left = ($screens | ForEach-Object { $_.Bounds.X } | Measure-Object -Minimum).Minimum
+  $top = ($screens | ForEach-Object { $_.Bounds.Y } | Measure-Object -Minimum).Minimum
+  $right = ($screens | ForEach-Object { $_.Bounds.X + $_.Bounds.Width } | Measure-Object -Maximum).Maximum
+  $bottom = ($screens | ForEach-Object { $_.Bounds.Y + $_.Bounds.Height } | Measure-Object -Maximum).Maximum
+  $bounds = New-Object System.Drawing.Rectangle($left, $top, ($right - $left), ($bottom - $top))
+  "opening a fullscreen probe over every screen : $($bounds.Width)x$($bounds.Height) at $($bounds.X),$($bounds.Y)"
+} else {
+  if ($Index -ge $screens.Count) { "screen $Index does not exist ($($screens.Count) present)"; exit 2 }
+  $bounds = $screens[$Index].Bounds
+  "opening a fullscreen probe on screen $Index : $($bounds.Width)x$($bounds.Height) at $($bounds.X),$($bounds.Y)"
+}
 
 $form = New-Object System.Windows.Forms.Form
 $form.FormBorderStyle = 'None'
@@ -84,4 +96,20 @@ if (-not $got) {
 
 # A bounded life: whoever started this may not be able to close it (its console is its own
 # process), so it must not be able to outlive the check that wanted it.
-for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Seconds 1 }
+#
+# It also *holds* the foreground while it lives. The rule it is testing reads
+# GetForegroundWindow, and a person using the machine will steal it back within a poll or
+# two - which looks exactly like the app failing to notice a fullscreen window.
+for ($i = 0; $i -lt 20; $i++) {
+  Start-Sleep -Seconds 1
+  if ([FsProbe]::GetForegroundWindow() -ne $h) {
+    [void][FsProbe]::SetForegroundWindow($h)
+    if ([FsProbe]::GetForegroundWindow() -ne $h) {
+      [FsProbe]::mouse_event(0x8000, $cx, $cy, 0, [UIntPtr]::Zero)
+      Start-Sleep -Milliseconds 40
+      [FsProbe]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+      [FsProbe]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+      [void][FsProbe]::SetForegroundWindow($h)
+    }
+  }
+}

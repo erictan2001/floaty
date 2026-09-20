@@ -12,7 +12,13 @@
  * actually cover the screen, so the rule correctly decides nothing and the probe would pass
  * against the broken build.
  *
- * It does put a window on one screen for a couple of seconds. Usage:
+ * At the end it covers *every* screen at once for a moment: that is what "the machine is
+ * quiet" means, and the wake afterwards is what has to restart the shared audio capture —
+ * the Visualizer bug, where the page never heard the machine at all because its presence
+ * listener was only ever registered from inside the display-changed handler.
+ *
+ * It does put a window on one screen for a couple of seconds, and on all of them at the
+ * end. Usage:
  *   node verify/presence.mjs [--keep-open]
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -57,7 +63,7 @@ const hidden = async () => {
   };
 };
 
-const openFullscreen = (index) => {
+const openFullscreen = (index, all = false) => {
   // Keep the probe's own output: it says whether the window actually became foreground, and
   // a probe that covers the screen without being in front tests nothing.
   // Through `start`, so the probe gets a console of its own: spawned straight from here with
@@ -70,7 +76,18 @@ const openFullscreen = (index) => {
   }
   const child = spawn(
     "cmd",
-    ["/c", "start", "", "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PROBE, String(index)],
+    [
+      "/c",
+      "start",
+      "",
+      "powershell",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      PROBE,
+      ...(all ? ["-All"] : [String(index)]),
+    ],
     { detached: true, stdio: "ignore" },
   );
   child.on("error", (err) => console.error(`  probe could not start: ${String(err)}`));
@@ -96,6 +113,43 @@ const closeProbe = (status) => {
     stdio: "ignore",
   });
   return true;
+};
+
+/** Where the probe put its window, as the app would describe it: "2880x1920 at 0,0". */
+const probeRect = (status) => {
+  try {
+    const text = readFileSync(status, "utf8");
+    const size = /size=([0-9]+x[0-9]+)/.exec(text)?.[1];
+    const at = /at=(-?[0-9]+,-?[0-9]+)/.exec(text)?.[1];
+    return size && at ? `${size} at ${at}` : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Someone is using the machine, so the probe's window is not the one in front — the rule
+ * reads the *foreground* window, and a person at the keyboard keeps it. Say so and stop,
+ * rather than report the app as broken.
+ */
+const busy = async (status) => {
+  const mine = probeRect(status);
+  if (!mine) return false;
+  const now = await hidden();
+  return Boolean(now.foreground) && now.foreground !== mine;
+};
+
+/** Close every probe at once: the machine phase runs one, but a straggler must not survive. */
+const closeAll = () => {
+  spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      'Get-CimInstance Win32_Process -Filter "Name=\'powershell.exe\'" | Where-Object { $_.CommandLine -like "*fullscreen-probe*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
+    ],
+    { stdio: "ignore" },
+  );
 };
 
 const waitFor = async (want, what, tries = 24) => {
@@ -139,6 +193,16 @@ for (const [index, label] of layers.entries()) {
     console.log("  probe: no status file — the window did not open");
   }
   if (!state) {
+    if (await busy(probe.status)) {
+      console.error(
+        `presence: ${label} was not hidden because another window is in front — the probe put its window at ` +
+          `${probeRect(probe.status)} but the app sees "${(await hidden()).foreground}". Someone is using the ` +
+          `machine; run this when the desktop is free.`,
+      );
+      closeProbe(probe.status);
+      await session.close();
+      process.exit(2);
+    }
     problems.push(`a fullscreen window on ${label} (${screen}) did not hide it — ${JSON.stringify(await hidden())}`);
   } else {
     const others = Object.entries(state.byLabel).filter(([l]) => l !== label);
@@ -191,6 +255,64 @@ for (const [index, label] of layers.entries()) {
   // closing it by pid did not take (its console is its own process).
   const back = await waitFor((s) => Object.values(s.byLabel).every((h) => !h), "both back", 100);
   if (!back) problems.push(`the desktop did not come back after closing the probe on ${label}`);
+}
+
+// ---- and the machine: every screen covered at once is what "quiet" means --------------
+if (!keepOpen) {
+  const before = await audioRunning();
+  // One window over every screen, not one per screen: two probes fight for the foreground,
+  // and a window that covers each screen is what the rule needs to see.
+  const probes = [openFullscreen(0, true)];
+  const quiet = await waitFor((s) => s.machineQuiet, "the machine quiet", 60);
+  if (!quiet) {
+    if (await busy(probes[0].status)) {
+      console.error(
+        `presence: covering every screen did nothing because another window is in front — the probe put its ` +
+          `window at ${probeRect(probes[0].status)} but the app sees "${(await hidden()).foreground}". Someone ` +
+          `is using the machine; run this when the desktop is free.`,
+      );
+      closeAll();
+      await session.close();
+      process.exit(2);
+    }
+    problems.push("covering every screen did not make the machine quiet");
+  } else {
+    // The page has to *hear* it: the capture is shared, and the page is the only thing that
+    // starts it again. Both halves are checked — the page's own line in the app log, and the
+    // capture itself.
+    const diag = JSON.parse(
+      await session.evaluate(`return JSON.stringify(await window.__TAURI_INTERNALS__.invoke("floaty_diagnostics"));`),
+    );
+    const log = Array.isArray(diag.log) ? diag.log.join("\n") : String(diag.log ?? "");
+    const heard = (log.match(/\[presence\] page quiet=true/g) ?? []).length;
+    if (heard < 1) {
+      problems.push(
+        "the pages never heard the machine go quiet — nothing would restart the audio capture on wake",
+      );
+    }
+    if (await audioRunning()) {
+      problems.push("the shared audio capture kept running while every screen was covered");
+    }
+    console.log(`  every screen covered: machine quiet=${quiet.machineQuiet}, pages that heard it=${heard}`);
+  }
+  closeAll();
+  for (const probe of probes) void probe;
+  const back = await waitFor((s) => !s.machineQuiet && Object.values(s.byLabel).every((h) => !h), "awake", 100);
+  if (!back) {
+    problems.push("the machine did not come back after closing the probes");
+  } else {
+    // This is the fix: the capture is restarted by the page, and it has to actually come up.
+    let up = false;
+    for (let i = 0; i < 24 && !up; i += 1) {
+      up = await audioRunning();
+      if (!up) await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!up) {
+      problems.push("the audio capture did not come back when the machine woke up");
+    } else {
+      console.log(`  awake again: audio capture up=${up} (was ${before})`);
+    }
+  }
 }
 
 if (problems.length) {
