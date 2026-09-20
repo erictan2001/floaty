@@ -65,6 +65,11 @@ const record = () =>
   ask(`const r = (await window.__TAURI_INTERNALS__.invoke("floaty_list")).find(x => x.id === ${JSON.stringify(id)});
     return r ? [r.x, r.y] : null;`);
 const list = await invoke("floaty_monitors");
+// The invariant the app promises, and the one `screen_of` alone cannot express: not just the
+// widget's corner on a screen, its whole body. The part past an edge is drawn by nobody — an
+// overlay window is exactly one screen — so it is invisible even though the corner is fine.
+const insideOneScreen = (x, y, w, h) =>
+  list.some((s) => x >= s.x && y >= s.y && x + w <= s.x + s.w && y + h <= s.y + s.h);
 // floaty_monitors answers with the logical rectangle of each screen, flat: {x, y, w, h}.
 const onAnyScreen = (x, y) =>
   list.some((m) => x >= m.x && y >= m.y && x < m.x + m.w && y < m.y + m.h);
@@ -107,6 +112,10 @@ const brought = (Array.isArray(tail) ? tail : []).filter((l) => l.includes("brou
 console.log(`  the app's own log: ${brought.length ? brought[brought.length - 1].split("] ").pop() : "nothing about " + id}`);
 console.log(`${id} after the release: ${after}`);
 console.log(`  on a screen: ${onAnyScreen(...after)}`);
+const size = await session.evaluate(`const el = document.getElementById("slot-" + ${JSON.stringify(id)});
+  const r = el.getBoundingClientRect();
+  return [Math.round(r.width), Math.round(r.height)];`);
+console.log(`  body ${size[0]}x${size[1]}: wholly on one screen: ${insideOneScreen(...after, ...size)}`);
 
 // Who draws it now? A record no window has a slot for is invisible *and* unclickable.
 let drawn = 0;
@@ -205,13 +214,52 @@ const problems = [];
       const said = (Array.isArray(after) ? after : []).filter(
         (l) => l.includes("brought") && l.includes(barPanel),
       );
+      // ...and to the right, which is what was reported: the body hangs over the edge with its
+      // top-left still on the screen, so nothing objected and half the widget was drawn by
+      // nobody.
+      const box2 = await win.evaluate(`(() => {
+        const el = document.getElementById("slot-" + ${JSON.stringify(barPanel)});
+        const target = el.querySelector(".bar") ?? el;
+        const r = target.getBoundingClientRect();
+        const whole = el.getBoundingClientRect();
+        return {
+          x: Math.round(r.x + r.width / 2),
+          y: Math.round(r.y + r.height / 2),
+          w: Math.round(whole.width),
+          h: Math.round(whole.height),
+        };
+      })()`);
+      const mine = list.find((m) => box2.x >= m.x && box2.x < m.x + m.w);
+      const edge = Math.round((mine?.x ?? 0) + (mine?.w ?? 1920) - 4);
+      await mouse("mousePressed", box2.x, box2.y, 1);
+      for (const x of [box2.x + Math.round((edge - box2.x) / 2), edge - 30, edge, edge]) {
+        await mouse("mouseMoved", x, box2.y, 1);
+      }
+      await mouse("mouseReleased", edge, box2.y, 0);
+      await new Promise((r) => setTimeout(r, 500));
+      const right = await win.evaluate(
+        `const r = (await window.__TAURI_INTERNALS__.invoke("floaty_list")).find(x => x.id === ${JSON.stringify(barPanel)});
+         return r ? [r.x, r.y] : null;`,
+      );
+      const okBody = right && insideOneScreen(...right, box2.w, box2.h);
+      console.log(`  pointer pass: ${barPanel} dragged to the right edge -> ${right} ` +
+        `(body ${box2.w}x${box2.h}, wholly on one screen: ${okBody})`);
+      if (!okBody) {
+        problems.push(`dragging to the right edge left ${barPanel}'s body over it: at ${right}, body ${box2.w}x${box2.h}`);
+      }
       console.log(`  pointer pass: ${barPanel} dragged off the top edge from ${start} -> ${landed}` +
         (said.length ? ` — the app brought it back` : ""));
       if (!said.length) {
-        problems.push(`a real pointer drag left ${barPanel} off the top edge and the app never brought it back`);
+        // Not a failure any more: the whole body is clamped during the drag now, so the widget
+        // may never have left a screen at all — which is the better of the two outcomes. What
+        // has to hold either way is where its body is.
+        console.log("  (nothing needed bringing back — the body never left a screen)");
       }
-      if (!onAnyScreen(...landed)) {
-        problems.push(`a real pointer drag left ${barPanel} at ${landed}, on no screen`);
+      const landedSize = await win.evaluate(`const el = document.getElementById("slot-" + ${JSON.stringify(barPanel)});
+        const r = el.getBoundingClientRect();
+        return [Math.round(r.width), Math.round(r.height)];`);
+      if (!insideOneScreen(...landed, ...landedSize)) {
+        problems.push(`a real pointer drag left ${barPanel}'s body off the desktop: at ${landed}, body ${landedSize[0]}x${landedSize[1]}`);
       } else {
         // Put it back with the step the drag itself pushed — one undo, not a second move, so
         // the probe leaves the stack no deeper than it found it.
@@ -228,6 +276,9 @@ if (!brought.length) {
 }
 if (!onAnyScreen(...after)) {
   problems.push(`the release left ${id} at ${after}, which is on no screen at all`);
+}
+if (!insideOneScreen(...after, ...size)) {
+  problems.push(`the release left ${id}'s body over an edge: at ${after}, body ${size[0]}x${size[1]}`);
 }
 if (drawn === 0) {
   problems.push(`nothing is drawing ${id} after the release — invisible and unclickable`);

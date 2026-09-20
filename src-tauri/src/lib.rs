@@ -6682,6 +6682,29 @@ fn floaty_create(kind: String, app: AppHandle) -> Result<WidgetRecord, String> {
 
 #[tauri::command]
 async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
+    // A save carries the whole record, position included, and the page reads that position from
+    // the widget's live slot — which is placed locally, from the pointer, without the clamp the
+    // drag path applies to the record. So a save could put a widget back over an edge the drag
+    // had been kept away from: measured, a plugin widget whose body ended 36px past the right of
+    // the desktop, in a record no drag had touched. Clamped here as well — no write of any kind
+    // may leave the desktop.
+    //
+    // Before the lock, deliberately: `screens` reads the same state this command is about to
+    // take.
+    let list = screens(&app);
+    if !list.is_empty() {
+        let (w, h) = plugins::size(&record.kind, &record.data);
+        let (cx, cy) = screens::clamp_into(
+            screens::union(&list),
+            record.x as f64,
+            record.y as f64,
+            w,
+            h,
+            0.0,
+        );
+        record.x = cx as i32;
+        record.y = cy as i32;
+    }
     let state = app.state::<AppState>();
     if let Ok(mut guard) = state.0.lock() {
         if guard.dead.contains(&record.id) {
@@ -7996,6 +8019,26 @@ fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
             }
             moved.push(id);
         }
+
+        // And whatever is left sticking out of the screen it is on comes back too. Its
+        // top-left was on the screen and its body was not, and an overlay window *is* one
+        // screen, so the part past the edge was drawn by nobody — invisible, and unclickable
+        // wherever it overlapped nothing. Flush is allowed: this is a clamp, not a re-home,
+        // so a widget a person pushed to the edge stays where they put it, just wholly on the
+        // screen.
+        for (id, rec) in guard.widgets.iter_mut() {
+            let (w, h) = plugins::size(&rec.kind, &rec.data);
+            if screens::within_one_screen(&list, rec.x as f64, rec.y as f64, w, h) {
+                continue;
+            }
+            let Some((nx, ny)) = screens::confine(&list, rec.x as f64, rec.y as f64, w, h, 0.0)
+            else {
+                continue;
+            };
+            rec.x = nx as i32;
+            rec.y = ny as i32;
+            moved.push(id.clone());
+        }
     }
     if moved.is_empty() {
         return moved;
@@ -8275,7 +8318,7 @@ fn record_move(app: &AppHandle, id: &str, origin: Option<(i32, i32)>) {
 fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Option<usize> {
     remember_drag_origin(app, id);
     let list = screens(app);
-    let (nx, ny) = (x.round(), y.round());
+    let (mut nx, mut ny) = (x.round(), y.round());
     let mut handover: Option<WidgetRecord> = None;
     let mut stray = false;
     {
@@ -8295,6 +8338,15 @@ fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Option<usize> {
         if screens::screen_of(&list, nx, ny).is_none() && !undo::gesture_pending() {
             stray = true;
         } else {
+            // A drag may leave a *screen* — the band between two screens has to stay
+            // crossable — but not the *desktop*: past the outermost edge there is no window at
+            // all, so a widget dragged out there is drawn by nobody. The whole rectangle is
+            // clamped, not the top-left: `screen_of` answers for the corner, which is how a
+            // widget's body could hang over the right edge with only its corner inside.
+            let (w, h) = plugins::size(&rec.kind, &rec.data);
+            let (cx, cy) = screens::clamp_into(screens::union(&list), nx, ny, w, h, 0.0);
+            nx = cx;
+            ny = cy;
             let was = screens::screen_of(&list, rec.x as f64, rec.y as f64);
             let now = screens::screen_of(&list, nx, ny);
             rec.x = nx as i32;

@@ -134,6 +134,38 @@ pub fn union(screens: &[Screen]) -> Rect {
 /// A place inside `rect`, `margin` px from its edges, where all of a `w * h` floatie
 /// fits — so one that comes back is a floatie you can see, not one clinging to the
 /// edge with two thirds of itself hanging off the side.
+/// Where a widget is allowed to rest: with its *whole* body on a screen, flush with the edge
+/// if that is where it was put.
+///
+/// `screen_of` answers for the widget's top-left — which is why a widget could be dragged over
+/// a screen's right edge and stay there. Its corner was on the screen and its body was not,
+/// and the part past the edge is drawn by nobody: an overlay window *is* one screen, so the
+/// remainder was simply invisible. Asking `clamp_into` for the whole rectangle is the whole
+/// fix; the margin is 0 for a widget a person placed (flush is a legitimate choice) and the
+/// caller passes `MARGIN` for one that is coming back from somewhere it should never have
+/// been.
+pub fn confine(
+    screens: &[Screen],
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    margin: f64,
+) -> Option<(f64, f64)> {
+    let index = screen_of(screens, x, y).or_else(|| nearest(screens, x, y))?;
+    Some(clamp_into(screens[index].logical, x, y, w, h, margin))
+}
+
+/// Is the widget's whole rectangle on one screen? The invariant `confine` restores.
+pub fn within_one_screen(screens: &[Screen], x: f64, y: f64, w: f64, h: f64) -> bool {
+    screens.iter().any(|s| {
+        x >= s.logical.x
+            && y >= s.logical.y
+            && x + w <= s.logical.right()
+            && y + h <= s.logical.bottom()
+    })
+}
+
 pub fn clamp_into(rect: Rect, x: f64, y: f64, w: f64, h: f64, margin: f64) -> (f64, f64) {
     let left = rect.x + margin;
     let top = rect.y + margin;
@@ -195,6 +227,41 @@ mod tests {
 
     /// The two monitors this project is actually developed against: a 2880x1920
     /// primary at 2.00 and a 1920x1080 screen at 1.50, side by side.
+    /// The bug that was reported: a widget whose top-left is on the screen and whose body is
+    /// not, because `screen_of` answers for the corner. The part past the edge is drawn by
+    /// nobody — an overlay window is exactly one screen.
+    #[test]
+    fn a_widget_is_confined_with_its_whole_body_on_one_screen() {
+        let screens = measured_pair();
+        assert!(!within_one_screen(&screens, 1340.0, 300.0, 200.0, 100.0));
+        let (x, y) = confine(&screens, 1340.0, 300.0, 200.0, 100.0, 0.0).unwrap();
+        assert!(within_one_screen(&screens, x, y, 200.0, 100.0));
+        // Flush against the edge, not away from it: this is a clamp for a widget a person
+        // placed by hand, so nothing gains a margin it did not ask for.
+        assert_eq!((x, y), (1240.0, 300.0));
+    }
+
+    #[test]
+    fn a_widget_past_the_right_of_everything_comes_to_the_nearest_screen() {
+        let screens = measured_pair();
+        // Past the right edge of the right screen, so on no screen at all: 100px from
+        // DISPLAY2 and 1860px from DISPLAY1.
+        let (x, y) = confine(&screens, 3300.0, 300.0, 200.0, 100.0, 0.0).unwrap();
+        assert!(within_one_screen(&screens, x, y, 200.0, 100.0));
+        assert_eq!((x, y), (3000.0, 300.0));
+    }
+
+    #[test]
+    fn a_widget_too_big_for_the_screen_is_held_at_its_corner() {
+        let screens = measured_pair();
+        // `clamp_into`'s own rule, reached through `confine`: a body larger than the screen
+        // would invert the clamp and panic, so it is held at the top-left instead.
+        assert_eq!(
+            confine(&screens, 20.0, 20.0, 2000.0, 1200.0, 0.0).unwrap(),
+            (0.0, 0.0)
+        );
+    }
+
     fn measured_pair() -> Vec<Screen> {
         vec![
             Screen {
