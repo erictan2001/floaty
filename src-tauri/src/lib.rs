@@ -371,7 +371,7 @@ struct FloatSettings {
 /// Bump when the icon resolver changes what it produces, so already-stored
 /// icons are refreshed once. v2: shell item image + alpha-preserving PNG.
 /// v3: pick the route whose artwork actually fills the frame.
-const ICON_PIPELINE: u32 = 3;
+const ICON_PIPELINE: u32 = 4;
 
 /// The launcher key. Ctrl+Alt+Space is free on a stock Windows, and unlike
 /// Alt+Space (the window menu) or Ctrl+Space (the IME switcher on a CJK install)
@@ -3850,6 +3850,19 @@ fn cache_icon(path: &str, data: &str) {
 /// unchanged; `force` skips the cache so the upgrade pass can really try for a
 /// crisper icon instead of being handed back the 32px one it wants to replace.
 fn resolve_icons_batch(paths: &[String], force: bool) -> HashMap<String, String> {
+    // Every value this hands out is a *stored* url. Its callers write them straight into
+    // records, and a data url there is what put the store back to 8.5 MB after the startup
+    // migration had emptied it: measured, the background pass re-inlined all 477 icons at
+    // 13:35 and the store was 480 inline / 0 asset by 13:36, while the backup it was meant to
+    // replace held 477 asset / 3 inline. The fast paths here build PNG data urls in Rust and
+    // the in-memory cache holds whatever came back, so the fix belongs on the way *out*.
+    resolve_icons_batch_raw(paths, force)
+        .into_iter()
+        .map(|(target, icon)| (target, icons::store_url(&icon)))
+        .collect()
+}
+
+fn resolve_icons_batch_raw(paths: &[String], force: bool) -> HashMap<String, String> {
     let mut results = HashMap::new();
     let mut needed = Vec::new();
 

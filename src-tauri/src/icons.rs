@@ -262,6 +262,19 @@ fn migrate_one(icon: &str) -> Option<String> {
     }
 }
 
+/// A stored url for an icon string that may still be a data url.
+///
+/// `migrate_json` does this to a whole record at startup; this is the same move for one
+/// string, for the resolvers, which build data urls of their own and write them straight into
+/// records. Anything that is not a PNG data url is returned unchanged — a data url we cannot
+/// store must never be dropped.
+pub fn store_url(icon: &str) -> String {
+    match migrate_one(icon) {
+        Some(url) => url,
+        None => icon.to_string(),
+    }
+}
+
 /// Every icon file `data` mentions, as absolute paths.
 pub fn collect_referenced(data: &serde_json::Value, out: &mut HashSet<PathBuf>) {
     match data {
@@ -474,6 +487,25 @@ mod tests {
         assert_eq!(pixel_size(&first), Some((256, 256)));
         assert!(!is_low_res(&first));
         assert!(!is_missing(&first));
+    }
+
+    /// The resolvers build PNG data urls of their own and hand them to code that writes them
+    /// straight into records — which is how the store got back to 480 inline icons after the
+    /// startup migration had emptied it.
+    #[test]
+    fn store_url_moves_a_png_data_url_into_a_file_and_leaves_the_rest_alone() {
+        let (_dir, _guard) = use_dir("store-url");
+        let bytes = png_bytes(256, 256);
+        let legacy = data_url(&bytes);
+        let stored = store_url(&legacy);
+        assert!(is_stored_url(&stored), "a png data url becomes a file: {stored}");
+        assert_eq!(read(&stored).unwrap(), bytes);
+        // idempotent, and it never drops something it cannot store
+        assert_eq!(store_url(&stored), stored);
+        assert_eq!(store_url("none"), "none");
+        assert_eq!(store_url(""), "");
+        let svg = "data:image/svg+xml;base64,PHN2Zy8+";
+        assert_eq!(store_url(svg), svg, "only PNGs are stored; anything else is left as it is");
     }
 
     #[test]
