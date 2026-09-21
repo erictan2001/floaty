@@ -52,9 +52,9 @@ const RETRY: Duration = Duration::from_secs(5);
 
 /// The root being watched, and the flag its thread watches.
 struct Watch {
-    root: String,
-    stop: Arc<AtomicBool>,
-    alive: Arc<AtomicBool>,
+    pub(crate) root: String,
+    pub(crate) stop: Arc<AtomicBool>,
+    pub(crate) alive: Arc<AtomicBool>,
 }
 
 static CURRENT: Mutex<Option<Watch>> = Mutex::new(None);
@@ -235,20 +235,20 @@ fn watch_loop(
 #[cfg(windows)]
 struct Batch {
     /// Something was created or deleted: worth a reconcile.
-    touched: bool,
+    pub(crate) touched: bool,
     /// The queue held more than the buffer could: names are missing from this
     /// batch, so the reconcile it triggers has to be a full one.
-    overflow: bool,
+    pub(crate) overflow: bool,
     /// Renames, paired old → new.
-    renames: Renames,
+    pub(crate) renames: Renames,
 }
 
 #[cfg(windows)]
 struct DirWatch {
-    handle: windows::Win32::Foundation::HANDLE,
-    event: windows::Win32::Foundation::HANDLE,
-    buffer: Vec<u8>,
-    overlapped: windows::Win32::System::IO::OVERLAPPED,
+    pub(crate) handle: windows::Win32::Foundation::HANDLE,
+    pub(crate) event: windows::Win32::Foundation::HANDLE,
+    pub(crate) buffer: Vec<u8>,
+    pub(crate) overlapped: windows::Win32::System::IO::OVERLAPPED,
 }
 
 #[cfg(windows)]
@@ -447,8 +447,8 @@ struct DirWatch;
 
 #[cfg(not(windows))]
 struct Batch {
-    touched: bool,
-    renames: Renames,
+    pub(crate) touched: bool,
+    pub(crate) renames: Renames,
 }
 
 /// Directory watching is Windows-only in this app; elsewhere the loop just

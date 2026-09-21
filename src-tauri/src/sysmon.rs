@@ -29,13 +29,13 @@ static INTERVAL_MS: AtomicU32 = AtomicU32::new(DEFAULT_INTERVAL_MS);
 #[derive(Clone, PartialEq, serde::Serialize)]
 pub struct SysmonSample {
     /// 0..100 whole-machine CPU busy time
-    cpu: f32,
+    pub(crate) cpu: f32,
     /// 0..100 summed 3D-engine GPU utilisation
-    gpu: f32,
+    pub(crate) gpu: f32,
     /// 0..100 physical memory in use
-    ram: f32,
-    mem_used_mb: u32,
-    mem_total_mb: u32,
+    pub(crate) ram: f32,
+    pub(crate) mem_used_mb: u32,
+    pub(crate) mem_total_mb: u32,
 }
 
 /// Ref-counted: the first sysmon widget turns sampling on, the last turns it off.
@@ -161,7 +161,7 @@ fn sample_loop(_app: &AppHandle) -> Result<(), String> {
 #[cfg(windows)]
 struct CpuMeter {
     /// (idle, total) as 100ns units
-    prev: (u64, u64),
+    pub(crate) prev: (u64, u64),
 }
 
 #[cfg(windows)]
@@ -207,10 +207,10 @@ fn filetime_u64(ft: windows::Win32::Foundation::FILETIME) -> u64 {
 /// PDH query over `\GPU Engine(*)`: one handle per sampler, re-read per tick.
 #[cfg(windows)]
 struct GpuMeter {
-    query: windows::Win32::System::Performance::PDH_HQUERY,
-    counter: windows::Win32::System::Performance::PDH_HCOUNTER,
+    pub(crate) query: windows::Win32::System::Performance::PDH_HQUERY,
+    pub(crate) counter: windows::Win32::System::Performance::PDH_HCOUNTER,
     /// reused instance buffer (PDH writes PDH_FMT_COUNTERVALUE_ITEM_W array)
-    buf: Vec<u8>,
+    pub(crate) buf: Vec<u8>,
 }
 
 #[cfg(windows)]
