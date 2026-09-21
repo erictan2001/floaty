@@ -33,11 +33,11 @@ static FPS: AtomicU32 = AtomicU32::new(30);
 #[derive(Clone, serde::Serialize)]
 pub struct AudioLevels {
     /// 0..1 band magnitudes, low frequency first
-    bands: Vec<f32>,
+    pub(crate) bands: Vec<f32>,
     /// 0..1 broadband level (for the widget's glow / mirror effects)
-    level: f32,
+    pub(crate) level: f32,
     /// true when nothing is playing (widget may idle instead of redrawing)
-    silent: bool,
+    pub(crate) silent: bool,
 }
 
 /// Ref-counted: the first visualizer turns capture on, the last one turns it off.
@@ -274,10 +274,10 @@ fn capture_loop(_app: &AppHandle) -> Result<(), String> {
 #[cfg(windows)]
 #[derive(Clone, Copy)]
 struct AudioFormat {
-    channels: usize,
-    rate: f32,
-    bits: u16,
-    is_float: bool,
+    pub(crate) channels: usize,
+    pub(crate) rate: f32,
+    pub(crate) bits: u16,
+    pub(crate) is_float: bool,
 }
 
 #[cfg(windows)]
@@ -366,16 +366,16 @@ impl AudioFormat {
 
 /// Iterative radix-2 FFT with a Hann window, sized for this one job.
 struct Fft {
-    n: usize,
-    cos: Vec<f32>,
-    sin: Vec<f32>,
-    window: Vec<f32>,
-    re: Vec<f32>,
-    im: Vec<f32>,
-    rev: Vec<usize>,
+    pub(crate) n: usize,
+    pub(crate) cos: Vec<f32>,
+    pub(crate) sin: Vec<f32>,
+    pub(crate) window: Vec<f32>,
+    pub(crate) re: Vec<f32>,
+    pub(crate) im: Vec<f32>,
+    pub(crate) rev: Vec<usize>,
     /// band edges as FFT bin ranges, precomputed
-    edges: Vec<(usize, usize)>,
-    mag: Vec<f32>,
+    pub(crate) edges: Vec<(usize, usize)>,
+    pub(crate) mag: Vec<f32>,
 }
 
 impl Fft {
