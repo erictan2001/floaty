@@ -147,6 +147,7 @@ pub fn decide_for(
 /// The app places windows with `decide_for` (one answer per screen) and stops the shared
 /// audio with `summarise` (an answer for the machine), so this is the one that reads best
 /// in a test — the rule itself, without the per-screen bookkeeping.
+#[cfg(test)]
 pub fn decide(
     foreground: Option<&Foreground>,
     screens: &[Rect],

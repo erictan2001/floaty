@@ -79,7 +79,7 @@ pub(crate) fn scan_apps_blocking() -> Vec<DiscoveredApp> {
     for d in &dirs {
         collect_lnk(d, &mut out, &mut seen, 0);
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out.truncate(250);
     out
 }
@@ -130,12 +130,11 @@ pub(crate) fn try_extract_png_from_ico_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
         if image_offset + bytes_in_res <= bytes.len() && bytes_in_res >= 8 {
             let img = &bytes[image_offset..image_offset + bytes_in_res];
             // PNG magic signature: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
-            if img.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
-                if w > best_width {
+            if img.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+                && w > best_width {
                     best_width = w;
                     best_data = Some(img);
                 }
-            }
         }
     }
 

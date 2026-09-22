@@ -172,7 +172,7 @@ pub(crate) fn scan_models_blocking(root: String) -> Vec<Live2dModelEntry> {
         })
         .collect();
 
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out.truncate(1000);
     out
 }
@@ -225,6 +225,8 @@ pub(crate) fn floaty_window_cursor_pos(label: String, app: AppHandle) -> Option<
     #[cfg(windows)]
     {
         use std::mem::MaybeUninit;
+        // As above: the Win32 struct's own name.
+        #[allow(clippy::upper_case_acronyms)]
         #[repr(C)]
         struct POINT {
             pub(crate) x: i32,

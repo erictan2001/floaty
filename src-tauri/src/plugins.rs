@@ -44,7 +44,7 @@ pub struct PluginDef {
     /// Record data a fresh widget of this kind starts with.
     pub default_data: fn() -> serde_json::Value,
     /// Per-record size, e.g. the stored w/h clamped to what the widget allows.
-    pub custom_size: Option<fn((f64, f64), &serde_json::Value) -> (f64, f64)>,
+    pub custom_size: Option<CustomSize>,
     /// Set for kinds that stand for something on disk.
     pub desktop_item: Option<DesktopItem>,
     /// Quick-add button label in "+ New floatie".
@@ -404,9 +404,12 @@ fn validate_plugin_id(json: &serde_json::Value) -> Result<String, String> {
     Ok(id)
 }
 
-fn validate_plugin_sizes(
-    json: &serde_json::Value,
-) -> Result<((f64, f64), Option<(f64, f64)>, Option<(f64, f64)>), String> {
+/// Where a widget kind answers with its own size: width, height, and the min/max it allows.
+type CustomSize = fn((f64, f64), &serde_json::Value) -> (f64, f64);
+/// `(default, min, max)` as a plugin manifest declares them, before the kind's own rules apply.
+type PluginSizes = ((f64, f64), Option<(f64, f64)>, Option<(f64, f64)>);
+
+fn validate_plugin_sizes(json: &serde_json::Value) -> Result<PluginSizes, String> {
     let size = json.get("size").ok_or("size { w, h } is required")?;
     let w = size.get("w").and_then(|v| v.as_f64()).unwrap_or_default();
     let h = size.get("h").and_then(|v| v.as_f64()).unwrap_or_default();
@@ -525,7 +528,7 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
     // A range, not an equality: the format is additive, so every older apiVersion
     // still loads with the surface it was written against, and only a *newer*
     // manifest (or a missing/garbage one) is refused.
-    if api < PLUGIN_API_MIN || api > PLUGIN_API_VERSION {
+    if !(PLUGIN_API_MIN..=PLUGIN_API_VERSION).contains(&api) {
         return Err(format!(
             "apiVersion {api} is not supported (this build speaks {PLUGIN_API_MIN}..{PLUGIN_API_VERSION})"
         ));

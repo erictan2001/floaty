@@ -394,8 +394,8 @@ impl Fft {
             .collect();
         let mut rev = vec![0usize; n];
         let bits = n.trailing_zeros();
-        for i in 0..n {
-            rev[i] = ((i as u32).reverse_bits() >> (32 - bits)) as usize;
+        for (i, slot) in rev.iter_mut().enumerate() {
+            *slot = ((i as u32).reverse_bits() >> (32 - bits)) as usize;
         }
         Fft {
             n,

@@ -789,21 +789,25 @@ pub(crate) fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, ap
         let dest_dir = ungroup_dest_dir(folder_path.as_deref(), &src_path);
 
         if let Some(dest_dir_path) = dest_dir {
-            if dest_dir_path.is_dir() && dest_dir_path != src_path.parent().unwrap_or(&src_path) {
-                if let Some(file_name) = src_path.file_name() {
-                    let dest_path = unique_dest_path(&dest_dir_path, file_name);
-                    if dest_path != src_path {
-                        if let Ok(_) = std::fs::rename(&src_path, &dest_path) {
-                            log_line(&app, &format!("moved out of folder on disk: {} -> {}", src_path.display(), dest_path.display()));
-                            undo::add_disk(undo::DiskOp::moved(
-                                &src_path.to_string_lossy(),
-                                &dest_path.to_string_lossy(),
-                            ));
-                            item.target = dest_path.to_string_lossy().to_string();
-                            item.name = dest_path.file_name().unwrap_or(file_name).to_string_lossy().to_string();
-                            item.is_dir = dest_path.is_dir();
-                        }
-                    }
+            // One `if let` rather than a nested pair: this crate is edition 2021, where the
+            // let-chain clippy would rather see is not available.
+            let parent = src_path.parent().unwrap_or(&src_path);
+            if let Some(file_name) = src_path
+                .file_name()
+                .filter(|_| dest_dir_path.is_dir() && dest_dir_path != parent)
+            {
+                let dest_path = unique_dest_path(&dest_dir_path, file_name);
+                // The rename's own success is the condition: nothing to do when the path did
+                // not change, and the log and the undo below only make sense if it moved.
+                if dest_path != src_path && std::fs::rename(&src_path, &dest_path).is_ok() {
+                    log_line(&app, &format!("moved out of folder on disk: {} -> {}", src_path.display(), dest_path.display()));
+                    undo::add_disk(undo::DiskOp::moved(
+                        &src_path.to_string_lossy(),
+                        &dest_path.to_string_lossy(),
+                    ));
+                    item.target = dest_path.to_string_lossy().to_string();
+                    item.name = dest_path.file_name().unwrap_or(file_name).to_string_lossy().to_string();
+                    item.is_dir = dest_path.is_dir();
                 }
             }
         }

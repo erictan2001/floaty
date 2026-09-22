@@ -293,8 +293,10 @@ impl DirWatch {
             }
         };
 
-        let mut overlapped = windows::Win32::System::IO::OVERLAPPED::default();
-        overlapped.hEvent = event;
+        let overlapped = windows::Win32::System::IO::OVERLAPPED {
+            hEvent: event,
+            ..Default::default()
+        };
 
         Ok(Self {
             handle,
