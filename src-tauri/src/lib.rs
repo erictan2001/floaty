@@ -20,7 +20,6 @@ mod screens;
 mod shell_ops;
 mod sysmon;
 mod undo;
-use plugins::PluginInfo;
 
 mod logging;
 pub(crate) use logging::*;

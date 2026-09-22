@@ -3,15 +3,10 @@
 //! Visibility is `pub(crate)` because the rest of the crate calls in across the module
 //! boundary now; nothing here changed shape on the way out.
 
-#![allow(unused_imports)]
 use crate::*;
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::collections::{ HashSet};
 use std::sync::Mutex;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
 
 // ---------- launcher palette ----------
 
