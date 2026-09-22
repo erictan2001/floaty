@@ -60,6 +60,9 @@ pub(crate) mod desktop_pin {
 
     const SUBCLASS_ID: usize = 0x464C5459; // 'FLTY'
 
+    // The Win32 struct, spelled as Win32 spells it: renaming it would make the mirror harder
+    // to check against the header it was written from.
+    #[allow(clippy::upper_case_acronyms)]
     #[repr(C)]
     struct WINDOWPOS {
         pub(crate) hwnd: isize,

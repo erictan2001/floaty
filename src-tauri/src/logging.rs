@@ -34,9 +34,8 @@ pub(crate) fn log_line(app: &AppHandle, msg: &str) {
     let _serialised = LOG_LOCK.lock();
     let msg = &format!("{} {msg}", timestamp());
     eprintln!("[floaty] {msg}");
-    let Ok(dir) = app.path().app_data_dir().map(|d| {
-        fs::create_dir_all(&d).ok();
-        d
+    let Ok(dir) = app.path().app_data_dir().inspect(|d| {
+        fs::create_dir_all(d).ok();
     }) else {
         return;
     };

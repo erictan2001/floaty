@@ -16,7 +16,9 @@ use tauri::{AppHandle, Manager};
 /// when the Apps tab asks for it, and far too slow to repeat on every keystroke.
 /// Five minutes is the compromise between "a program installed a moment ago is not
 /// findable" and "the launcher hitches".
-pub(crate) static APP_SCAN: std::sync::LazyLock<Mutex<Option<(std::time::Instant, Vec<DiscoveredApp>)>>> =
+/// When the apps were last scanned, and what came back.
+type AppScan = (std::time::Instant, Vec<DiscoveredApp>);
+pub(crate) static APP_SCAN: std::sync::LazyLock<Mutex<Option<AppScan>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
 pub(crate) fn cached_apps() -> Vec<DiscoveredApp> {
