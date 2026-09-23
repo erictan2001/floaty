@@ -73,7 +73,7 @@ unsafe extern "system" fn display_setting_changed(
             if previous != state {
                 if let Some(app) = shared_app() {
                     // A real signal for widgets and plugins: a clock that redraws, a
-                    // poll that costs a powershell, a pet that animates — all have a
+                    // poll that costs a powershell, a widget that animates — all have a
                     // reason to stop while nobody is looking at the screen.
                     let _ = app.emit(
                         "floaty-display-changed",

@@ -48,7 +48,7 @@ export const STUB = `(() => {
   }, extra || {});
   const widget = (id, kind, data) => ({ id, kind, x: 40, y: 60, data: data || {} });
   const settings = {
-    pet_speed: 1, gravity: 2600, bounce: 0.45, single_click: "drop", double_click: "launch",
+    gravity: 2600, bounce: 0.45, single_click: "drop", double_click: "launch",
     live2d_root: "", files_root: "C:\\\\Users\\\\erict\\\\OneDrive\\\\Desktop", disabled: [],
     stay_on_desktop: true, start_on_boot: false, animated_ratio: 100, animation_mode: "wave",
     float_amplitude: 6, float_period: 10, float_spread: 10, confirm_remove: true,
@@ -60,7 +60,7 @@ export const STUB = `(() => {
       case "floaty_get_settings": return settings;
       case "floaty_undo_state": return { depth: 2, label: "delete" };
       case "floaty_plugins": return [
-        plugin("note", "Note"), plugin("clock", "Clock"), plugin("pet", "Pet"),
+        plugin("note", "Note"), plugin("clock", "Clock"),
         plugin("app", "App", { desktop_item: { path_key: "target", noun: "app floatie", group: false } }),
         plugin("file", "File", { desktop_item: { path_key: "target", noun: "file floatie", group: false } }),
         plugin("folder", "Folder", { desktop_item: { path_key: "path", noun: "folder floatie", group: true } }),
@@ -109,7 +109,7 @@ export const STUB = `(() => {
         icons: { path: "C:\\\\Users\\\\erict\\\\AppData\\\\Roaming\\\\com.floaty.app\\\\icons", files: 42, bytes: 1887436 },
         records: 37,
         installed_plugins: ["countdown v1.0.0", "trail v1.0.0"],
-        rejected_plugins: ["broken-pet: plugin.json did not parse"],
+        rejected_plugins: ["broken-note: plugin.json did not parse"],
         display: "on",
         heartbeats: [
           { label: "desktop-overlay", visibility: "visible", ms_ago: 900 },

@@ -31,12 +31,12 @@ let session = null;
 if (!id || id.startsWith("--")) {
   const probe = await Session.open(port, "#/overlay", 0);
   const panel = await probe.evaluate(`const l = await window.__TAURI_INTERNALS__.invoke("floaty_list");
-    const kinds = ["sysmon", "clock", "note", "visualizer", "pet"];
+    const kinds = ["sysmon", "clock", "note", "visualizer"];
     const p = l.find(r => kinds.includes(r.kind));
     return p ? p.id : null;`);
   await probe.close();
   if (!panel) {
-    console.error("stranded: no panel on this desktop (sysmon, clock, note, visualizer or pet)");
+    console.error("stranded: no panel on this desktop (sysmon, clock, note or visualizer)");
     process.exit(2);
   }
   id = panel;
@@ -167,7 +167,7 @@ const problems = [];
 // the log claiming it had been brought back. Nothing but a real pointer drag exercises that.
 {
   const barPanel = await ask(`const l = await window.__TAURI_INTERNALS__.invoke("floaty_list");
-    const kinds = ["sysmon", "clock", "note", "countdown", "pet"];
+    const kinds = ["sysmon", "clock", "note", "countdown"];
     const ps = l.filter(r => kinds.includes(r.kind)).sort((a, b) => b.y - a.y);
     return ps.length ? ps[0].id : null;`);
   if (!barPanel) {

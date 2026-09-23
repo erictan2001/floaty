@@ -11,8 +11,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FloatSettings {
-    #[serde(default = "default_pet_speed")]
-    pub(crate) pet_speed: f64,
     #[serde(default = "default_gravity")]
     pub(crate) gravity: f64,
     #[serde(default = "default_bounce")]
@@ -161,9 +159,6 @@ pub(crate) fn default_animation_mode() -> String {
     "wave".to_string()
 }
 
-pub(crate) fn default_pet_speed() -> f64 {
-    1.0
-}
 pub(crate) fn default_gravity() -> f64 {
     2600.0
 }
@@ -1027,7 +1022,6 @@ pub(crate) fn load_settings(app: &AppHandle) -> FloatSettings {
             ..s
         },
         None => FloatSettings {
-            pet_speed: default_pet_speed(),
             gravity: default_gravity(),
             bounce: default_bounce(),
             single_click: default_single_click(),
@@ -1069,7 +1063,6 @@ pub(crate) fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> Fl
     let stored = load_settings(&app);
     let stored_pipeline = stored.icon_pipeline;
     let mut s = FloatSettings {
-        pet_speed: settings.pet_speed.clamp(0.0, 3.0),
         gravity: settings.gravity.clamp(0.0, 8000.0),
         bounce: settings.bounce.clamp(0.0, 0.95),
         single_click: match settings.single_click.as_str() {

@@ -498,7 +498,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
     // shrink the dragged folder as it hovers another tile
     wrap.classList.add("held");
     void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
-    // capture lazily on first real movement (see pet.ts: eager capture eats taps)
+    // capture lazily on first real movement (eager capture eats taps)
     let captured = false;
     const isOverlay = isOverlayMode();
     const startX = px;

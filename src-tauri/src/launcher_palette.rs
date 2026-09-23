@@ -275,7 +275,7 @@ pub(crate) async fn floaty_palette_run(
                         note: format!("launched {target}"),
                     })
                 }
-                // A note, a clock, a pet: it is already where it belongs. Saying so
+                // A note, a clock, a widget: it is already where it belongs. Saying so
                 // is better than a run that looks like it failed.
                 None => Ok(PaletteRun {
                     note: format!("{} lives on your desktop", hit.title),

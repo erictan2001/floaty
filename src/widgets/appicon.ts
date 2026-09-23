@@ -336,7 +336,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     if (rec) void removeSelf(rec);
   });
 
-  // Manual drag (same reason as the pet): an OS-level startDragging on every
+  // Manual drag: an OS-level startDragging on every
   // press swallows the click sequence, so dblclick-to-launch never fires.
   // The window follows the cursor and x/y stay exact — no re-read needed.
   wrap.addEventListener("pointerdown", (e) => {
@@ -349,7 +349,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
     wrap.classList.add("held");
     squash();
-    // capture lazily on first real movement (see pet.ts: eager capture eats taps)
+    // capture lazily on first real movement (eager capture eats taps)
     let captured = false;
     const isOverlay = isOverlayMode();
     const startX = x;

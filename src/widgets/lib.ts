@@ -1166,7 +1166,6 @@ export function startHeartbeat(label: string): void {
 // ---------- global floating settings (cached, live-updated) ----------
 
 export interface FloatSettings {
-  pet_speed: number;
   gravity: number;
   bounce: number;
   single_click: string;
@@ -1205,7 +1204,6 @@ export interface FloatSettings {
 }
 
 export const DEFAULT_SETTINGS: FloatSettings = {
-  pet_speed: 1,
   gravity: 2600,
   bounce: 0.45,
   single_click: "nothing",
