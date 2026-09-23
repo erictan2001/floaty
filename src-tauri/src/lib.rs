@@ -351,9 +351,8 @@ pub fn run() {
                         log_line(&handle, &format!("demo floated {}", rec.id));
                     }
                 }
-                // also a clock + pet for the visual check
+                // also a clock for the visual check
                 create_record(&handle, "clock").ok();
-                create_record(&handle, "pet").ok();
             }
 
             // A display that went away while floaty was not running leaves records at

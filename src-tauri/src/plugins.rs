@@ -155,18 +155,6 @@ pub const PLUGINS: &[PluginDef] = &[
         layout_priority: 3,
     },
     PluginDef {
-        id: "pet",
-        name: "Pet",
-        description: "A wandering blob. Hover to calm it, double-click to freeze it.",
-        default_size: (170.0, 170.0),
-        resizable: false,
-        default_data: || serde_json::json!({ "name": "bloop" }),
-        custom_size: None,
-        desktop_item: None,
-        add_label: Some("+ pet"),
-        layout_priority: 4,
-    },
-    PluginDef {
         id: "app",
         name: "App launcher",
         description: "Gravity icons for real apps. Pin, drop, launch; icons group into folders.",
@@ -690,10 +678,9 @@ pub struct PluginDesktopItem {
 mod tests {
     use super::*;
 
-    const KINDS: [&str; 9] = [
+    const KINDS: [&str; 8] = [
         "note",
         "clock",
-        "pet",
         "app",
         "file",
         "folder",
@@ -802,7 +789,7 @@ mod tests {
 
     #[test]
     fn manifest_reports_the_enabled_state() {
-        let disabled = vec!["live2d".to_string(), "pet".to_string()];
+        let disabled = vec!["live2d".to_string()];
         let info = manifest(&disabled);
         let builtin: Vec<&PluginInfo> = info.iter().filter(|p| p.source == "builtin").collect();
         assert_eq!(builtin.len(), PLUGINS.len());

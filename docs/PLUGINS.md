@@ -118,7 +118,7 @@ Two files. No build step, no dependencies, no floaty source.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `id` | yes | Unique kind name: 2–32 chars of `a-z`, `0-9`, `-`, `_`. Must not clash with a built-in (`note`, `clock`, `pet`, `app`, `file`, `folder`, `live2d`, `visualizer`, `sysmon`). Widget records are named `<id>-<n>`. |
+| `id` | yes | Unique kind name: 2–32 chars of `a-z`, `0-9`, `-`, `_`. Must not clash with a built-in (`note`, `clock`, `app`, `file`, `folder`, `live2d`, `visualizer`, `sysmon`). Widget records are named `<id>-<n>`. |
 | `name` | yes | Shown in the settings list. |
 | `description` | no | Shown under the name. |
 | `version`, `author` | no | Shown in the settings list. |
@@ -129,7 +129,7 @@ Two files. No build step, no dependencies, no floaty source.
 | `minSize`, `maxSize` | no | Clamp for a resizable widget (defaults 80×60 … 2000×2000). |
 | `defaultData` | no | The `data` a new widget record starts with (an object, yours to use). |
 | `addLabel` | no | Button text in **+ New floatie** (`"+ countdown"`). Omit for no button. |
-| `layoutPriority` | no | Where the desktop layout puts it, lower first. Built-ins: live2d 1, note 2, clock 3, pet 4, visualizer/sysmon 5, icon grid 10. |
+| `layoutPriority` | no | Where the desktop layout puts it, lower first. Built-ins: live2d 1, note 2, clock 3, visualizer/sysmon 5, icon grid 10. |
 | `desktopItem` | no | Only for a widget that stands for a real file: `{ "pathKey": "target", "noun": "… floatie", "group": false }` gives it the shell verbs and a Recycle Bin delete. Such items are mirrored from the root folder, so they follow the disk (see [the desktop as a mirror](#desktop-items)) — and group them and the real files move into a new folder in the root, an app getting a shortcut written instead of having its program moved. Label them with `api.displayName(name)` so a caption reads `Arc`, not `Arc.lnk`. |
 
 ### `index.js`
@@ -165,18 +165,18 @@ export default {
 
   // extra rows under the plugin's card in the settings window's Plugins tab
   renderSettings(card, ctx) {
-    // ctx.getSettings(), ctx.getSharedRow("pet_speed"), ctx.updateSettings(patch),
+    // ctx.getSettings(), ctx.getSharedRow("gravity"), ctx.updateSettings(patch),
     // ctx.safe(...), ctx.showError(...), ctx.refreshWidgets()
   },
 };
 ```
 
 Settings live in one of two places, and a plugin's own card is for settings only
-*it* has (a pet's speed, a visualizer's gain, the folder it scans). A setting that
+*it* has (a visualizer's gain, the folder it scans). A setting that
 applies to every desktop item — gravity, bounce, the float parameters, click
 behaviour — belongs in the **Motion tab**, which is where the built-ins keep
 theirs. `ctx.getSharedRow(name)` still hands you a row bound to one of those
-names (`gravity`, `pet_speed`, …) if you want it in your own card too; it returns
+names (`gravity`, `bounce`, …) if you want it in your own card too; it returns
 a fresh row each call, and `undefined` for a name this build does not have.
 
 To follow a setting while the widget is on screen, pass `api.onSettings(cb)` the
@@ -204,7 +204,7 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.addPinMenu(wrap, getRec, opts?)` | The standard right-click menu for this widget. `opts.rows(api)` adds the plugin's own rows above the standard ones — `row`, `run`, `divider`, `note`, `close`, and `swap` to draw a list in place of the commands (how the live2d model picker works). |
 | `api.addResizeHandle(wrap, rec, minW, minH)` | Bottom-right grip that resizes and saves the record. |
 | `api.removeSelf(rec)` | Remove the widget, asking first when the user enabled confirmation. |
-| `api.settings()` | Current global settings (`gravity`, `bounce`, `pet_speed`, …). |
+| `api.settings()` | Current global settings (`gravity`, `bounce`, …). |
 | `api.onSettings(cb)` | Run `cb` on every settings change, and once when the settings are first loaded. This is how a widget follows a setting — see [the note above](#indexjs). |
 | `api.watchSettings()` | Make sure the settings have been loaded once. `settings()` reads whatever is cached, and this reports nothing back to you. |
 | `api.displayName(name)` | The desktop's caption rule: `Arc.lnk` → `Arc`, while a file keeps its extension. Use it for any label that names a file. |

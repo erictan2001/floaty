@@ -38,7 +38,6 @@ export interface ChoiceParam {
 }
 
 export const NUMBER_PARAMS: NumberParam[] = [
-  { key: "pet_speed", label: "pet speed", min: 0, max: 2, step: 0.1 },
   { key: "gravity", label: "gravity", min: 0, max: 5000, step: 50 },
   { key: "bounce", label: "bounce", min: 0, max: 0.9, step: 0.05 },
   { key: "float_amplitude", label: "float height", min: 0, max: 16, step: 0.5, unit: "px" },

@@ -1,7 +1,7 @@
 /**
  * Plugins: every kind floaty knows — the built-ins and the ones the user
  * installed — with an on/off switch, what the plugin is, and the parameters
- * that belong to that plugin alone (a pet's speed, a visualizer's gain).
+ * that belong to that plugin alone (a visualizer's gain, the folder it scans).
  *
  * Settings that apply to every desktop item live in the Motion tab instead;
  * `getSharedRow` still hands a plugin a row for one, which is what keeps a

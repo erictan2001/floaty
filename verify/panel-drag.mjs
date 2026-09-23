@@ -15,12 +15,12 @@ if (!id || id.startsWith("--")) {
   // No id: take the first panel. The snap-back was panel-only, so a panel is the point.
   const probe = await Session.open(port, "#/overlay", 0);
   const panel = await probe.evaluate(`const l = await window.__TAURI_INTERNALS__.invoke("floaty_list");
-    const kinds = ["sysmon", "clock", "visualizer", "pet", "note"];
+    const kinds = ["sysmon", "clock", "visualizer", "note"];
     const p = l.find(r => kinds.includes(r.kind));
     return p ? p.id : null;`);
   await probe.close();
   if (!panel) {
-    console.error("panel-drag: no panel on this desktop (sysmon, clock, note, visualizer or pet)");
+    console.error("panel-drag: no panel on this desktop (sysmon, clock, note or visualizer)");
     process.exit(2);
   }
   id = panel;

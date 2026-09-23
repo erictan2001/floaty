@@ -27,7 +27,6 @@ import type { FloatSettings, MonitorArea, PinMenuOptions, WidgetRecord } from ".
 import { installedEntries, loadPluginManifest } from "./pluginManifest";
 import { notePlugin } from "./note";
 import { clockPlugin } from "./clock";
-import { petPlugin } from "./pet";
 import { appPlugin, filePlugin } from "./appicon";
 import { folderPlugin } from "./folder";
 import { live2dPlugin } from "./live2dPlugin";
@@ -225,7 +224,7 @@ export interface PluginSettingsContext {
   /** Get current global floating settings */
   getSettings: () => FloatSettings;
   /**
-   * A fresh row bound to a shared setting — `gravity`, `pet_speed`, one of the
+   * A fresh row bound to a shared setting — `gravity`, `bounce`, one of the
    * names in `settings/params.ts` — to drop into the plugin's card. Returns
    * `undefined` for a name this build does not have, so a plugin asking for a
    * setting that has been renamed draws nothing instead of an empty row.
@@ -361,7 +360,6 @@ export function pluginApi(kind: string): WidgetApi {
 const BUILTINS: FloatyPlugin[] = [
   notePlugin,
   clockPlugin,
-  petPlugin,
   appPlugin,
   filePlugin,
   folderPlugin,
