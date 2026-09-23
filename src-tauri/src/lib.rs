@@ -1124,8 +1124,8 @@ mod tests {
 
         // Verify Serialize key
         use windows::Win32::System::Registry::{
-            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
-            REG_DWORD,
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS,
+            KEY_READ, REG_DWORD,
         };
         use windows::core::PCWSTR;
 
@@ -1163,13 +1163,41 @@ mod tests {
                 let _ = RegCloseKey(key);
             }
 
-            // Verify Floaty is at index 0 of the Run key
+            // Verify Floaty is at index 0 of the Run key.
+            //
+            // The promotion has nothing to do unless Floaty is in the key at all,
+            // which is true of a machine that has run the app and false of a clean
+            // CI runner. So put it there when it is missing — added last, so the
+            // call above has to do the moving — and take it back out afterwards, so
+            // the test leaves the machine exactly as it found it.
             let run_subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Run\0"
                 .encode_utf16()
                 .collect();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(run_subkey.as_ptr()), None, KEY_READ, &mut key).is_ok() {
-                use windows::Win32::System::Registry::RegEnumValueW;
+            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(run_subkey.as_ptr()), None, KEY_ALL_ACCESS, &mut key).is_ok() {
+                use windows::Win32::System::Registry::{
+                    RegDeleteValueW, RegEnumValueW, RegSetValueExW, REG_SZ,
+                };
                 use windows::core::PWSTR;
+
+                let floaty_name: Vec<u16> = "Floaty\0".encode_utf16().collect();
+                let present = RegQueryValueExW(
+                    key,
+                    PCWSTR(floaty_name.as_ptr()),
+                    None,
+                    None,
+                    None,
+                    None,
+                ).is_ok();
+
+                if !present {
+                    let exe = std::env::current_exe().unwrap_or_default();
+                    let command: Vec<u16> = format!("\"{}\"\0", exe.display()).encode_utf16().collect();
+                    let bytes: Vec<u8> = command.iter().flat_map(|w| w.to_le_bytes()).collect();
+                    let _ = RegSetValueExW(key, PCWSTR(floaty_name.as_ptr()), None, REG_SZ, Some(&bytes));
+                    // the call under test again, now with something to promote
+                    prioritize_run_key_entry();
+                }
+
                 let mut name_buf = [0u16; 260];
                 let mut name_len = name_buf.len() as u32;
                 if RegEnumValueW(
@@ -1184,6 +1212,12 @@ mod tests {
                 ).is_ok() {
                     let first_name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
                     assert_eq!(first_name, "Floaty", "Floaty must be at index 0 of the Run key");
+                } else {
+                    panic!("the Run key has no values to enumerate");
+                }
+
+                if !present {
+                    let _ = RegDeleteValueW(key, PCWSTR(floaty_name.as_ptr()));
                 }
                 let _ = RegCloseKey(key);
             }
