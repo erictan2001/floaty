@@ -299,6 +299,22 @@ pub fn run() {
             if !set_start_on_boot(&handle, boot.start_on_boot) {
                 log_line(&handle, "autostart: could not reconcile the startup entry");
             }
+            // The first-run guard (ADR 0004): the overlay asks for the answer, and
+            // the log says which way it went, so a launch can be read without the
+            // screen. A probe's override says so in as many words, because a
+            // desktop that came up without a question is otherwise indistinguishable
+            // from a store that was already answered.
+            if let Some(seed) = root_confirmed_from_env() {
+                log_line(
+                    &handle,
+                    &format!("first run: FLOATY_ROOT_CONFIRMED says {seed} — the answer comes from the environment, not the store"),
+                );
+            } else if !root_confirmed_for_this_launch(&boot) {
+                log_line(
+                    &handle,
+                    "first run: the root has not been confirmed — the desktop waits for an answer",
+                );
+            }
             apply_palette_shortcut(&handle);
 
             // tray: settings + quit only (widgets are managed via settings)
@@ -465,6 +481,8 @@ pub fn run() {
             floaty_set_plugin_enabled,
             floaty_get_settings,
             floaty_set_settings,
+            floaty_root_guard,
+            floaty_confirm_root,
             floaty_scan_apps,
             floaty_add_launcher,
             floaty_icon,
@@ -547,6 +565,73 @@ mod tests {
         let back: FloatSettings =
             serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
         assert!(!back.start_on_boot);
+    }
+
+    /// The first-run answer is new, so an existing store does not have it: it must
+    /// still load, and it must read as *unanswered* — that is what makes the guard
+    /// appear on the first launch after the upgrade rather than never (ADR 0004).
+    #[test]
+    fn an_old_settings_file_leaves_the_root_unconfirmed() {
+        let old = r#"{ "gravity": 1200.0, "files_root": "C:\\Desktop" }"#;
+        let s: FloatSettings =
+            serde_json::from_str(old).expect("an old settings file must still parse");
+        assert!(
+            !s.root_confirmed,
+            "a file without the field is an unanswered first run"
+        );
+        assert_eq!(s.files_root, "C:\\Desktop", "the root it did name survives");
+        // and it round-trips, so the answer is written out from now on
+        let back: FloatSettings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).expect("round trip");
+        assert!(!back.root_confirmed);
+    }
+
+    /// The first-run screen says what is in the folder, one level deep: the count the
+    /// desktop would show, which of the files are launchable, and a few names. An
+    /// empty folder and a folder that is not there are different answers — neither is
+    /// an empty list.
+    #[test]
+    fn the_root_preview_counts_what_the_desktop_would_show() {
+        let dir = std::env::temp_dir().join(format!("floaty-root-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Holiday photos")).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        std::fs::write(dir.join("Arc.lnk"), b"x").unwrap();
+        for n in 0..10 {
+            std::fs::write(dir.join(format!("f{n}.txt")), b"x").unwrap();
+        }
+
+        let report = root_preview(&dir.to_string_lossy(), false);
+        assert!(!report.confirmed, "the screen is up because nobody has answered");
+        assert!(report.exists);
+        assert_eq!(report.items, 13, "1 folder + 12 files");
+        assert_eq!(report.folders, 1);
+        assert_eq!(report.files, 12);
+        assert_eq!(report.apps, 1, "the .lnk is the one that becomes an app floatie");
+        assert_eq!(report.names.len(), ROOT_GUARD_NAMES);
+        assert_eq!(report.more, 5, "the rest are counted, not listed");
+
+        // an empty folder says it is empty rather than showing an empty list
+        let empty = std::env::temp_dir().join(format!("floaty-root-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&empty);
+        std::fs::create_dir_all(&empty).unwrap();
+        let report = root_preview(&empty.to_string_lossy(), false);
+        assert!(report.exists, "there, but with nothing in it");
+        assert_eq!(report.items, 0);
+        assert!(report.names.is_empty());
+
+        // and a folder that is not there is missing, not empty
+        let report = root_preview(&dir.join("gone").to_string_lossy(), false);
+        assert!(!report.exists);
+        assert_eq!(report.items, 0);
+        assert_eq!(report.root, dir.join("gone").to_string_lossy());
+        // nothing asked for at all is the same answer
+        let report = root_preview("   ", false);
+        assert!(!report.exists);
+        assert_eq!(report.root, "");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     /// The float rows used to overlap: `floatiness` multiplied
@@ -1119,16 +1204,71 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_windows_startup_configuration() {
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
+            HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, REG_DWORD,
+        };
+        use windows::core::PCWSTR;
+
+        let serialize: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
+            .encode_utf16()
+            .collect();
+
+        // A REG_DWORD's state before this test touched it: `Some(v)` if it existed, `None`
+        // if it did not.
+        let read_dword = |key: HKEY, name: &str| -> Option<u32> {
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut data = 0u32;
+            let mut data_len = 4u32;
+            let mut val_type = REG_DWORD;
+            let ok = unsafe {
+                RegQueryValueExW(
+                    key,
+                    PCWSTR(wide.as_ptr()),
+                    None,
+                    Some(&mut val_type),
+                    Some(&mut data as *mut u32 as *mut u8),
+                    Some(&mut data_len),
+                )
+                .is_ok()
+            };
+            ok.then_some(data)
+        };
+        // Put one back exactly as it was: its value, or no value at all.
+        let restore_dword = |key: HKEY, name: &str, prior: Option<u32>| {
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe {
+                match prior {
+                    Some(value) => {
+                        let bytes = value.to_ne_bytes();
+                        let _ = RegSetValueExW(key, PCWSTR(wide.as_ptr()), None, REG_DWORD, Some(&bytes));
+                    }
+                    None => {
+                        let _ = RegDeleteValueW(key, PCWSTR(wide.as_ptr()));
+                    }
+                }
+            }
+        };
+
+        // The two values this test asserts on live in the *real* user profile, and the call
+        // under test writes them. A test must not change the machine it runs on, so read
+        // what is there first and put it back afterwards — the same shape the Run-key half
+        // below already uses for its Floaty entry.
+        let mut prior_delay = None;
+        let mut prior_idle = None;
+        unsafe {
+            let mut key = HKEY::default();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(serialize.as_ptr()), None, KEY_ALL_ACCESS, &mut key).is_ok() {
+                prior_delay = read_dword(key, "StartupDelayInMSec");
+                prior_idle = read_dword(key, "WaitForIdleState");
+                let _ = RegCloseKey(key);
+            }
+        }
+
         set_windows_startup_delay_zero();
         prioritize_run_key_entry();
 
         // Verify Serialize key
-        use windows::Win32::System::Registry::{
-            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS,
-            KEY_READ, REG_DWORD,
-        };
-        use windows::core::PCWSTR;
-
         unsafe {
             let mut key = HKEY::default();
             let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
@@ -1219,6 +1359,17 @@ mod tests {
                 if !present {
                     let _ = RegDeleteValueW(key, PCWSTR(floaty_name.as_ptr()));
                 }
+                let _ = RegCloseKey(key);
+            }
+
+            // Put the two Serialize values back exactly as they were — their old value, or
+            // no value at all — so the profile this test ran against is the profile it
+            // leaves behind. Same shape as the Floaty entry just above: touch only what the
+            // call under test needs, then take it back.
+            let mut key = HKEY::default();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(serialize.as_ptr()), None, KEY_ALL_ACCESS, &mut key).is_ok() {
+                restore_dword(key, "StartupDelayInMSec", prior_delay);
+                restore_dword(key, "WaitForIdleState", prior_idle);
                 let _ = RegCloseKey(key);
             }
         }

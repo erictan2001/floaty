@@ -191,10 +191,309 @@ export function resolveOverlayLayout(
   return moved;
 }
 
+/* ---------- the first-run guard (ADR 0004) ---------- */
+
+/** What the backend says about the folder floaty is about to adopt. */
+interface RootGuard {
+  confirmed: boolean;
+  root: string;
+  exists: boolean;
+  items: number;
+  files: number;
+  folders: number;
+  apps: number;
+  names: string[];
+  more: number;
+}
+
+/** A pile of kebab-case css properties, so the card needs no stylesheet. */
+function dress(el: HTMLElement, styles: Record<string, string>): void {
+  for (const [prop, value] of Object.entries(styles)) el.style.setProperty(prop, value);
+}
+
+/** One sentence about what is in the folder — the thing the screen exists to say. */
+function describeRoot(report: RootGuard): string {
+  if (!report.root) return "No folder is set yet.";
+  if (!report.exists)
+    return "That folder is not there — moved, renamed, or on a drive that is not plugged in.";
+  if (report.items === 0) return "That folder is empty.";
+  const plural = (n: number, what: string): string => `${n} ${what}${n === 1 ? "" : "s"}`;
+  const parts: string[] = [];
+  if (report.files > 0) {
+    const launchable = report.apps > 0 ? `, ${report.apps} of them launchable` : "";
+    parts.push(`${plural(report.files, "file")}${launchable}`);
+  }
+  if (report.folders > 0) parts.push(plural(report.folders, "folder"));
+  return `${plural(report.items, "item")}: ${parts.join(" and ")}.`;
+}
+
+/** The first few names, and how many were left out. */
+function describeNames(report: RootGuard): string {
+  if (report.names.length === 0) return "";
+  const more = report.more > 0 ? `, and ${report.more} more` : "";
+  return `${report.names.join(", ")}${more}`;
+}
+
+/**
+ * The first-run guard: block until the user has been told what adopting the root
+ * means, and has answered.
+ *
+ * Adopting a folder means floaty treats its contents as the desktop, and a merge moves
+ * real files inside it. On the first launch there is no way to know that, so the screen
+ * shows the folder it is about to adopt and what is in it and waits for an answer — and
+ * nothing is drawn until there is one: the desktop is not merely covered, it is not
+ * mounted at all. Every later root change warns and proceeds instead, because a step
+ * the user has learned to click through is worse than no step at all.
+ *
+ * Resolves when the desktop may be drawn: at once when the question was already
+ * answered, and after the answer when it was not. Both layers wait — the always-on-top
+ * one has pinned floaties to draw, and "nothing is drawn until the user answers" has to
+ * mean the whole desktop.
+ */
+async function firstRunGuard(root: HTMLElement): Promise<void> {
+  let report: RootGuard;
+  try {
+    report = await invoke<RootGuard>("floaty_root_guard", { root: "" });
+  } catch (e) {
+    // A backend that cannot answer cannot show the folder either, and a screen that
+    // blocks on a guess would lock a working desktop behind a question with nothing on
+    // it. Say so in the log and let the desktop come up.
+    void invoke("floaty_log", {
+      msg: `[overlay] first-run guard could not ask: ${String(e)}`,
+    }).catch(() => undefined);
+    return;
+  }
+  if (report.confirmed) return;
+
+  /** The folder the user picked *in this screen*, held in the page until the answer. */
+  let pending = "";
+  /** What the card is currently showing, so a settings change does not redraw it. */
+  let shown = "";
+  let answered = false;
+  let stop: (() => void) | undefined;
+
+  await new Promise<void>((resolve) => {
+    const veil = document.createElement("div");
+    veil.className = "first-run-veil";
+    dress(veil, {
+      position: "fixed",
+      inset: "0",
+      "z-index": "900",
+      // A wash, not a wall: the desktop behind is still clickable (nothing of ours is
+      // on it), and the veil itself takes no clicks.
+      background:
+        "radial-gradient(120% 120% at 50% 0%, rgba(20, 16, 44, 0.5), rgba(8, 6, 20, 0.68))",
+      "pointer-events": "none",
+    });
+
+    const card = document.createElement("div");
+    card.className = "first-run-guard";
+    dress(card, {
+      position: "fixed",
+      left: "50%",
+      top: "50%",
+      transform: "translate(-50%, -50%)",
+      "z-index": "901",
+      width: "min(560px, calc(100vw - 64px))",
+      "max-height": "calc(100vh - 64px)",
+      "overflow-y": "auto",
+      padding: "24px 26px 20px",
+      "border-radius": "var(--panel-radius)",
+      border: "1px solid var(--panel-border)",
+      background: "var(--panel-bg)",
+      "box-shadow": "0 18px 48px rgba(8, 6, 20, 0.45)",
+      color: "var(--panel-ink)",
+      "pointer-events": "auto",
+      "font-size": "13px",
+      "line-height": "1.5",
+    });
+
+    const eyebrow = document.createElement("div");
+    eyebrow.textContent = "first run";
+    dress(eyebrow, {
+      "font-size": "10.5px",
+      "letter-spacing": "0.14em",
+      "text-transform": "uppercase",
+      color: "var(--panel-ink-faint)",
+      "margin-bottom": "8px",
+    });
+
+    const title = document.createElement("h1");
+    title.textContent = "floaty is about to adopt this folder";
+    dress(title, {
+      margin: "0 0 14px",
+      "font-size": "17px",
+      "font-weight": "700",
+      color: "var(--panel-ink)",
+    });
+
+    const path = document.createElement("div");
+    dress(path, {
+      padding: "9px 11px",
+      "border-radius": "10px",
+      background: "var(--panel-inset)",
+      border: "1px solid var(--panel-hairline)",
+      "font-family": "Consolas, 'Cascadia Mono', monospace",
+      "font-size": "12px",
+      "word-break": "break-all",
+      "user-select": "text",
+    });
+
+    const summary = document.createElement("p");
+    dress(summary, { margin: "12px 0 0" });
+
+    const names = document.createElement("p");
+    dress(names, { margin: "6px 0 0", color: "var(--panel-ink-soft)", "font-size": "12px" });
+
+    const consequence = document.createElement("p");
+    consequence.textContent =
+      "Everything in it becomes your desktop — floaty watches the folder and shows what is in it. Dragging one item onto another merges them, and a merge moves real files, inside that folder, on disk.";
+    dress(consequence, {
+      margin: "14px 0 0",
+      color: "var(--panel-ink-soft)",
+      "font-size": "12px",
+    });
+
+    const error = document.createElement("p");
+    dress(error, { margin: "10px 0 0", color: "var(--danger)", "font-size": "12px" });
+
+    const row = document.createElement("div");
+    dress(row, { display: "flex", gap: "10px", "margin-top": "18px", "flex-wrap": "wrap" });
+
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.textContent = "adopt this folder";
+    dress(confirm, {
+      padding: "9px 16px",
+      "border-radius": "999px",
+      border: "1px solid transparent",
+      background: "var(--accent)",
+      color: "#fff",
+      "font-size": "12.5px",
+      "font-weight": "700",
+      cursor: "pointer",
+    });
+
+    const choose = document.createElement("button");
+    choose.type = "button";
+    choose.textContent = "choose a different folder…";
+    dress(choose, {
+      padding: "9px 16px",
+      "border-radius": "999px",
+      border: "1px solid var(--panel-border)",
+      background: "var(--panel-inset)",
+      color: "var(--panel-ink)",
+      "font-size": "12.5px",
+      "font-weight": "600",
+      cursor: "pointer",
+    });
+
+    row.append(confirm, choose);
+    card.append(eyebrow, title, path, summary, names, consequence, error, row);
+    // The desktop layer is the one that asks: with two layers per screen the
+    // always-on-top one would otherwise stack a second identical card on the first.
+    if (!isTopLayer()) root.append(veil, card);
+
+    const render = (fresh: RootGuard): void => {
+      const key = `${fresh.root}|${fresh.exists}|${fresh.items}|${fresh.folders}|${fresh.files}|${fresh.apps}|${fresh.names.join(",")}`;
+      if (key === shown) return;
+      shown = key;
+      path.textContent = fresh.root || "no folder set";
+      summary.textContent = describeRoot(fresh);
+      names.textContent = describeNames(fresh);
+      error.textContent = "";
+    };
+
+    const finish = (): void => {
+      if (answered) return;
+      answered = true;
+      stop?.();
+      veil.remove();
+      card.remove();
+      // the card's click region goes with it: leaving it behind would swallow the
+      // clicks where the user is now working
+      scheduleHitRectsUpdate();
+      resolve();
+    };
+
+    /**
+     * Ask again, and drop the guard the moment the answer is there — whether it was
+     * given here or in the settings window, which is where the folder picker already
+     * lives.
+     */
+    const recheck = async (): Promise<void> => {
+      let fresh: RootGuard;
+      try {
+        fresh = await invoke<RootGuard>("floaty_root_guard", { root: pending });
+      } catch {
+        return;
+      }
+      if (fresh.confirmed) {
+        finish();
+        return;
+      }
+      render(fresh);
+    };
+
+    confirm.addEventListener("click", () => {
+      confirm.disabled = true;
+      void invoke<RootGuard>("floaty_confirm_root", { root: pending })
+        .then(() => finish())
+        .catch((e: unknown) => {
+          confirm.disabled = false;
+          error.textContent = `the answer did not stick: ${String(e)}`;
+        });
+    });
+
+    choose.addEventListener("click", () => {
+      void (async () => {
+        try {
+          const { open } = await import("@tauri-apps/plugin-dialog");
+          const picked = await open({ directory: true, multiple: false });
+          if (typeof picked !== "string" || !picked) return;
+          // shown, not stored: picking a folder here is not adopting it — the
+          // Confirm button is the only thing that does that
+          pending = picked;
+          await recheck();
+        } catch (e: unknown) {
+          error.textContent = `the folder picker failed: ${String(e)}`;
+        }
+      })();
+    });
+
+    render(report);
+    // The card has to be clickable, and the overlay window is click-through
+    // everywhere that is not a registered rect (see `syncHitRectsToRust`).
+    scheduleHitRectsUpdate();
+    // The folder can also be pointed at from the settings window, and the flag can be
+    // set from another page: both arrive here as a settings change.
+    listen("floaty-settings-changed", () => {
+      void recheck();
+    })
+      .then((off) => {
+        stop = off;
+        // the guard may have been answered while this listener was being set up
+        if (answered) off();
+      })
+      .catch(() => undefined);
+    void invoke("floaty_log", {
+      msg: `[overlay] first run: waiting for an answer about '${report.root || "(no folder set)"}'`,
+    }).catch(() => undefined);
+  });
+}
+
 export function mountOverlay(root: HTMLElement): void {
+  root.innerHTML = "";
+  // Both of these belong to the page rather than to the desktop, so they start before
+  // the guard does: a page that never reports in looks like a stuck one (see the
+  // heartbeat repairs), and the guard is itself a settings consumer.
   watchSettings();
-  const top = isTopLayer();
   startHeartbeat(appWin.label);
+  void firstRunGuard(root).then(() => mountDesktop(root));
+}
+
+function mountDesktop(root: HTMLElement): void {
+  const top = isTopLayer();
   root.innerHTML = "";
 
   const canvas = document.createElement("div");

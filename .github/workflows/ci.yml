@@ -56,6 +56,12 @@ jobs:
           npm run check:plugins
           npx tsc --noEmit
 
+      # The unit tests: pure logic, no browser and no build, so they sit with the guards
+      # above and ahead of the slow steps below. About a second, which is why they belong
+      # in the pull-request tier at all.
+      - name: unit tests
+        run: npm test
+
       - name: build the frontend (the Rust side needs dist/)
         run: npm run build
 

@@ -1,0 +1,301 @@
+name: nightly
+
+# Everything the pull-request tier does not run, once a night.
+#
+# `ci.yml` is the fast gate, and it has to stay fast: a one-line change must come back in a
+# few minutes, so it runs the plugin/type guards, the frontend build, `cargo test --lib` and
+# the two page probes that need nothing but the dev server (`verify:panes`, `verify:palette`).
+# This workflow is where the slow half lives — the whole test suite rather than the library
+# tests, the probes that talk to a *running* app, and a real NSIS installer build.
+#
+# It publishes nothing. The release workflow owns releases; an installer built here is built,
+# measured, and thrown away with the runner.
+#
+# ---------------------------------------------------------------------------------------
+# The app probes: what each one needs, and why most of them cannot run on a hosted runner
+# ---------------------------------------------------------------------------------------
+#
+# Six probes in `verify/` drive the *running* app over its debug port (9222) instead of a page
+# the probe started itself. They share one contract — exit 0 = the app is well, exit 1 = the app
+# is wrong, exit 2 = the probe could not run — and each one explains itself on the way out with
+# exit 2. What each of them actually needs:
+#
+#   verify:app        (verify/app.mjs)        the running app on port 9222 — it reads the real
+#                                             store through the real IPC. Exits 2 when nothing
+#                                             answers on the port.
+#   verify:drag       (verify/drag.mjs)       the app AND two overlays, one per screen: a drag
+#                                             across a screen boundary is the entire point (the
+#                                             bug it exists for only exists on two screens at
+#                                             different scales). Exits 2 on one screen.
+#   verify:presence   (verify/presence.mjs)   the app AND two desktop layers, and it opens real
+#                                             fullscreen windows in front of them. Refuses
+#                                             (exit 2) when a fullscreen app is already in front
+#                                             or someone is using the machine.
+#   verify:redo       (verify/redo.mjs)       the app, a populated desktop (a file floatie to
+#                                             read the desktop root from) and real disk: it writes
+#                                             two files, merges them, undoes, redoes, and puts
+#                                             everything back.
+#   verify:stranded   (verify/stranded.mjs)   the app and a panel floatie (sysmon, clock, note or
+#                                             visualizer) to strand and bring back.
+#   verify:panel-drag (verify/panel-drag.mjs) the app and a panel floatie to drag.
+#
+# A hosted `windows-latest` runner has no desktop to put an app on: no shell, no second screen,
+# an empty store, no floaties anywhere — which is exactly why `ci.yml` keeps `verify:app` out of
+# the pull-request tier. So on a scheduled run there is nothing for these six to talk to.
+#
+# One trap decides how they are run here. Four of the six (`presence`, `redo`, `stranded`,
+# `panel-drag`) open the debug port at the top of the file, before they can decide anything, so
+# with nothing on that port they die on an unhandled rejection and exit **1** — the code that
+# otherwise means "the app is wrong". That is not a verdict on the app, it is the absence of one,
+# so this workflow gates on `verify/app-ready.mjs` first (it wants a page that *answers*, not
+# just an open port: a killed app leaves a WebView2 holding the port) and only reads exit 1 as a
+# failure when an app was actually there. Everything else is recorded as a skip with the probe's
+# own words, and the whole log of each run is in the step.
+#
+# To run the six for real, dispatch this workflow with `start_app: true` from a runner that has
+# a desktop: the app is then started first — `npm run tauri dev` with
+# `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, the same incantation
+# verify/README.md gives for a local run — and from then on exit 1 fails the night.
+#
+# Two files in `verify/` are deliberately not run here. `verify/app-ready.mjs` is not a probe: it
+# waits for the app's pages to be live rather than merely listed, and it is the gate above.
+# `verify/cdp.mjs` is the shared CDP client every probe is built on. Neither is a package.json
+# script. `verify:panes` and `verify:palette` are not repeated either — they need only the dev
+# server, and they already run on every pull request.
+
+on:
+  schedule:
+    # 03:00 UTC. Nothing depends on the hour; this is early enough that a failure is waiting
+    # before the working day starts.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      start_app:
+        description: "Start floaty (npm run tauri dev, debug port 9222) before the app probes — needs a runner with a real desktop"
+        type: boolean
+        default: false
+
+# A nightly is worth having even when a previous one is still running: no cancelling.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The headless half of "everything the pull-request tier does not": the whole test suite, and
+  # the six app probes, invoked and reported honestly.
+  checks:
+    # Windows only, matching the app: the shell verbs, the Recycle Bin, WASAPI loopback and the
+    # desktop-layer window policy are all Win32.
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    env:
+      # The app's pages are reachable only over this port, and only when the app is told to open
+      # it. Set for the whole job so the `start_app` path needs no other wiring.
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=9222"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # the crate lives in src-tauri, so that is the workspace to cache
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      # The unit tests, in the same place the pull-request tier runs them: pure logic, no
+      # browser and no build, so they go before the slow steps. Cheap here too — the reason
+      # they run on every pull request rather than only at night.
+      - name: unit tests
+        run: npm test
+
+      # Before anything Rust-shaped: `tauri::generate_context!()` reads `frontendDist` while
+      # `lib.rs` compiles and panics when `dist/` is missing — the same note ci.yml carries.
+      - name: build the frontend (the Rust side needs dist/)
+        run: npm run build
+
+      # The pull-request tier runs `cargo test --lib`; this is everything else cargo has — bin
+      # targets, integration tests, doctests — which is why it is here and not there.
+      - name: the whole test suite (the pull-request tier runs --lib only)
+        working-directory: src-tauri
+        run: cargo test
+
+      # Only on request, and only useful where there is a desktop. The wait is bounded and a
+      # failure to come up is a warning, not an error: the probes below then report the absence
+      # themselves, which is the honest reading of "there was no app to check".
+      - name: start the app, when asked
+        if: ${{ inputs.start_app }}
+        shell: bash
+        env:
+          # A store that has never answered the first-run question blocks the overlay
+          # (ADR 0004), so every running-app probe below would read as a failure. The
+          # answer comes from the environment and not the store, so this leaves the
+          # install unanswered - a stranger still gets the screen.
+          FLOATY_ROOT_CONFIRMED: "1"
+        run: |
+          npm run tauri dev > app.log 2>&1 &
+          node verify/app-ready.mjs --port 9222 --timeout 600 \
+            || echo "::warning::the app did not come up on 9222 — the probes below will say so themselves"
+
+      # One step, because a background process does not survive into the next one, and because
+      # the six verdicts belong together in one summary.
+      - name: the probes that need the running app
+        shell: bash
+        run: |
+          echo "| probe | verdict | needs |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| --- | --- | --- |" >> "$GITHUB_STEP_SUMMARY"
+
+          # The gate, before any probe is read. `app-ready` exits 2 when there is no live page on
+          # the port, which is the difference between "there is no app" and "the app is wrong" —
+          # four of the six exit 1 when they cannot open the port at all (see the note at the top
+          # of this file), and that must not be mistaken for a failed check.
+          app_up=0
+          if node verify/app-ready.mjs --port 9222 --want 1 --timeout 30; then
+            app_up=1
+          fi
+
+          pass=0
+          skip=0
+          fail=0
+
+          run_probe() {
+            script="$1"
+            needs="$2"
+            log="probe-${script//:/-}.log"
+            npm run "$script" > "$log" 2>&1
+            code=$?
+            case "$code" in
+              0)
+                pass=$((pass + 1))
+                verdict="pass"
+                ;;
+              2)
+                skip=$((skip + 1))
+                verdict="skipped (exit 2)"
+                ;;
+              *)
+                if [ "$app_up" = 1 ]; then
+                  fail=$((fail + 1))
+                  verdict="FAILED (exit $code)"
+                else
+                  skip=$((skip + 1))
+                  verdict="skipped (no app on the port, exit $code)"
+                fi
+                ;;
+            esac
+            echo "$verdict  $script — $needs"
+            echo "| \`$script\` | $verdict | $needs |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::group::$script ($verdict)"
+            cat "$log"
+            echo "::endgroup::"
+          }
+
+          run_probe verify:app        "the running app on port 9222"
+          run_probe verify:drag       "the running app and two screens"
+          run_probe verify:presence   "the running app, two screens and a free desktop"
+          run_probe verify:redo       "the running app and a file floatie to merge"
+          run_probe verify:stranded   "the running app and a panel floatie to strand"
+          run_probe verify:panel-drag "the running app and a panel floatie to drag"
+
+          echo "probes: $pass passed, $skip skipped, $fail failed (app on port 9222: $([ "$app_up" = 1 ] && echo yes || echo no))" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$fail" -gt 0 ]; then
+            echo "::error::$fail app probe(s) ran against the app and it failed them — see the logs above"
+            exit 1
+          fi
+          if [ "$app_up" = 0 ]; then
+            echo "no app on the debug port, so none of the six could be probed. That is expected"
+            echo "here — a hosted runner has no desktop to put an app on, the same reason ci.yml"
+            echo "keeps verify:app out of the pull-request tier. Dispatch this workflow with"
+            echo "start_app: true from a runner that has a desktop to run them for real."
+          fi
+
+      - name: what the app said, if a probe failed
+        if: failure()
+        shell: bash
+        run: tail -50 app.log 2>/dev/null || true
+
+  # The installer, built the way the release builds it and then thrown away: this is the check
+  # that the NSIS path still works between releases, not a publication. Nothing is uploaded and
+  # no release is created.
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Named rather than left to the runner's default: this is the target the release builds
+          # for x64, and the build must not depend on what the image happens to ship.
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # the crate lives in src-tauri, so that is the workspace to cache
+          workspaces: src-tauri -> target
+          # keyed by target, so it shares with the release's x64 leg and never with another
+          # architecture
+          key: x86_64-pc-windows-msvc
+          cache-on-failure: true
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      # The release's own incantation for the bundle it ships: the x64 target, NSIS only. The
+      # frontend is built for us by `beforeBuildCommand` (`npm run build`) — the one difference
+      # from release.yml, which builds it explicitly only because it also runs `cargo test` first.
+      #
+      # `createUpdaterArtifacts` is true in tauri.conf.json, so the bundler wants the minisign key
+      # to write the updater archive and its `.sig` even for a build nobody publishes — the same
+      # two secrets release.yml passes. No `tagName` and no upload: this job's only output is a
+      # measured file on the runner. (A repository without that secret fails this step with the
+      # bundler's own message about the private key, which is the first thing to read if the
+      # night goes red.)
+      - name: build the NSIS installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
+
+      # The build can exit 0 and still leave nothing behind; the artifact is the claim, so the
+      # artifact is what is checked. Every NSIS bundle file must exist and have bytes in it — the
+      # installer itself, the updater archive and its signature.
+      - name: the installer exists and has something in it
+        shell: bash
+        run: |
+          echo "### the NSIS bundle" >> "$GITHUB_STEP_SUMMARY"
+          found=0
+          while IFS= read -r file; do
+            bytes=$(wc -c < "$file" | tr -dc '0-9')
+            echo "$file — $bytes bytes"
+            if [ -z "$bytes" ] || [ "$bytes" -eq 0 ]; then
+              echo "::error::$file is empty"
+              exit 1
+            fi
+            found=$((found + 1))
+            echo "- \`$file\` — $bytes bytes" >> "$GITHUB_STEP_SUMMARY"
+          done < <(find src-tauri/target -type f -path '*bundle/nsis/*' \
+                     \( -name '*-setup.exe' -o -name '*.nsis.zip' -o -name '*.sig' \) | sort)
+
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no NSIS bundle was produced — nothing matching *bundle/nsis/*-setup.exe"
+            exit 1
+          fi
+          echo "$found NSIS artifact(s), every one non-empty"

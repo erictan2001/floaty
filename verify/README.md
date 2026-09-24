@@ -61,6 +61,36 @@ move. `floaty_install_plugin` and `floaty_rescan_plugins` reload every window, w
 destroys the evaluation that awaited them: call those un-awaited and read the
 outcome from `%APPDATA%\com.floaty.app\floaty.log` and from disk.
 
+### The first-run screen
+
+A store that has never answered the first-run question blocks (ADR 0004): the overlay
+shows the folder floaty is about to adopt and what is in it, and the desktop is not
+drawn until the answer comes. A probe pointed at an app in that state is looking at
+the screen, not at a broken overlay — `verify:app` reports every record as missing,
+because none of them is mounted yet.
+
+`FLOATY_ROOT_CONFIRMED=1` in the app's environment answers it for that launch:
+
+```powershell
+$env:FLOATY_ROOT_CONFIRMED="1"
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"
+npm run tauri dev
+```
+
+The answer comes from the environment and not the store, so a probe run cannot leave
+the install answered: launch without the variable and the screen is still there for a
+stranger. The same switch is what a developer wants when they just need the desktop up.
+The log says which way it went — `first run: FLOATY_ROOT_CONFIRMED says true — the
+answer comes from the environment, not the store`, or `first run: the root has not been
+confirmed — the desktop waits for an answer`. `FLOATY_ROOT_CONFIRMED=0` is the other
+direction: it asks for the *unconfirmed* state on a machine that has already answered,
+which is how the screen itself gets probed. A probe that means to answer for good
+calls `floaty_confirm_root`, which is the real thing.
+
+The two page probes need none of this. `verify:panes` and `verify:palette` load
+`settings.html` and `index.html#/palette` from the dev server with the Tauri IPC
+stubbed, and neither page is the overlay, so neither mounts the guard.
+
 ### The two traps that waste the most time
 
 **A killed app leaves its debug port alive.** A WebView2 process survives the app and
