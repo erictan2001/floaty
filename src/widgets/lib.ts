@@ -95,7 +95,14 @@ export function syncHitRectsToRust(): void {
     }
   }
 
-  const popups = document.querySelectorAll(".pin-menu, .model-menu, .live2d-palette-modal, .live2d-palette, .fname-edit");
+  // Anything the page draws that has to catch the mouse needs a rect here, because
+  // the overlay window is click-through everywhere else. The first-run guard's card
+  // is one of them: it is the whole point of the screen that the Confirm button can
+  // be pressed (ADR 0004) — and the veil behind it is *not* listed, so the desktop
+  // it covers still takes the clicks it always did.
+  const popups = document.querySelectorAll(
+    ".pin-menu, .model-menu, .live2d-palette-modal, .live2d-palette, .fname-edit, .first-run-guard",
+  );
   popups.forEach((p, idx) => {
     const r = p.getBoundingClientRect();
     if (r.width > 0 && r.height > 0) {
@@ -617,7 +624,7 @@ export async function saveRecord(rec: WidgetRecord): Promise<void> {
 }
 
 /** Clamp helper used by the float-parameter plumbing (keeps NaN out of CSS). */
-function clampNum(v: number, min: number, max: number): number {
+export function clampNum(v: number, min: number, max: number): number {
   return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : min;
 }
 
@@ -707,7 +714,7 @@ interface ShiftContext {
   clampY: (val: number) => number;
 }
 
-function findShiftCandidate(
+export function findShiftCandidate(
   colliding: OverlaySlot[],
   ctx: ShiftContext,
   collidesWithAny: (cx: number, cy: number) => boolean,
@@ -746,7 +753,7 @@ interface GridContext {
   clampY: (val: number) => number;
 }
 
-function findGridCandidate(
+export function findGridCandidate(
   ctx: GridContext,
   collidesWithAny: (cx: number, cy: number) => boolean,
 ): { x: number; y: number } | null {
@@ -1201,6 +1208,13 @@ export interface FloatSettings {
   quiet_when_idle: boolean;
   /** how long "a while" is, in minutes; 0 means never */
   idle_minutes: number;
+  /**
+   * Whether the user has answered the first-run question about the root (ADR 0004).
+   * Read, never written from here: the settings window has no row for it, the
+   * backend keeps it against a save, and `floaty_confirm_root` is the only thing
+   * that sets it.
+   */
+  root_confirmed: boolean;
 }
 
 export const DEFAULT_SETTINGS: FloatSettings = {
@@ -1226,10 +1240,11 @@ export const DEFAULT_SETTINGS: FloatSettings = {
   hide_in_fullscreen: true,
   quiet_when_idle: true,
   idle_minutes: 10,
+  root_confirmed: false,
 };
 
 /** A settings number, or the fallback when the field is missing or not one. */
-function settingNum(v: unknown, fallback: number): number {
+export function settingNum(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
 

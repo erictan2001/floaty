@@ -1,0 +1,26 @@
+# Dependabot: security patches only.
+#
+# The project pins its dependencies and takes security patches rather than a stream of version
+# bumps. Version updates are switched off outright — `open-pull-requests-limit: 0` means
+# Dependabot opens no pull request for a newer version of anything — while security updates
+# keep arriving, because they are raised from the repository's own alerts and are not counted
+# against that limit.
+#
+# `schedule` is a required field, so it stays; with version updates disabled its only remaining
+# effect is how often the dependency graph is refreshed.
+#
+# The crate's manifest lives in src-tauri, the npm one in the repository root.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0

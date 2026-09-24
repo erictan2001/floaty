@@ -86,6 +86,161 @@ pub(crate) struct FloatSettings {
     /// icons produced by an older (worse) pipeline get replaced.
     #[serde(default = "default_icon_pipeline")]
     pub(crate) icon_pipeline: u32,
+    /// Whether the user has answered the first-run question about the root: that
+    /// floaty treats its contents as the desktop, and that a merge moves real files
+    /// inside it (ADR 0004). Unset on every store written before the guard existed,
+    /// which is exactly what makes the first launch block — and it is one-way: a
+    /// confirmation step the user has learned to click through is worse than none,
+    /// so nothing ever clears it again.
+    #[serde(default)]
+    pub(crate) root_confirmed: bool,
+}
+
+/// The folder names the first-run screen lists before it stops and says "and N more".
+pub(crate) const ROOT_GUARD_NAMES: usize = 8;
+
+/// Whether this launch was told to treat the root as already confirmed.
+///
+/// The headless probes drive a *running* app, and a fresh profile has no answer on
+/// file, so every probe run would otherwise meet the blocking screen and measure
+/// nothing. `FLOATY_ROOT_CONFIRMED=1` in the environment pre-seeds the answer for a
+/// probe; a real launch never has it set, so a stranger still gets the guard. A bare
+/// `FLOATY_ROOT_CONFIRMED=0` is how a probe asks for the *unconfirmed* state on a
+/// machine that has already answered — that is what makes the screen itself testable.
+///
+/// It is scoped to the launch and to the question: it never reaches the store, so a
+/// probe run cannot leave the user's install answered (a probe that writes into the
+/// user's profile is a bug this project already knows about). A probe that means to
+/// answer for good calls `floaty_confirm_root`, which is the real thing.
+pub(crate) fn root_confirmed_from_env() -> Option<bool> {
+    match std::env::var("FLOATY_ROOT_CONFIRMED") {
+        Ok(v) if v.is_empty() || v == "0" => Some(false),
+        Ok(_) => Some(true),
+        Err(_) => None,
+    }
+}
+
+/// The answer to give this launch: what the store says, unless the launch was told
+/// what to answer.
+pub(crate) fn root_confirmed_for_this_launch(settings: &FloatSettings) -> bool {
+    root_confirmed_from_env().unwrap_or(settings.root_confirmed)
+}
+
+/// What the first-run screen shows about the folder floaty is about to adopt.
+///
+/// Counted the way the desktop would show it — one level deep, folders and files, and
+/// which of the files are launchable — because that is what "adopting this folder"
+/// means to the person reading it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct RootGuard {
+    /// Whether the user has already answered (ADR 0004): false means the screen.
+    pub(crate) confirmed: bool,
+    /// The folder being looked at: the stored root, or the one asked about.
+    pub(crate) root: String,
+    /// Whether that folder is there at all. "Missing" and "empty" are different
+    /// things to be told, so they are different fields.
+    pub(crate) exists: bool,
+    pub(crate) items: usize,
+    pub(crate) files: usize,
+    pub(crate) folders: usize,
+    /// Files that are launchable — the ones that become app floaties rather than
+    /// file floaties.
+    pub(crate) apps: usize,
+    /// The first few names, in the order the filesystem lists them.
+    pub(crate) names: Vec<String>,
+    /// How many names `names` left out.
+    pub(crate) more: usize,
+}
+
+/// Count what is in a folder, one level deep.
+pub(crate) fn root_preview(root: &str, confirmed: bool) -> RootGuard {
+    let trimmed = root.trim();
+    let dir = std::path::PathBuf::from(trimmed);
+    let mut guard = RootGuard {
+        confirmed,
+        root: trimmed.to_string(),
+        exists: dir.is_dir(),
+        items: 0,
+        files: 0,
+        folders: 0,
+        apps: 0,
+        names: Vec::new(),
+        more: 0,
+    };
+    // A folder that is not there is not an empty folder: say so rather than show
+    // an empty list. An unreadable one is the same kind of answer.
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return guard;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        guard.items += 1;
+        if path.is_dir() {
+            guard.folders += 1;
+        } else {
+            guard.files += 1;
+            if is_launchable_target(&path) {
+                guard.apps += 1;
+            }
+        }
+        if guard.names.len() < ROOT_GUARD_NAMES {
+            guard.names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    guard.more = guard.items.saturating_sub(guard.names.len());
+    guard
+}
+
+/// The first-run guard's question: the folder floaty would adopt, and what is in it.
+///
+/// `root` lets the screen look at a folder the user has just picked *without* adopting
+/// it: nothing is stored until `floaty_confirm_root` is answered.
+#[tauri::command]
+pub(crate) fn floaty_root_guard(root: String, app: AppHandle) -> RootGuard {
+    let settings = load_settings(&app);
+    let confirmed = root_confirmed_for_this_launch(&settings);
+    let asked = if root.trim().is_empty() {
+        settings.files_root
+    } else {
+        root
+    };
+    root_preview(&asked, confirmed)
+}
+
+/// The user has answered the first-run question: adopt this folder as the desktop.
+///
+/// `root` is the folder the screen was showing, when the user picked one there instead
+/// of pointing at it from the settings window. The flag is set whatever the answer was
+/// about the folder — "there is nothing in it yet" is still an answer, and the next
+/// root the user picks is a *change*, which warns and proceeds rather than blocking.
+#[tauri::command]
+pub(crate) fn floaty_confirm_root(root: String, app: AppHandle) -> RootGuard {
+    let mut settings = load_settings(&app);
+    let picked = root.trim().to_string();
+    let changed = !picked.is_empty() && !picked.eq_ignore_ascii_case(settings.files_root.trim());
+    if changed {
+        settings.files_root = picked;
+    }
+    settings.root_confirmed = true;
+    write_settings(&app, &settings);
+    if changed {
+        // Adopted now means mirrored now: waiting for the next launch would leave the
+        // user looking at the empty desktop they just agreed to.
+        let _ = sync_root(None, app.clone(), true);
+    }
+    app.emit("floaty-settings-changed", &settings).ok();
+    log_line(
+        &app,
+        &format!(
+            "first run: root confirmed — {}",
+            if settings.files_root.trim().is_empty() {
+                "no folder set yet".to_string()
+            } else {
+                settings.files_root.trim().to_string()
+            }
+        ),
+    );
+    root_preview(&settings.files_root, true)
 }
 
 /// Bump when the icon resolver changes what it produces, so already-stored
@@ -1046,6 +1201,7 @@ pub(crate) fn load_settings(app: &AppHandle) -> FloatSettings {
             idle_minutes: default_idle_minutes(),
             plugin_trust: std::collections::HashMap::new(),
             icon_pipeline: default_icon_pipeline(),
+            root_confirmed: false,
         },
     }
 }
@@ -1104,6 +1260,12 @@ pub(crate) fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> Fl
         // settings form that does not show them must not be able to clear them.
         plugin_trust: stored.plugin_trust.clone(),
         icon_pipeline: stored_pipeline.max(settings.icon_pipeline),
+        // ...and so is the first-run answer (ADR 0004): the settings window has no
+        // row for it, so a save from there must not be able to put the guard back
+        // and block a user who has already answered. `floaty_confirm_root` is the
+        // only thing that sets it — and note that `stored` is the *file*, so a probe
+        // running with FLOATY_ROOT_CONFIRMED set does not write its override here.
+        root_confirmed: stored.root_confirmed,
     };
     // Start on boot is a registry entry, not a preference: write it now and, if
     // that fails, put the old value back rather than save a checkbox that claims

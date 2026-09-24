@@ -38,7 +38,28 @@ name: release
 # Authenticode certificate is wired in (see "Signing" in the README — the thumbprint is
 # per-machine, so it belongs in a secret, not in this file).
 #
-# To review a release before it goes public, set releaseDraft to true below.
+# Nothing in this file publishes anything. The release is created as a *draft*, the feed
+# that was just attached to it is checked, and only then — on the last leg, once both
+# architectures are in the feed — is the draft published. That ordering is the whole
+# point: a bad release is withdrawn rather than kill-switched, and withdrawal only works
+# if the bad release never went public (docs/adr/0002-withdraw-bad-releases.md). The
+# checks are in `scripts/verify-updater-feed.mjs`: the manifest has to name the tag it is
+# being published under, every artifact it points at has to be on the release and not be
+# empty, its `.sig` has to be there, and that signature has to verify against the public
+# key in `src-tauri/tauri.conf.json` over the artifact's bytes.
+#
+# A draft also means `/releases/latest` keeps serving the previous release while this one
+# is being assembled, instead of serving a feed that carries one architecture and not the
+# other yet.
+#
+# Publishing is not the end of the run. A second job, below the matrix, brings *main* up to
+# the tag that was just published: ADR 0003 (docs/adr/0003-two-version-numbers.md) says main
+# always states the last released version, and the last time that was left to memory, v0.2.0
+# was tagged while all three files still said 0.1.1. `scripts/sync-main-version.mjs` decides
+# and `scripts/set-version.mjs` writes; the job only commits and pushes. It waits for the
+# matrix (`needs: windows`), so a tag whose tests failed — or whose feed did not verify and
+# so stayed a draft — never moves main, and it checks out *main*, never the tag the build
+# checked out: the two trees are on different runners and cannot fight.
 
 on:
   push:
@@ -85,14 +106,26 @@ jobs:
           # stay named in one place. NSIS only: WiX has no arm64 story worth relying on
           # here, and the setup this project points people at is the NSIS one — which is
           # also the bundle the updater feed signs.
+          #
+          # `updater_platforms` is what this leg's guard insists the feed carries before
+          # the leg is done, and `publish` is whether this leg is the one that publishes.
+          # The plain `windows-<arch>` key is the one every installed copy falls back to
+          # (the updater searches `{os}-{arch}-{installer}` and then `{os}-{arch}`), so
+          # that is the key a release cannot be missing. The x86_64 leg runs last
+          # (`max-parallel: 1`), so by the time it checks, both architectures are in the
+          # feed — that is why it requires both and why it is the one that publishes.
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             arch: arm64
             bundles: "--bundles nsis"
+            updater_platforms: "windows-aarch64"
+            publish: "false"
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             arch: x86_64
             bundles: "--bundles nsis"
+            updater_platforms: "windows-x86_64,windows-aarch64"
+            publish: "true"
 
     steps:
       - name: check out the tag
@@ -164,7 +197,7 @@ jobs:
       - name: rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: build, sign and publish the release
+      - name: build, sign and attach to the draft release
         id: build
         uses: tauri-apps/tauri-action@v0
         env:
@@ -186,7 +219,13 @@ jobs:
             **Install:** `Floaty_*_arm64-setup.exe` for Windows on ARM, `Floaty_*_x64-setup.exe` for Intel and AMD. Both are unsigned, so SmartScreen will warn — *More info* → *Run anyway*. Needs Windows 10/11 with the WebView2 runtime (Windows 11 ships it; the installer fetches it if it is missing).
 
             **Updates:** this release also carries the signed updater feed — `latest.json` and the `.sig` signatures it points at — with an entry per architecture, so an ARM64 copy and an x64 copy each find their own. In a running copy: General tab → **Updates** → *check for updates*, then *install and restart*. See "Releasing an update" in the README.
-          releaseDraft: false
+          # Draft, and published by the step below only once the feed checks out: this
+          # action both builds and uploads, so a release that is not a draft is public
+          # before anything has looked at it. Nothing is lost by it being a draft — the
+          # assets, `latest.json` and the `.sig` files all land on it exactly the same
+          # way, and `/releases/latest` keeps serving the previous release until the
+          # guards have passed.
+          releaseDraft: true
           prerelease: false
           # The updater feed. tauri-action writes `latest.json` out of the bundles it
           # built and attaches it, with their `.sig` files, to this release — which is
@@ -216,3 +255,118 @@ jobs:
             echo "$PATHS" | tr ',' '\n'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The post-build smoke test. The installer is *not* installed and launched here: this
+      # is a GUI app — a tray icon and desktop-layer widgets — and a hosted Windows runner
+      # has no desktop session to launch it into, so an install-and-launch step would be
+      # flaky at best and would end up being a check that only looks like it tested
+      # something. What is checked instead is the part that decides whether an update is
+      # ever accepted: the files exist, none of them is empty, they are the file types
+      # they claim to be, and their signatures verify against the public key the running
+      # app holds. That is what `verify-updater-feed.mjs --artifacts` does, and it prints
+      # every value it looked at.
+      - name: smoke-test the built installer and its signature
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          ARTIFACTS: ${{ steps.build.outputs.artifactPaths }}
+        run: node scripts/verify-updater-feed.mjs --tag "$TAG" --artifacts "$ARTIFACTS"
+
+      # The feed is attached to the draft release by now, so it can be read back the way
+      # an installed copy reads it: the manifest's version against the tag it is being
+      # published under, the artifact each entry names against the release's own assets,
+      # the `.sig` beside that artifact, and the signature against
+      # `plugins > updater > pubkey` in `src-tauri/tauri.conf.json` over the artifact's
+      # bytes. A release that fails this is never published — it stays a draft, which is
+      # the withdrawal the ADR asks for, without anyone having to do it by hand.
+      - name: check the feed on the draft before it is published
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          PLATFORMS: ${{ matrix.updater_platforms }}
+        run: |
+          node scripts/verify-updater-feed.mjs \
+            --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --require-platforms "$PLATFORMS"
+
+      # The only thing in this workflow that makes a release public, on the last leg only.
+      # It runs the whole check again — both architectures this time, so a half feed can
+      # never go out — and publishes only if every one of them passes, so what goes public
+      # is exactly what was just checked.
+      - name: publish the release
+        if: matrix.publish == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          node scripts/verify-updater-feed.mjs \
+            --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --require-platforms windows-x86_64,windows-aarch64 \
+            --publish
+
+  # ADR 0003: main states the last released version, not the one being worked on. The build
+  # above takes the version from the tag and writes it into *its own* checkout of the tag —
+  # a scratch copy on the runner, thrown away with it. main is written here and nowhere else.
+  #
+  # `needs: windows` is the gate that matters, and it is the whole reason this is a job and
+  # not a step: every matrix leg has to have succeeded, and publishing the release is the
+  # last thing the last leg does. So main is bumped only for a release that actually went
+  # out — a tag whose tests failed, or whose feed did not verify and so stayed a draft, never
+  # touches main. It runs once per release, not on a push.
+  sync-main-version:
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # main, not the tag: this is the branch the version files have to state it on between
+      # releases. fetch-depth 0 so the push below has a history to push onto.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Idempotent and forward-only: a tag main already states changes nothing, and an older
+      # tag — a workflow_dispatch rebuild of v0.1.1 — is refused rather than written.
+      - name: take main up to the tag
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node scripts/sync-main-version.mjs "$TAG"
+
+      - name: commit and push, if the version moved
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if git diff --quiet -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml; then
+            echo "no version change for $version — nothing to push"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          git commit -m "chore(release): main states $version"
+          # main can move between the checkout and here. Rebase on what is actually there and
+          # retry rather than leaving the bump behind; the version lines are the only thing
+          # this touches, so the rebase has nothing to conflict with in practice.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "main is at $version"
+              exit 0
+            fi
+            echo "::warning::push attempt $attempt failed; rebasing on the latest main"
+            git pull --rebase origin main
+          done
+          # Loud on purpose. A silent failure here is main quietly stating the wrong version,
+          # which is the thing this job exists to stop.
+          echo "::error::the release published but main was not updated — it still states the old version. Run 'npm run sync:version -- $TAG' and push by hand, or check whether main is protected against the bot."
+          exit 1

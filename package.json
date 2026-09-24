@@ -1,7 +1,7 @@
 {
   "name": "floaty",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
   "author": "erictan2001",
   "type": "module",
@@ -18,14 +18,18 @@
     "verify:presence": "node verify/presence.mjs",
     "verify:redo": "node verify/redo.mjs",
     "verify:stranded": "node verify/stranded.mjs",
+    "verify:updater": "node scripts/verify-updater-feed.mjs --artifacts",
     "verify:panel-drag": "node verify/panel-drag.mjs",
-    "check:examples": "node scripts/check-examples.mjs"
+    "check:examples": "node scripts/check-examples.mjs",
+    "sync:version": "node scripts/sync-main-version.mjs",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/cli": "^2",
     "typescript": "~5.6.3",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@pixi/unsafe-eval": "^6.5.10",
