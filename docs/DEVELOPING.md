@@ -41,6 +41,7 @@ Two things worth knowing before they cost you an afternoon:
 ```powershell
 npm run build              # plugin id check + tsc --noEmit + vite build
 npm run check:plugins      # only the backend/frontend plugin id agreement
+npm test                   # vitest: the pure logic in src/widgets/lib.ts
 cargo test                 # 80 backend tests, run from src-tauri
 cargo check
 npm run verify:panes       # render every settings pane headlessly (needs npm run dev)
@@ -53,6 +54,11 @@ pane probe drives the real pane code with the IPC stubbed, the app probe drives 
 real store through the real IPC. [verify/README.md](../verify/README.md) says what each
 one catches and the four rules for writing another.
 
+`npm test` runs the TypeScript unit tests (vitest) over the pure logic in
+`src/widgets/lib.ts` — placement, geometry, the physical-to-virtual mapping and
+presence. It needs no app, no window and no Chrome, which makes it the fastest of the
+three and the one to reach for first: that is where the coordinate bugs have lived.
+
 The backend tests cover the watcher, the shortcut and grouping rules, the plugin
 manifests, the icon store (including a real recycle-and-restore round trip), undo
 steps and the disk moves they reverse, the desktop-layer window policy and how an
@@ -61,6 +67,25 @@ older settings file loads.
 registry and the one registered in the frontend disagree, which is the one mistake
 that is easy to make and invisible at runtime. (Quit Floaty first: the running app
 locks the executable the test link step needs.)
+
+## Continuous integration
+
+Two tiers.
+
+**Pull requests** (`.github/workflows/ci.yml`) run the fast gates: `check:plugins`,
+`tsc --noEmit`, `npm run build`, `cargo test --lib`, and the two page probes that need
+nothing but a dev server — `verify:panes` and `verify:palette`. `verify:app` is
+deliberately absent: it talks to a *running* floaty over its debug port, and a
+pull-request runner has no desktop to put one on.
+
+**Nightly** (`.github/workflows/nightly.yml`) is the slow half: the whole `cargo test`
+suite rather than `--lib` alone, the six probes that drive the *running* app —
+`verify:app`, `verify:drag`, `verify:presence`, `verify:redo`, `verify:stranded` and
+`verify:panel-drag` — and a real NSIS installer build, which is measured and thrown away.
+A hosted runner has no desktop to put the app on, so those six report that they could not
+run and are recorded as skipped rather than counted as green; dispatch the workflow with
+`start_app: true` from a runner that has a desktop to run them for real. The two page
+probes are not repeated here — they already run on every pull request.
 
 ![The Diagnostics pane: log tail, monitors, window positions, heartbeats](../screenshots/diagnostics-pane.png)
 
