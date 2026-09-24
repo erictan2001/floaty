@@ -92,8 +92,7 @@ git push origin main --tags
 ```
 
 Those three files are the only ones that carry a version, and the bump lands at tag
-time, so `main` always states the last released version rather than the one being worked
-on ([ADR 0003](adr/0003-two-version-numbers.md)).
+time, so `main` carries the version being worked on and never claims one older than the newest tag ([ADR 0003](adr/0003-two-version-numbers.md)).
 
 `.github/workflows/release.yml` then checks the tree (`check-plugins`, `tsc`, and
 `cargo test` — a tag whose tests fail gets no release), builds the bundles for **both
