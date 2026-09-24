@@ -91,6 +91,10 @@ git tag v0.2.0
 git push origin main --tags
 ```
 
+Those three files are the only ones that carry a version, and the bump lands at tag
+time, so `main` always states the last released version rather than the one being worked
+on ([ADR 0003](adr/0003-two-version-numbers.md)).
+
 `.github/workflows/release.yml` then checks the tree (`check-plugins`, `tsc`, and
 `cargo test` — a tag whose tests fail gets no release), builds the bundles for **both
 Windows architectures** — `aarch64-pc-windows-msvc` (NSIS) on GitHub's `windows-11-arm`
@@ -105,22 +109,39 @@ feed already attached to the release instead of replacing it. The frontend is bu
 itself (see [Release](#building-a-release)); each leg runs the tests natively, on the target it is
 releasing. The version in the bundles is
 taken from the tag, so the release page and the file you download cannot disagree about
-which release they are. The same workflow can be run by hand against a tag that already
-exists; set `releaseDraft: true` in it if you would rather review a release before it
-goes public, and see [Signing](#signing-it) for what a signed *installer* needs (the
-thumbprint is per-machine, so it belongs in a repository secret).
+which release they are.
+
+That release is a **draft**, and nothing publishes it until the feed has been checked.
+tauri-action both builds and uploads, so a release that went public on upload would be
+public before anything had looked at it. Each leg smoke-tests the installers it has just
+built, then reads the feed back off the draft the way an installed copy reads it; only the
+last leg — the `x86_64` one, by which point both architectures are in the feed — re-runs
+the whole check for both platforms and, if every one of them passes, takes the draft out of
+draft. A release cannot go public unverified: the invocation that publishes is the one that
+checked. [What is checked before a release goes out](#what-is-checked-before-a-release-goes-out)
+has the list, and [Withdrawing a bad release](#withdrawing-a-bad-release) has what the
+draft buys you.
+
+The same workflow can be run by hand against a tag that already exists (Actions →
+**release** → *Run workflow*, naming the tag). The draft-then-publish ordering is not a
+setting to remember — it is what the workflow does — and see [Signing](#signing-it) for
+what a signed *installer* needs (the thumbprint is per-machine, so it belongs in a
+repository secret).
 
 ## Releasing an update
 
 A tagged release publishes two things: the installer, and the feed a running copy reads to
 find it. `plugins > updater > endpoints` in `src-tauri/tauri.conf.json` is
 `https://github.com/erictan2001/floaty/releases/latest/download/latest.json`, so the
-manifest and the signed archive it names have to be attached to the latest *non-draft*
-release — the workflow publishes with `releaseDraft: false` — or that URL 404s and a check
-reports "could not check" rather than "up to date". There is no feed to host: the release
-is the CDN. `bundle.createUpdaterArtifacts` in the same file is what makes the signed
-archives exist at all; with it off, the build produces installers only and `latest.json`
-never appears.
+manifest and the signed archive it names have to be attached to the latest *published*
+release — the workflow keeps the release a draft until the checks pass and publishes it
+then — or that URL 404s and a check reports "could not check" rather than "up to date".
+That address has to be the stable one and not a per-release URL, which is one of the things
+the guard refuses a feed for: withdrawing a bad release is the escape hatch
+([below](#withdrawing-a-bad-release)), and a per-release address would not survive it.
+There is no feed to host: the release is the CDN. `bundle.createUpdaterArtifacts` in the
+same file is what makes the signed archives exist at all; with it off, the build produces
+installers only and `latest.json` never appears.
 
 **Two repository secrets** (Settings → Secrets and variables → Actions).
 `TAURI_SIGNING_PRIVATE_KEY` is the base64 contents of the key file below — CI has no
@@ -163,7 +184,81 @@ single-architecture.
 it runs. General tab → **Updates** → *check for updates* is the only thing that touches the
 feed, and *install and restart* the only thing that downloads — the archive is verified
 against the public key above and the app restarts into it. A check that could not be made
-says exactly that instead of reporting you as up to date.
+says exactly that instead of reporting you as up to date. An update that fails leaves the
+install it was replacing running rather than half-applied.
+
+## What is checked before a release goes out
+
+Eight checks, all of them before publication rather than after it: there is no server
+behind the updater, so nothing can be turned off remotely
+([ADR 0002](adr/0002-withdraw-bad-releases.md)). They live in
+`scripts/verify-updater-feed.mjs`, and each one prints what it looked at and the value it
+saw, so a failure names the value that was wrong rather than only that something was.
+
+Seven of them read the feed back off the draft release the way an installed copy reads it:
+
+- the manifest's version — and the version in `src-tauri/tauri.conf.json` — is the version
+  the tag names;
+- every artifact the manifest points at is on the release and is not zero bytes;
+- the `.sig` beside each artifact is there, is not empty, and is byte-for-byte the
+  signature the manifest carries for it;
+- that signature verifies against `plugins > updater > pubkey` in
+  `src-tauri/tauri.conf.json` under the same minisign rules a running copy uses: the key id
+  has to match, the artifact is hashed with BLAKE2b-512 when the signature is prehashed,
+  and the global signature has to cover the trusted comment;
+- every URL in the manifest belongs to this repository and names this tag — a feed entry
+  left over from an older release is the failure this catches;
+- the platform keys that leg has to see are present: `windows-aarch64` on the ARM64 leg,
+  both `windows-x86_64` and `windows-aarch64` on the last one;
+- the endpoint is the stable `.../releases/latest/download/latest.json` address, not one
+  that only exists for a single release — withdrawal is the escape hatch, and a
+  per-release address would not survive it.
+
+The eighth runs before anything is uploaded: the installers that were just built exist, are
+not empty, are the file types they claim to be (MZ for an `.exe`), and each has a `.sig`
+that verifies over its file.
+
+Locally, `npm run verify:updater` is the entry point to the same guard — it runs the
+`--artifacts` mode, so it wants the tag and the files:
+
+```powershell
+$env:TAG = "v0.2.0"
+npm run verify:updater -- "src-tauri/target/release/bundle/nsis/Floaty_0.2.0_x64-setup.exe,src-tauri/target/release/bundle/nsis/Floaty_0.2.0_x64-setup.exe.sig"
+```
+
+It reads the config, checks the endpoint and the public key, then each artifact and its
+signature. With no `--repo` there is no release to read, so it is the pre-upload half of
+the checks rather than the whole set.
+
+Two things are deliberately not covered, and neither should be read into the checks:
+
+- **The installer is not installed and launched.** This is a GUI app — a tray icon and
+  desktop-layer widgets — and a hosted Windows runner has no desktop session to launch it
+  into, so an install-and-launch step would be a check that only looks like it tested
+  something. What is checked instead is the part that decides whether an update is ever
+  accepted: the files, their signatures, and the feed.
+- **A transient network failure fails the run closed.** The guard downloads the release
+  assets so that it verifies the signatures over the bytes the release actually serves, so
+  a hiccup in that download fails the check and leaves the release a draft. That needs a
+  re-run, not a fix; nothing is published on a bad run.
+
+## Withdrawing a bad release
+
+The escape hatch is withdrawal, not a kill switch: delete the release and its
+`latest.json`, then publish a fixed one ([ADR 0002](adr/0002-withdraw-bad-releases.md)).
+A copy that has not updated fails its check visibly and keeps running the build it already
+has — an update that fails leaves the old install running rather than replaced — and the
+update check is manual ([above](#releasing-an-update)), so nothing changes underneath a
+running app while that is sorted out.
+
+That only works if the bad release never went public, and the workflow is arranged to keep
+it that way: the release is a draft until the checks pass, so one that fails them is
+already withdrawn by staying a draft, without anyone doing it by hand. While it is a draft,
+`/releases/latest` keeps serving the *previous* release — which is what an installed copy
+should see, rather than a feed that carries one architecture and not the other yet, or one
+whose signature does not verify. When you do have a bad *published* release, delete it and
+its `latest.json`: the next release takes over the same address, which is why the endpoint
+is a stable one rather than a per-release URL.
 
 ---
 

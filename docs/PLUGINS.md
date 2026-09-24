@@ -239,6 +239,17 @@ while nobody is looking at it.
 A plugin that says `"apiVersion": 1` and calls one of these gets a sentence saying
 so (`api.every needs "apiVersion": 2 in plugin.json`), rather than a type error.
 
+#### The plugin API version
+
+`apiVersion` is a compatibility number, separate from floaty's own version: the app can
+be 0.3.0 while the plugin API is still 2. It is `PLUGIN_API_VERSION` in
+`src-tauri/src/plugins.rs`, mirrored by `WIDGET_API_VERSION` in `src/widgets/plugin.ts`
+and kept in step by `scripts/check-plugins.mjs`.
+
+It changes only when the surface a plugin sees changes. A break needs three things, not
+one: the bump, a line in [CHANGELOG.md](../CHANGELOG.md), and a deprecation window of one
+release, during which a manifest carrying the old number still loads and is warned about
+rather than refused.
 
 Style the widget yourself: size the container to `100%` and inject a `<style>`
 element from your module. To look like the built-in panels, build your card from

@@ -65,7 +65,7 @@ arrive with, and the tab lives in the URL hash so a reload stays where you were:
 | Desktop | `#/desktop` | what is on your desktop, removal |
 | Apps | `#/apps` | scan and float applications |
 | Files | `#/files` | the root folder and its contents |
-| Motion | `#/motion` | the table above, plus click behaviour |
+| Motion | `#/motion` | [the Motion table](CONCEPTS.md#motion-and-clicks), plus click behaviour |
 | Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
 | General | `#/general` | stay on desktop, start with Windows, ask before removing, the launcher key, tidy the desktop, undo, check for updates |
 | Diagnostics | `#/diagnostics` | `floaty.log`, the monitors, every window, the heartbeat table, the sizes on disk |
