@@ -268,6 +268,13 @@ jobs:
       - name: smoke-test the built installer and its signature
         shell: bash
         env:
+          # The guard reads the release back as well as the artifacts: its `--repo`
+          # defaults to $GITHUB_REPOSITORY, and the release tauri-action just made is a
+          # *draft*, which an unauthenticated listing cannot see at all — without a token
+          # this step fails with "no release for <tag>" while the release sits right
+          # there. The token is only ever read here, never printed: the guard reports it
+          # as present/absent and nothing else.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
           ARTIFACTS: ${{ steps.build.outputs.artifactPaths }}
         run: node scripts/verify-updater-feed.mjs --tag "$TAG" --artifacts "$ARTIFACTS"
