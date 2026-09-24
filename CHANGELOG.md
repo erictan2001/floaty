@@ -7,7 +7,7 @@ Notable changes to Floaty, newest first. The format follows
 The plugin API version is a different number with a policy of its own — see
 [Plugins](docs/PLUGINS.md#the-plugin-api-version).
 
-## Unreleased
+## 0.2.1 - 2026-09-24
 
 ### Added
 
@@ -78,7 +78,7 @@ The release that made the desktop every screen, and the first with an updater.
   documented `api.settings()` surface, so a plugin that read it stops finding it. That
   break landed with no plugin API bump and no record anywhere; the policy that now
   requires a bump, a line here and a one-release deprecation window is under
-  [Unreleased](#unreleased).
+  [0.2.1](#021---2026-09-24).
 
 ### Fixed
 
