@@ -40,6 +40,11 @@ given again. Built-ins are Floaty's own code and need none. (Code: `plugin_trust
 **overlay** - the transparent, full-screen, always-at-the-bottom window per monitor that
 draws every floatie. One per screen; not the desktop itself.
 
+**session** - one floatie's place, its size, and the press that is moving it: the one owner,
+made on demand for a record and reached with `floatie(rec)`. The record is the position and
+a slot is a view of it, so a page that draws a floatie and the backend that stores it are
+never two opinions — the session writes both. (Code: `src/widgets/floatie.ts`.)
+
 **presence** - whether Floaty should be showing and animating right now: hidden when a
 fullscreen app is in front, quiet when the machine has been idle. Decided per screen,
 applied to the machine as a whole.

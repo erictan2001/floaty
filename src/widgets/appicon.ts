@@ -1,10 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { PhysicalPosition } from "@tauri-apps/api/window";
 import { stepBody, supportGone } from "./physics";
 import {
   addPinMenu,
-  appWin,
   applyFloatieAnimation,
   enforceDesktopLayer,
   currentSettings,
@@ -12,25 +10,17 @@ import {
   iconIsMissing,
   isOverlayMode,
   loadRecord,
-  logicalPos,
-  dragGrab,
-  dragPosition,
-  isOnMyScreen,
   monitorArea,
   monitorAt,
-  notifyDragMove,
-  notifyDragging,
   onSettings,
   overlaySlots,
   removeSelf,
-  saveRecord,
-  setLogicalPos,
-  setWidgetPos,
   watchPluginEnabled,
   watchSettings,
   type MonitorArea,
   type WidgetRecord,
 } from "./lib";
+import { floatie } from "./floatie";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 import { isDesktopItem } from "./pluginManifest";
 
@@ -81,25 +71,23 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
   let vx = 0;
   let vy = 0;
   let settled = false;
-  let dragging = false;
   let ready = false;
   let animating = false;
   let rafId: number | undefined;
   let layoutInterval: number | undefined;
   let mon: MonitorArea = { x: 0, y: 0, w: 1280, h: 800 };
-  let scale = 1;
   let others: LayoutItem[] = [];
   let last = performance.now();
   let clickTimer: number | undefined;
   let suppressClickUntil = 0;
-  let lastSavedX = -1;
-  let lastSavedY = -1;
-  let lastSavedPinned: boolean | undefined = undefined;
   // physics state that has to survive between frames (see widgets/physics.ts)
   let restTime = 0;
   let restingOn: string | null = null;
   let bounces = 0;
   let supportTimer: number | undefined;
+
+  /** The one owner of this icon's place, once the record has loaded. */
+  const own = (): ReturnType<typeof floatie> | undefined => (rec ? floatie(rec) : undefined);
 
   const syncAnim = () => {
     // x/y carry the icon's place in the wave: the ripple has to be ordered by
@@ -117,21 +105,17 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     tile.classList.add("squash");
   };
 
-  const saveSoon = () => {
+  /**
+   * Persist where the icon is, and whether it is at rest. The place is already the
+   * record's (the session wrote it as it moved); `pinned` is this module's own fact, and
+   * it is written here, with the save, so the two never disagree.
+   */
+  const persist = () => {
     if (!rec) return;
-    const curX = Math.round(x);
-    const curY = Math.round(y);
-    const curPinned = settled;
-    if (curX === lastSavedX && curY === lastSavedY && curPinned === lastSavedPinned) {
-      return;
-    }
-    lastSavedX = curX;
-    lastSavedY = curY;
-    lastSavedPinned = curPinned;
-    rec.x = curX;
-    rec.y = curY;
-    rec.data["pinned"] = curPinned;
-    void saveRecord(rec).catch(() => undefined);
+    const s = floatie(rec);
+    s.place(x, y);
+    rec.data["pinned"] = settled;
+    void s.commit();
   };
 
   const startLayoutPolling = () => {
@@ -181,7 +165,6 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     }
     last = performance.now();
     startLayoutPolling();
-    void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
     void monitorArea().then((m) => { mon = m; }).catch(() => undefined);
     rafId = requestAnimationFrame(frame);
   };
@@ -288,8 +271,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     addPinMenu(wrap, () => rec);
     wrap.classList.remove("idle-hidden");
 
+    const session = floatie(rec);
     try {
-      const p = await logicalPos(id);
+      const p = await session.position();
       x = p.x;
       y = p.y;
     } catch {
@@ -302,12 +286,53 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     } catch {
       /* defaults */
     }
-    try {
-      const s = await appWin.scaleFactor();
-      if (s > 0) scale = s;
-    } catch {
-      /* keep */
-    }
+    // The drag is the session's: one gesture for every kind, with what this tile does
+    // around it said as hooks — where it is (`onPlace`), what it clamps to (`constrain`),
+    // what a release means (`onRelease`) — instead of a second copy of the drag. A press
+    // that never moves stays a tap: the click and dblclick below still decide.
+    session.attachDrag(wrap, {
+      windowDrag: "manual",
+      onPress: () => {
+        wrap.classList.add("held");
+        squash();
+      },
+      onPlace: (px, py) => {
+        x = px;
+        y = py;
+      },
+      constrain: (px, py) => {
+        // overlay mode deliberately has no clamp: the desktop is every screen
+        if (isOverlayMode()) return { x: px, y: py };
+        return {
+          x: Math.min(Math.max(px, mon.x), mon.x + mon.w - WIN_W),
+          y: Math.min(Math.max(py, mon.y), mon.y + mon.h - WIN_H),
+        };
+      },
+      onRelease: async (_ev, moved) => {
+        wrap.classList.remove("held");
+        // a tap leaves `settled` untouched — click/dblclick decide what happens
+        if (!moved) return false;
+        // was a real drag: pin exactly where dropped, no fall
+        vx = 0;
+        vy = 0;
+        settled = true;
+        restingOn = null;
+        restTime = 0;
+        bounces = 0;
+        syncFloat();
+        wrap.classList.add("rest");
+        stopAnimation();
+        // Group mode: the backend merges us into whatever icon or folder we landed on,
+        // and answers with an id when it did — the slot is unmounted and there is nothing
+        // left to persist.
+        const merged = await invoke<string | null>("floaty_dropped", {
+          id,
+          x: session.rec.x,
+          y: session.rec.y,
+        }).catch(() => null);
+        return !!merged;
+      },
+    });
     // restore pinned state: pinned icons stay where they were, the rest
     // fall in from the top on arrival as before
     vy = 0;
@@ -319,10 +344,10 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       startAnimation();
     }
 
-    window.addEventListener("beforeunload", () => void saveSoon());
+    window.addEventListener("beforeunload", () => persist());
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
-        void saveSoon();
+        persist();
         if (animating) stopAnimation();
       } else if (!settled) {
         startAnimation();
@@ -334,135 +359,6 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
   wrap.querySelector(".launcher-x")?.addEventListener("click", (e) => {
     e.stopPropagation();
     if (rec) void removeSelf(rec);
-  });
-
-  // Manual drag: an OS-level startDragging on every
-  // press swallows the click sequence, so dblclick-to-launch never fires.
-  // The window follows the cursor and x/y stay exact — no re-read needed.
-  wrap.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || dragging) return;
-    e.stopPropagation();
-    // NOTE: no preventDefault() — canceling pointerdown kills click/dblclick.
-    dragging = true;
-    notifyDragging(true);
-    // the snapshot of where this icon was, before the drag overwrites it
-    void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
-    wrap.classList.add("held");
-    squash();
-    // capture lazily on first real movement (eager capture eats taps)
-    let captured = false;
-    const isOverlay = isOverlayMode();
-    const startX = x;
-    const startY = y;
-    const startSX = isOverlay ? e.clientX : e.screenX;
-    const startSY = isOverlay ? e.clientY : e.screenY;
-    let moved = false;
-    // Where the pointer holds the tile, and (in overlay mode) the screens it can be
-    // mapped through: dragging a tile onto another screen is a drag like any other now,
-    // instead of one that stops dead at this window's edge.
-    const grab = isOverlay ? dragGrab(e, startX, startY) : null;
-    const onMove = (ev: PointerEvent) => {
-      const curSX = isOverlay ? ev.clientX : ev.screenX;
-      const curSY = isOverlay ? ev.clientY : ev.screenY;
-      const want = isOverlay ? dragPosition(ev) : null;
-      if (want && grab) {
-        x = want.x - grab.dx;
-        y = want.y - grab.dy;
-        // Told on *every* move, not only when the tile has left this screen: the backend
-        // is what decides which screen the tile is on and hands it between windows, and a
-        // drag that comes back has to be handed back the same way. Sending only while the
-        // pointer was off this screen stranded the tile as soon as a drag returned — the
-        // record stayed on the other screen while the pointer was on this one, so it was
-        // drawn by the wrong window, at the coordinates of a drag that had left.
-        void invoke("floaty_drag_to", { id, x: Math.round(x), y: Math.round(y) }).catch(
-          () => undefined,
-        );
-      } else {
-        x = startX + (curSX - startSX);
-        y = startY + (curSY - startSY);
-      }
-      if (!isOverlay) {
-        if (x < mon.x) x = mon.x;
-        if (x > mon.x + mon.w - WIN_W) x = mon.x + mon.w - WIN_W;
-        // (overlay mode deliberately has no clamp: the desktop is every screen)
-        if (y < mon.y) y = mon.y;
-        if (y > mon.y + mon.h - WIN_H) y = mon.y + mon.h - WIN_H;
-      }
-      if (Math.hypot(curSX - startSX, curSY - startSY) > 4) {
-        moved = true;
-        suppressClickUntil = performance.now() + 300;
-        if (!captured) {
-          captured = true;
-          try {
-            // on the *body*, not on the tile: the tile's slot is removed from the DOM
-            // when the drag hands it to another screen's window, and a capture on a
-            // removed element stops delivering moves — the drag would freeze at the
-            // boundary with the pointer still down
-            (document.body ?? wrap).setPointerCapture(e.pointerId);
-          } catch {
-            /* capture unsupported — window-level listeners still cover the drag */
-          }
-        }
-      }
-      setWidgetPos(id, x, y, scale);
-      // tell the overlay where we are, so it can show the merge this hover
-      // would run (nothing listens in one-window-per-widget mode) — but only while the
-      // tile is on this window's screen: a tile out on another screen is not this
-      // window's to preview a merge for, and vetting it here is what merged files by
-      // accident
-      if (isOnMyScreen(x, y)) notifyDragMove(id, x, y);
-      else window.dispatchEvent(new CustomEvent("floaty-drag-end"));
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-      void invoke("floaty_gesture_end").catch(() => undefined);
-      try {
-        const held = (document.body ?? wrap) as HTMLElement;
-        if (held.hasPointerCapture(e.pointerId)) held.releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
-      }
-      wrap.classList.remove("held");
-      if (moved) {
-        // was a real drag: pin exactly where dropped, no fall
-        vx = 0;
-        vy = 0;
-        settled = true;
-        restingOn = null;
-        restTime = 0;
-        bounces = 0;
-        syncFloat();
-        wrap.classList.add("rest");
-        stopAnimation();
-
-        void (async () => {
-          try {
-            // Group mode: backend merges us into whatever icon/folder we landed on
-            const merged = await invoke<string | null>("floaty_dropped", {
-              id,
-              x: Math.round(x),
-              y: Math.round(y),
-            });
-            if (merged) {
-              return; // Merged into folder; slot will be unmounted
-            }
-          } catch {
-            /* ignore */
-          }
-
-          // Not merged: keep exact dropped position and persist
-          void saveSoon();
-        })();
-      }
-      // a tap leaves `settled` untouched — click/dblclick decide what happens
-      dragging = false;
-      notifyDragging(false);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
   });
 
   const doDrop = () => {
@@ -497,7 +393,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     restTime = 0;
     syncFloat();
     wrap.classList.add("rest");
-    void saveSoon();
+    persist();
     stopAnimation();
   };
   wrap.addEventListener("click", (e) => {
@@ -543,7 +439,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     restingOn = on;
     syncFloat();
     wrap.classList.add("rest");
-    void saveSoon();
+    persist();
     stopAnimation();
     // An icon resting on another one is only stable while that one stays put.
     if (on) watchSupport();
@@ -554,7 +450,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     if (supportTimer !== undefined) return;
     startLayoutPolling();
     supportTimer = window.setInterval(() => {
-      if (!settled || dragging) return;
+      if (!settled || own()?.dragging) return;
       // no layout data yet (the fetch is async): that is not "support gone"
       if (others.length === 0) return;
       if (supportGone({ x, y, w: WIN_W, h: WIN_H }, others)) wake();
@@ -587,7 +483,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     // pinned icons skip physics entirely — they stay where dropped.
     // Never drive the window before the stored position loads (ready),
     // or every icon first jumps to default coordinates and bunches up.
-    if (ready && !dragging && !settled && !document.hidden) {
+    if (ready && !own()?.dragging && !settled && !document.hidden) {
       const out = stepBody({
         body: { x, y, vx, vy, w: WIN_W, h: WIN_H, restTime, restingOn, bounces },
         gravity: currentSettings().gravity,
@@ -611,7 +507,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       }
       restingOn = out.restingOn;
       wrap.classList.remove("rest");
-      setWidgetPos(id, x, y, scale);
+      // drawing only: where a falling icon *is* between two frames is not a fact worth
+      // persisting — `goToRest` writes the place it comes to rest at
+      own()?.draw(x, y);
     }
     if (animating) {
       rafId = requestAnimationFrame(frame);

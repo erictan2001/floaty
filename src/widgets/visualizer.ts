@@ -2,20 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   addPinMenu,
-  addResizeHandle,
   appWin,
   currentSettings,
-  enableOverlayDrag,
   loadRecord,
   onSettings,
   presenceIsQuiet,
   removeSelf,
   saveRecord,
-  trackPosition,
   watchPluginEnabled,
   watchSettings,
   type WidgetRecord,
 } from "./lib";
+import { floatie } from "./floatie";
 import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin";
 
 interface AudioLevels {
@@ -257,10 +255,10 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
       e.stopPropagation();
       void removeSelf(rec!);
     });
-    addResizeHandle(wrap, rec, 160, 80);
+    floatie(rec).resizeHandle(wrap, 160, 80);
     // no title bar: the whole surface drags, and a click still cycles the mode
-    enableOverlayDrag(wrap, id);
-    trackPosition(rec);
+    floatie(rec).attachDrag(wrap);
+    floatie(rec).watch();
     window.addEventListener("beforeunload", () => {
       void invoke("floaty_audio_stop").catch(() => undefined);
     });

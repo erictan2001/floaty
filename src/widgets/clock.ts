@@ -1,4 +1,5 @@
-import { addPinMenu, addResizeHandle, appWin, loadRecord, makeBar, removeSelf, saveRecord, setWidgetSize, trackPosition, watchPluginEnabled, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, loadRecord, makeBar, removeSelf, saveRecord, watchPluginEnabled, type WidgetRecord } from "./lib";
+import { floatie } from "./floatie";
 import type { FloatyPlugin } from "./plugin";
 
 const DEFAULT_FOCUS_S = 25 * 60;
@@ -186,7 +187,10 @@ export function mountClock(root: HTMLElement, id: string): void {
   void (async () => {
     const rec = await loadRecord(id);
     if (!rec) return;
-    wrap.prepend(makeBar("clock", () => void removeSelf(rec), id));
+    wrap.prepend(makeBar("clock", () => void removeSelf(rec)));
+    // the bar is not a handle of its own any more: a press anywhere on the panel
+    // drags, and the buttons and inputs below keep their own behaviour
+    floatie(rec).attachDrag(wrap);
     addPinMenu(wrap, () => rec);
     recRef = rec;
     // restore saved timer lengths (seconds, clamped to 1m..3h)
@@ -210,13 +214,13 @@ export function mountClock(root: HTMLElement, id: string): void {
       try {
         const s = await appWin.scaleFactor();
         const k = s > 0 ? s : 1;
-        setWidgetSize(id, Math.min(w, 1400), Math.min(h, 1400), k);
+        floatie(rec).size(Math.min(w, 1400), Math.min(h, 1400), k);
       } catch {
         /* keep default size */
       }
     }
-    addResizeHandle(wrap, rec, 200, 260);
-    trackPosition(rec);
+    floatie(rec).resizeHandle(wrap, 200, 260);
+    floatie(rec).watch();
   })();
 }
 

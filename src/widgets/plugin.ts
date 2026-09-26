@@ -24,6 +24,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import * as floaty from "./lib";
 import type { FloatSettings, MonitorArea, PinMenuOptions, WidgetRecord } from "./lib";
+import { floatie } from "./floatie";
 import { installedEntries, loadPluginManifest } from "./pluginManifest";
 import { notePlugin } from "./note";
 import { clockPlugin } from "./clock";
@@ -69,11 +70,17 @@ export interface WidgetApi {
   /**
    * Move the widget (handles the overlay slot and the hit rects). Pass
    * `{transient: true}` when the slot is only being stretched to catch the mouse —
-   * a drawing surface, a page of slots — so the position watcher does not save that
-   * scaffolding as the widget's place. Any later `setPos` without it clears the flag.
+   * a drawing surface, a page of slots — so the stretch is drawn and *not* stored
+   * as the widget's place; the plain `setPos` that puts the panel back is what
+   * stores the place again.
+   *
+   * `id` may be another floatie's: the documented use is arranging the whole
+   * desktop from one widget. This floatie goes through its own session, so the
+   * record it is drawn from is written too; a foreign one has no session on this
+   * page, so it is the low-level move (and `record.save` writes the position).
    */
   setPos: (id: string, x: number, y: number, opts?: { transient?: boolean }) => void;
-  /** Resize the widget slot. */
+  /** Resize the widget slot — the widget's own through its session, another's directly. */
   setSize: (id: string, w: number, h: number) => void;
   /** Right-click menu with the standard floaty rows for this widget. Pass
    *  `options.rows` to add the plugin's own rows (see `PinMenuApi`). */
@@ -159,6 +166,25 @@ interface Scope {
 
 const scopes = new Map<string, Scope>();
 
+/**
+ * The records this page has been handed, by id.
+ *
+ * The api is one object shared by every widget, so a call cannot tell from a
+ * bare `id` whether it names the calling widget or another floatie — but a
+ * plugin hands its record over twice (to `record.load`, and to `enableDrag` /
+ * `addResizeHandle`) and those are the ids whose session exists on this page.
+ * A session is per record and remembers nothing beyond it, so this is what a
+ * call routes on: its own floatie goes through `floatie(rec)`, and anything
+ * else is the low-level primitive. A remount replaces the entry, since a
+ * session keeps the record it was made with and a fresh widget has a fresh one.
+ */
+const held = new Map<string, WidgetRecord>();
+
+function sessionFor(id: string) {
+  const rec = held.get(id);
+  return rec ? floatie(rec) : undefined;
+}
+
 function scopeOf(id: string): Scope {
   let scope = scopes.get(id);
   if (!scope) {
@@ -177,6 +203,13 @@ function scopeOf(id: string): Scope {
  * every slow leak in a long-running desktop.
  */
 export function clearWidgetScope(id: string): void {
+  // The record goes with the widget: a record held for a floatie nobody is
+  // drawing any more is a copy that goes stale the moment the real one is loaded.
+  const rec = held.get(id);
+  if (rec) {
+    held.delete(id);
+    floatie(rec).dispose();
+  }
   const scope = scopes.get(id);
   if (!scope) return;
   for (const timer of scope.timers) window.clearInterval(timer);
@@ -279,15 +312,47 @@ export const widgetApi: WidgetApi = {
   log: (msg: string) => {
     void invoke("floaty_log", { msg }).catch(() => undefined);
   },
-  record: { load: floaty.loadRecord, save: floaty.saveRecord },
-  enableDrag: (el, rec, opts) => {
-    floaty.enableOverlayDrag(el, rec.id, opts);
-    floaty.trackPosition(rec);
+  record: {
+    load: async (id) => {
+      const rec = await floaty.loadRecord(id);
+      if (rec) held.set(rec.id, rec);
+      return rec;
+    },
+    save: floaty.saveRecord,
   },
-  setPos: (id, x, y, opts) => floaty.setWidgetPos(id, x, y, 1, opts),
-  setSize: floaty.setWidgetSize,
+  enableDrag: (el, rec, opts) => {
+    held.set(rec.id, rec);
+    floatie(rec).attachDrag(el, opts);
+    // a window-mode drag is the window manager's, so the record is written by
+    // `watch` — without it the widget follows the cursor and snaps back
+    floatie(rec).watch();
+  },
+  setPos: (id, x, y, opts) => {
+    const own = sessionFor(id);
+    if (own) {
+      own.place(x, y, { transient: opts?.transient });
+      return;
+    }
+    // another floatie's: this page has no record for it, so there is no session to
+    // place. The widget is drawn from its own record on the other side, and the
+    // plugin writes that with `record.save` — a record invented here would be a
+    // copy the moment the real one is mounted.
+    floaty.setWidgetPos(id, x, y, 1);
+  },
+  setSize: (id, w, h) => {
+    const own = sessionFor(id);
+    if (own) {
+      own.size(w, h);
+      return;
+    }
+    // another floatie's, for the same reason as `setPos`
+    floaty.setWidgetSize(id, w, h, 1);
+  },
   addPinMenu: floaty.addPinMenu,
-  addResizeHandle: floaty.addResizeHandle,
+  addResizeHandle: (wrap, rec, minW, minH) => {
+    held.set(rec.id, rec);
+    floatie(rec).resizeHandle(wrap, minW, minH);
+  },
   removeSelf: floaty.removeSelf,
   settings: floaty.currentSettings,
   onSettings: floaty.onSettings,

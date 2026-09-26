@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { addPinMenu, appWin, applyFloatieAnimation, currentSettings, displayName, dragGrab, dragPosition, enforceDesktopLayer, iconIsMissing, isOnMyScreen, isOverlayMode, loadRecord, logicalPos, monitorArea, notifyDragMove, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetPos, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { addPinMenu, appWin, applyFloatieAnimation, displayName, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, monitorArea, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import { floatie, DRAG_CONTROLS } from "./floatie";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 interface FolderItem {
@@ -24,14 +25,13 @@ export function mountFolder(root: HTMLElement, id: string): void {
   let pinArmed = false;
   let items: FolderItem[] = [];
   let expanded = false;
-  let dragging = false;
   let suppressClickUntil = 0;
   let itemDragMoved = false;
-  let scale = 1;
   let px = 200;
   let py = 200;
-  let lastSavedX = -1;
-  let lastSavedY = -1;
+
+  /** The one owner of this folder's place, once the record has loaded. */
+  const own = (): ReturnType<typeof floatie> | undefined => (rec ? floatie(rec) : undefined);
 
   watchSettings();
 
@@ -43,16 +43,15 @@ export function mountFolder(root: HTMLElement, id: string): void {
   const syncFloat = syncAnim;
   onSettings(syncAnim);
 
-  const savePos = () => {
+  /**
+   * Persist where the folder is. The place is already the record's (the session wrote it
+   * as it moved); this is the save that makes it the store's.
+   */
+  const persist = () => {
     if (!rec) return;
-    const curX = Math.round(px);
-    const curY = Math.round(py);
-    if (curX === lastSavedX && curY === lastSavedY) return;
-    lastSavedX = curX;
-    lastSavedY = curY;
-    rec.x = curX;
-    rec.y = curY;
-    void saveRecord(rec).catch(() => undefined);
+    const s = floatie(rec);
+    s.place(px, py);
+    void s.commit();
   };
 
   const folderName = (): string =>
@@ -64,7 +63,8 @@ export function mountFolder(root: HTMLElement, id: string): void {
     try {
       const s = await appWin.scaleFactor();
       const k = s > 0 ? s : 1;
-      scale = k;
+      // the open grid's own size, drawn straight: this is scaffolding, not the widget's
+      // size, so it must not be written into the record's data (see `pluginSize`)
       setWidgetSize(id, w, h, k);
     } catch {
       /* ignore */
@@ -106,7 +106,9 @@ export function mountFolder(root: HTMLElement, id: string): void {
 
       px = newX;
       py = newY;
-      setWidgetPos(id, px, py, scale);
+      // drawing only: the open grid's place is scaffolding, not the folder's own place —
+      // collapsing restores the place the record kept
+      own()?.draw(px, py);
       await setWindowSize(targetW, targetH);
     } catch {
       /* ignore */
@@ -143,9 +145,8 @@ export function mountFolder(root: HTMLElement, id: string): void {
       if (py + WIN_H > mon.y + mon.h - MARGIN) py = mon.y + mon.h - MARGIN - WIN_H;
       if (py < mon.y + MARGIN) py = mon.y + MARGIN;
 
-      setWidgetPos(id, px, py, scale);
+      persist();
       await setWindowSize(WIN_W, WIN_H);
-      savePos();
     } catch {
       /* ignore */
     }
@@ -467,7 +468,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
       ? (raw as FolderItem[]).filter((it) => it && typeof it.target === "string")
       : [];
     try {
-      const p = await logicalPos(id);
+      const p = await floatie(r).position();
       px = p.x;
       py = p.y;
     } catch {
@@ -482,9 +483,45 @@ export function mountFolder(root: HTMLElement, id: string): void {
     await reload();
     // belt and braces with the builder flag: folders live under real apps
     enforceDesktopLayer();
-    window.addEventListener("beforeunload", () => void savePos());
+    const r = rec;
+    if (r) {
+      // The drag is the session's: one gesture for every kind, with what this folder does
+      // around it said as hooks. In open mode the grid and its controls keep their own
+      // presses — `controls` is what says so.
+      const session = floatie(r);
+      session.attachDrag(wrap, {
+        windowDrag: "manual",
+        controls: `${DRAG_CONTROLS}, .fgrid`,
+        onPress: () => {
+          // same held state the app tile uses: it is what lets the merge preview
+          // shrink the dragged folder as it hovers another tile
+          wrap.classList.add("held");
+        },
+        onPlace: (x, y) => {
+          px = x;
+          py = y;
+        },
+        onRelease: async (_ev, moved) => {
+          wrap.classList.remove("held");
+          if (!moved) return false;
+          // Group mode: the backend merges this folder into whatever it landed on, and
+          // answers with an id when it did — the slot is unmounted and there is nothing
+          // left to persist.
+          const merged = await invoke<string | null>("floaty_dropped", {
+            id,
+            x: session.rec.x,
+            y: session.rec.y,
+          }).catch(() => null);
+          if (merged) return true;
+          // the open grid folds back to where the folder was dropped
+          if (expanded) collapsedPos = { x: px, y: py };
+          return false;
+        },
+      });
+    }
+    window.addEventListener("beforeunload", () => persist());
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) void savePos();
+      if (document.hidden) persist();
     });
     await listen<string>("floaty-folder-changed", (e) => {
       if (e.payload === id) void reload();
@@ -492,107 +529,9 @@ export function mountFolder(root: HTMLElement, id: string): void {
     void appWin.show().catch(() => undefined);
   })();
 
-  // manual pinned drag (no gravity); a tap toggles expand
-  wrap.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || dragging) return;
-    const t = e.target as HTMLElement;
-    // In open mode, scrolling or interacting with the item grid shouldn't drag the window
-    if (expanded && t.closest(".fgrid")) return;
-    // buttons and text fields handle themselves (rename input stays usable)
-    if (t.closest("button, input, textarea")) return;
-    e.stopPropagation();
-    dragging = true;
-    notifyDragging(true);
-    void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
-    // same held state the app tile uses: it is what lets the merge preview
-    // shrink the dragged folder as it hovers another tile
-    wrap.classList.add("held");
-    void appWin.scaleFactor().then((s) => { if (s > 0) scale = s; }).catch(() => undefined);
-    // capture lazily on first real movement (eager capture eats taps)
-    let captured = false;
-    const isOverlay = isOverlayMode();
-    const startX = px;
-    const startY = py;
-    const startSX = isOverlay ? e.clientX : e.screenX;
-    const startSY = isOverlay ? e.clientY : e.screenY;
-    let moved = false;
-    // Where the pointer holds the tile, and the screens it can be mapped through — a
-    // folder drags onto another screen the same way an icon does.
-    const grab = isOverlay ? dragGrab(e, startX, startY) : null;
-    const onMove = (ev: PointerEvent) => {
-      const curSX = isOverlay ? ev.clientX : ev.screenX;
-      const curSY = isOverlay ? ev.clientY : ev.screenY;
-      const want = isOverlay ? dragPosition(ev) : null;
-      if (want && grab) {
-        px = want.x - grab.dx;
-        py = want.y - grab.dy;
-        // every move, so a drag that crosses back is handed back (see appicon.ts)
-        void invoke("floaty_drag_to", { id, x: Math.round(px), y: Math.round(py) }).catch(
-          () => undefined,
-        );
-      } else {
-        px = startX + (curSX - startSX);
-        py = startY + (curSY - startSY);
-      }
-      if (Math.hypot(curSX - startSX, curSY - startSY) > 4) {
-        moved = true;
-        suppressClickUntil = performance.now() + 300;
-        if (!captured) {
-          captured = true;
-          try {
-            // on the body: the tile's slot is removed when the drag hands it to another
-            // screen's window, and a capture on a removed element stops delivering moves
-            (document.body ?? wrap).setPointerCapture(e.pointerId);
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-      setWidgetPos(id, px, py, scale);
-      if (isOnMyScreen(px, py)) notifyDragMove(id, px, py);
-      else window.dispatchEvent(new CustomEvent("floaty-drag-end"));
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-      void invoke("floaty_gesture_end").catch(() => undefined);
-      try {
-        const held = (document.body ?? wrap) as HTMLElement;
-        if (held.hasPointerCapture(e.pointerId)) held.releasePointerCapture(e.pointerId);
-      } catch {
-        /* ignore */
-      }
-      wrap.classList.remove("held");
-      if (moved) {
-        void (async () => {
-          try {
-            const res = await invoke<string | null>("floaty_dropped", {
-              id,
-              x: Math.round(px),
-              y: Math.round(py),
-            });
-            if (res) return;
-          } catch {
-            /* ignore */
-          }
-
-          savePos();
-          if (expanded) {
-            collapsedPos = { x: px, y: py };
-          }
-        })();
-      }
-      dragging = false;
-      notifyDragging(false);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-  });
   wrap.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (dragging || performance.now() < suppressClickUntil) return;
+    if (own()?.dragging || performance.now() < suppressClickUntil) return;
     // collapse only via the – button, so clicks inside the open panel
     // (rename field included) never fold it away by accident
     if (expanded) return;
