@@ -4,26 +4,26 @@
 //! boundary now; nothing here changed shape on the way out.
 
 use crate::*;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter};
 
 // ---------- real file operations (desktop parity) ----------
 
 /// The on-disk path a widget points at, with its kind. Folders keep theirs in
 /// `path`, files and launchable items in `target`.
 pub(crate) fn widget_path(app: &AppHandle, id: &str) -> Result<(String, String), String> {
-    let state = app.state::<AppState>();
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let rec = guard.widgets.get(id).ok_or("widget not found")?;
-    let key = plugins::path_key(&rec.kind);
-    let path = key
-        .and_then(|k| rec.data.get(k))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if path.trim().is_empty() {
-        return Err(format!("this {} has no path", rec.kind));
-    }
-    Ok((rec.kind.clone(), path))
+    store::with(app, |s| -> Result<(String, String), String> {
+        let rec = s.get(id).ok_or("widget not found")?;
+        let key = plugins::path_key(&rec.kind);
+        let path = key
+            .and_then(|k| rec.data.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if path.trim().is_empty() {
+            return Err(format!("this {} has no path", rec.kind));
+        }
+        Ok((rec.kind.clone(), path))
+    })
 }
 
 /// True when the path is one this app manages (a desktop item), i.e. deleting
@@ -74,12 +74,9 @@ pub(crate) fn floaty_delete(id: String, app: AppHandle) -> Result<String, String
     } else {
         format!("removed the floatie; '{}' stays on disk", path)
     };
-    let state: State<'_, AppState> = app.state::<AppState>();
-    if let Ok(mut guard) = state.0.lock() {
-        guard.widgets.remove(&id);
-        guard.dead.insert(id.clone());
-    }
-    persist(&app);
+    store::with(&app, |s| {
+        s.remove(&id);
+    });
     close_widget_async(&app, &id);
     app.emit("floaty-widget-removed", &id).ok();
     log_line(&app, &format!("delete {id}: {note}"));
@@ -112,26 +109,25 @@ pub(crate) fn floaty_properties(id: String, app: AppHandle) -> Result<(), String
 pub(crate) fn floaty_rename(id: String, name: String, app: AppHandle) -> Result<WidgetRecord, String> {
     let (kind, path) = widget_path(&app, &id)?;
     let old = std::path::PathBuf::from(&path);
-    let new_path = shell_ops::rename(&old, &name)?;
+    let new_path = placement::rename_in_place(&old, &name)?;
     let new_str = new_path.to_string_lossy().to_string();
     let new_name = new_path
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| name.clone());
-    let rec = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        let r = guard.widgets.get_mut(&id).ok_or("widget not found")?;
-        if let Some(obj) = r.data.as_object_mut() {
-            obj.insert("name".to_string(), serde_json::Value::String(new_name));
-            obj.insert("target".to_string(), serde_json::Value::String(new_str.clone()));
-            if kind == "folder" {
-                obj.insert("path".to_string(), serde_json::Value::String(new_str.clone()));
+    let rec = store::with(&app, |s| -> Result<WidgetRecord, String> {
+        s.edit(&id, |r| {
+            if let Some(obj) = r.data.as_object_mut() {
+                obj.insert("name".to_string(), serde_json::Value::String(new_name));
+                obj.insert("target".to_string(), serde_json::Value::String(new_str.clone()));
+                if kind == "folder" {
+                    obj.insert("path".to_string(), serde_json::Value::String(new_str.clone()));
+                }
             }
-        }
-        r.clone()
-    };
-    persist(&app);
+            r.clone()
+        })
+        .ok_or_else(|| "widget not found".to_string())
+    })?;
     app.emit("floaty-widget-updated", &rec).ok();
     log_line(&app, &format!("renamed {id}: {} -> {new_str}", old.display()));
 
@@ -152,16 +148,13 @@ pub(crate) fn floaty_rename(id: String, name: String, app: AppHandle) -> Result<
                     .flatten()
             };
             let Some(icon) = resolved else { return };
-            {
-                let state = handle.state::<AppState>();
-                let Ok(mut guard) = state.0.lock() else { return };
-                if let Some(r) = guard.widgets.get_mut(&widget_id) {
+            store::with(&handle, |s| {
+                s.edit(&widget_id, |r| {
                     if let Some(obj) = r.data.as_object_mut() {
                         obj.insert("icon".to_string(), serde_json::Value::String(icon));
                     }
-                }
-            }
-            persist(&handle);
+                });
+            });
             handle.emit("floaty-icon-refreshed", &widget_id).ok();
             log_line(&handle, &format!("icon re-resolved after renaming {widget_id}"));
         });

@@ -164,42 +164,6 @@ pub fn properties(_path: &str) -> Result<(), String> {
     Err("properties sheet is windows-only".into())
 }
 
-/// Rename an item in place. Validates the name the way Explorer does and
-/// refuses to clobber an existing sibling rather than silently replacing it.
-pub fn rename(old: &Path, new_name: &str) -> Result<PathBuf, String> {
-    let name = new_name.trim();
-    if name.is_empty() {
-        return Err("name cannot be empty".into());
-    }
-    if name == "." || name == ".." {
-        return Err("invalid name".into());
-    }
-    if name.contains(['/', '\\']) {
-        return Err("name cannot contain a path separator".into());
-    }
-    if name.contains(['<', '>', ':', '"', '|', '?', '*']) {
-        return Err("name contains a character windows does not allow".into());
-    }
-    if name.ends_with('.') || name.ends_with(' ') {
-        return Err("name cannot end with a dot or a space".into());
-    }
-    let parent = old
-        .parent()
-        .ok_or_else(|| "item has no parent directory".to_string())?;
-    if !old.exists() {
-        return Err(format!("{} no longer exists", old.display()));
-    }
-    let dest = parent.join(name);
-    if dest == old {
-        return Ok(dest);
-    }
-    if dest.exists() {
-        return Err(format!("'{name}' already exists here"));
-    }
-    std::fs::rename(old, &dest).map_err(|e| format!("rename failed: {e}"))?;
-    Ok(dest)
-}
-
 #[cfg(windows)]
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -407,34 +371,6 @@ mod tests {
             reveal_args(r"C:\Users\me\Desktop\rent calculation.xlsx"),
             "/select,\"C:\\Users\\me\\Desktop\\rent calculation.xlsx\""
         );
-    }
-
-    #[test]
-    fn rename_validates_the_way_the_shell_does() {
-        let dir = temp_dir("rename");
-        let file = dir.join("old.txt");
-        std::fs::write(&file, b"x").unwrap();
-
-        assert!(rename(&file, "").is_err());
-        assert!(rename(&file, "  ").is_err());
-        assert!(rename(&file, "a/b.txt").is_err());
-        assert!(rename(&file, "a\\b.txt").is_err());
-        assert!(rename(&file, "bad?.txt").is_err());
-        assert!(rename(&file, "trailing. ").is_err());
-        assert!(rename(&file, "..").is_err());
-
-        let renamed = rename(&file, "new.txt").unwrap();
-        assert_eq!(renamed.file_name().unwrap(), "new.txt");
-        assert!(renamed.exists(), "the file itself must be renamed on disk");
-        assert!(!file.exists());
-
-        // does not clobber an existing sibling
-        let other = dir.join("other.txt");
-        std::fs::write(&other, b"y").unwrap();
-        assert!(rename(&renamed, "other.txt").is_err());
-        assert_eq!(std::fs::read(&other).unwrap(), b"y");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An `$I` file as Windows 10 writes it: version 2, a UTF-16 path.

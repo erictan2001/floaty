@@ -6,7 +6,7 @@
 use crate::*;
 use std::collections::{ HashSet};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 // ---------- launcher palette ----------
 
@@ -68,10 +68,8 @@ pub(crate) fn palette_search(app: &AppHandle, query: &str) -> Vec<palette::Palet
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut seen_titles: HashSet<String> = HashSet::new();
 
-    {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        for rec in guard.widgets.values() {
+    store::with(app, |s| {
+        for rec in s.iter() {
             if settings.disabled.iter().any(|d| d == &rec.kind) {
                 continue; // not on the desktop, so not in the launcher either
             }
@@ -123,7 +121,7 @@ pub(crate) fn palette_search(app: &AppHandle, query: &str) -> Vec<palette::Palet
                 },
             ));
         }
-    }
+    });
 
     if let Some(root) = files_root_dir(app) {
         if let Ok(entries) = std::fs::read_dir(&root) {
@@ -255,10 +253,8 @@ pub(crate) async fn floaty_palette_run(
         }
         "floatie" => {
             let id = hit.id.clone().unwrap_or_default();
-            let target = {
-                let state = app.state::<AppState>();
-                let guard = state.0.lock().map_err(|e| e.to_string())?;
-                guard.widgets.get(&id).and_then(|rec| {
+            let target = store::with(&app, |s| {
+                s.get(&id).and_then(|rec| {
                     plugins::path_key(&rec.kind).and_then(|key| {
                         rec.data
                             .get(key)
@@ -267,7 +263,7 @@ pub(crate) async fn floaty_palette_run(
                             .map(|s| s.to_string())
                     })
                 })
-            };
+            });
             match target {
                 Some(target) => {
                     launch_target(&app, &target)?;

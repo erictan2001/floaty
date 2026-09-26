@@ -347,7 +347,15 @@ pub fn default_data(kind: &str) -> serde_json::Value {
 
 /// Every plugin with its enabled state: built-ins in declaration order, then the
 /// ones the user installed, so the settings list stays stable.
-pub fn manifest(disabled: &[String]) -> Vec<PluginInfo> {
+///
+/// `approved` answers *only for an installed plugin*: built-ins are floaty's own code
+/// and are always trusted, so it is never asked about them. Answering it means walking
+/// the plugin's folder for its fingerprint, which is the caller's to pay for, not
+/// something this listing does on its way out of an emit. Taking the answer as an
+/// argument is what keeps the flag honest — a list cannot be built without saying where
+/// trust came from, which is how `trusted: true` used to reach the windows for a plugin
+/// nobody had approved.
+pub fn manifest(disabled: &[String], approved: impl Fn(&str) -> bool) -> Vec<PluginInfo> {
     let mut out: Vec<PluginInfo> = PLUGINS.iter().map(|p| p.info(disabled)).collect();
     for p in installed_plugins() {
         out.push(PluginInfo {
@@ -365,7 +373,7 @@ pub fn manifest(disabled: &[String]) -> Vec<PluginInfo> {
             version: p.version.clone(),
             author: p.author.clone(),
             api_version: p.api_version,
-            trusted: true,
+            trusted: approved(&p.id),
         });
     }
     out
@@ -593,18 +601,22 @@ fn list_plugin_dirs(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, St
     Ok(dirs)
 }
 
-/// Load every plugin folder in `dir` (created if missing).
+/// Load every plugin folder in `dir` (created if missing), and say what was refused.
 ///
-/// Returns `(accepted descriptions, rejections)`. A broken plugin is reported,
-/// never fatal: one bad folder must not cost the user their desktop.
-pub fn install_from(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
-    let mut accepted = Vec::new();
+/// A broken plugin is reported, never fatal: one bad folder must not cost the user
+/// their desktop.
+///
+/// The accepted side is the plugins themselves, not a line of text about them: callers
+/// that want to show one ask `labels`. It used to hand back `"countdown v1.2.0"`, so the
+/// one caller that wanted the id split the string it was given — a display form standing
+/// in for data, with the parse as the receipt.
+pub fn install_from(dir: &std::path::Path) -> (Vec<InstalledPlugin>, Vec<String>) {
     let mut rejected = Vec::new();
     let mut loaded: Vec<InstalledPlugin> = Vec::new();
 
     let dirs = match list_plugin_dirs(dir) {
         Ok(list) => list,
-        Err(err) => return (accepted, vec![err]),
+        Err(err) => return (loaded, vec![err]),
     };
 
     for plugin_dir in dirs {
@@ -614,12 +626,6 @@ pub fn install_from(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
                     rejected.push(format!("{}: duplicate id", plugin.id));
                     continue;
                 }
-                let version = if plugin.version.is_empty() {
-                    String::new()
-                } else {
-                    format!(" v{}", plugin.version)
-                };
-                accepted.push(format!("{}{}", plugin.id, version));
                 loaded.push(plugin);
             }
             Err(reason) => {
@@ -633,9 +639,27 @@ pub fn install_from(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
     }
 
     if let Ok(mut guard) = INSTALLED.write() {
-        *guard = loaded;
+        *guard = loaded.clone();
     }
-    (accepted, rejected)
+    (loaded, rejected)
+}
+
+/// One installed plugin as a log line names it: `countdown v1.2.0`, or just the id
+/// when its manifest declared no version.
+pub fn label(plugin: &InstalledPlugin) -> String {
+    if plugin.version.is_empty() {
+        plugin.id.clone()
+    } else {
+        format!("{} v{}", plugin.id, plugin.version)
+    }
+}
+
+/// A list of installed plugins as a log line names it: `countdown v1.2.0, note`.
+///
+/// This is the display form, and the only place it exists: what gets logged is derived
+/// from the plugin, never something a caller had to recover from a string.
+pub fn labels(plugins: &[InstalledPlugin]) -> Vec<String> {
+    plugins.iter().map(label).collect()
 }
 
 /// One plugin as the windows see it, built-in or installed.
@@ -790,7 +814,7 @@ mod tests {
     #[test]
     fn manifest_reports_the_enabled_state() {
         let disabled = vec!["live2d".to_string()];
-        let info = manifest(&disabled);
+        let info = manifest(&disabled, |_| true);
         let builtin: Vec<&PluginInfo> = info.iter().filter(|p| p.source == "builtin").collect();
         assert_eq!(builtin.len(), PLUGINS.len());
         for p in info {
@@ -948,7 +972,10 @@ mod tests {
         std::fs::write(root.join("broken/plugin.json"), "{ not json").unwrap();
 
         let (accepted, rejected) = install_from(&root);
-        assert_eq!(accepted, vec!["countdown v1.2.0"]);
+        // the data is data — an id is an id, and the line a log shows is derived from it
+        assert_eq!(labels(&accepted), vec!["countdown v1.2.0"]);
+        assert_eq!(accepted[0].id, "countdown");
+        assert_eq!(accepted[0].version, "1.2.0");
         assert_eq!(rejected.len(), 1);
         assert!(rejected[0].contains("broken"), "{rejected:?}");
 
@@ -959,7 +986,7 @@ mod tests {
         assert_eq!(default_data("countdown")["seconds"], 300);
         assert!(!is_desktop_item("countdown") && path_key("countdown").is_none());
 
-        let listed = manifest(&[]);
+        let listed = manifest(&[], |_| true);
         let entry = listed.iter().find(|p| p.id == "countdown").unwrap();
         assert_eq!(entry.source, "installed");
         assert_eq!(entry.default_size, [240.0, 140.0]);
@@ -969,6 +996,13 @@ mod tests {
         assert_eq!(entry.layout_priority, 6);
         assert!(entry.resizable);
         assert!(entry.entry.as_ref().unwrap().ends_with("index.js"));
+        assert!(entry.trusted, "the caller approved it");
+
+        // and the flag is the caller's answer, not a claim the listing makes on its own:
+        // this is the shape the trust bug had — installed plugins shipped approved
+        let unapproved = manifest(&[], |_| false);
+        let entry = unapproved.iter().find(|p| p.id == "countdown").unwrap();
+        assert!(!entry.trusted, "nobody approved this one");
 
         // unloading leaves the built-ins alone
         let _ = install_from(&root.join("empty"));

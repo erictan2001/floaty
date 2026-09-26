@@ -8,7 +8,7 @@ use serde::{ Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 // ---------- app discovery + launch ----------
 
@@ -668,26 +668,24 @@ pub(crate) fn resolve_icon_url(lnk_path: &str) -> Option<String> {
 #[tauri::command]
 pub(crate) async fn floaty_icon(id: String, app: AppHandle) -> Result<String, String> {
     // serve cached icon only if it's already high resolution
-    {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        if let Some(r) = guard.widgets.get(&id) {
-            if let Some(s) = r.data.get("icon").and_then(|v| v.as_str()) {
+    let cached = store::with(&app, |s| -> Option<String> {
+        if let Some(r) = s.get(&id) {
+            if let Some(icon) = r.data.get("icon").and_then(|v| v.as_str()) {
                 // Serve whatever we already have: only a *missing* icon is worth
                 // another PowerShell round-trip (size-based "low-res" is the
                 // background upgrade pass's business, not every mount's).
-                if !icons::is_missing(s) {
-                    return Ok(s.to_string());
+                if !icons::is_missing(icon) {
+                    return Some(icon.to_string());
                 }
             }
         }
+        None
+    });
+    if let Some(icon) = cached {
+        return Ok(icon);
     }
-    let target = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard
-            .widgets
-            .get(&id)
+    let target = store::with(&app, |s| {
+        s.get(&id)
             .filter(|r| is_path_kind(&r.kind))
             .and_then(|r| {
                 r.data
@@ -695,8 +693,8 @@ pub(crate) async fn floaty_icon(id: String, app: AppHandle) -> Result<String, St
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .ok_or("launcher not found")?
-    };
+            .ok_or("launcher not found")
+    })?;
     if target.trim().is_empty() {
         return Err("launcher has no target".into());
     }
@@ -705,10 +703,8 @@ pub(crate) async fn floaty_icon(id: String, app: AppHandle) -> Result<String, St
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or_else(|| "none".to_string());
-    {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        if let Some(r) = guard.widgets.get_mut(&id) {
+    store::with(&app, |s| {
+        s.edit(&id, |r| {
             // a re-resolution must never downgrade an icon that is already good:
             // remounts used to overwrite crisp 256px icons with 32px ones
             let existing = r
@@ -729,9 +725,8 @@ pub(crate) async fn floaty_icon(id: String, app: AppHandle) -> Result<String, St
                     );
                 }
             }
-        }
-    }
-    persist(&app);
+        });
+    });
     Ok(icon_url)
 }
 
@@ -743,33 +738,25 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
     // "good enough" to the size test and would never be replaced.
     let migrate = load_settings(app).icon_pipeline < ICON_PIPELINE;
 
-    let to_upgrade: Vec<(String, String)> = {
-        let state = app.state::<AppState>();
-        let Ok(guard) = state.0.lock() else { return };
-        guard
-            .widgets
-            .iter()
-            .filter(|(_, r)| is_path_kind(&r.kind))
-            .filter_map(|(id, r)| {
+    let to_upgrade: Vec<(String, String)> = store::with(app, |s| {
+        s.iter()
+            .filter(|r| is_path_kind(&r.kind))
+            .filter_map(|r| {
                 let target = r.data.get("target")?.as_str()?.to_string();
                 let icon = r.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
                 if (migrate || icons::is_low_res(icon)) && !target.trim().is_empty() {
-                    Some((id.clone(), target))
+                    Some((r.id.clone(), target))
                 } else {
                     None
                 }
             })
             .collect()
-    };
+    });
 
-    let folders_to_check: Vec<(String, Vec<String>)> = {
-        let state = app.state::<AppState>();
-        let Ok(guard) = state.0.lock() else { return };
-        guard
-            .widgets
-            .iter()
-            .filter(|(_, r)| r.kind == "folder")
-            .filter_map(|(id, r)| {
+    let folders_to_check: Vec<(String, Vec<String>)> = store::with(app, |s| {
+        s.iter()
+            .filter(|r| r.kind == "folder")
+            .filter_map(|r| {
                 let needed: Vec<String> = folder_items(r)
                     .into_iter()
                     .filter(|it| {
@@ -782,11 +769,11 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
                 if needed.is_empty() {
                     None
                 } else {
-                    Some((id.clone(), needed))
+                    Some((r.id.clone(), needed))
                 }
             })
             .collect()
-    };
+    });
 
     let stamp_pipeline = || {
         let mut settings = load_settings(app);
@@ -819,52 +806,60 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
             .unwrap_or_default();
 
     let mut changed = false;
-    {
-        let state = app.state::<AppState>();
-        let Ok(mut guard) = state.0.lock() else { return };
+    store::with(app, |s| {
         for (id, target) in &to_upgrade {
             if let Some(hi_res) = icon_map.get(target) {
                 if hi_res != "none" {
-                    if let Some(r) = guard.widgets.get_mut(id) {
-                        let cur = r.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
-                        if cur != hi_res {
-                            if let Some(obj) = r.data.as_object_mut() {
-                                obj.insert("icon".to_string(), serde_json::Value::String(hi_res.clone()));
-                                changed = true;
+                    changed |= s
+                        .edit(id, |r| {
+                            let cur = r.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
+                            if cur != hi_res {
+                                if let Some(obj) = r.data.as_object_mut() {
+                                    obj.insert(
+                                        "icon".to_string(),
+                                        serde_json::Value::String(hi_res.clone()),
+                                    );
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
                             }
-                        }
-                    }
+                        })
+                        .unwrap_or(false);
                 }
             }
         }
         for (folder_id, needed) in &folders_to_check {
-            if let Some(r) = guard.widgets.get_mut(folder_id) {
-                let mut items = folder_items(r);
-                let mut folder_changed = false;
-                for target in needed {
-                    // matched by target, not by index: the resolve can take a
-                    // second, and the user can add or remove items meanwhile
-                    let Some(hi_res) = icon_map.get(target) else { continue };
-                    if hi_res == "none" {
-                        continue;
-                    }
-                    for it in items.iter_mut() {
-                        if it.target == *target && it.icon != *hi_res {
-                            it.icon = hi_res.clone();
-                            folder_changed = true;
-                            changed = true;
+            changed |= s
+                .edit(folder_id, |r| {
+                    let mut items = folder_items(r);
+                    let mut folder_changed = false;
+                    for target in needed {
+                        // matched by target, not by index: the resolve can take a
+                        // second, and the user can add or remove items meanwhile
+                        let Some(hi_res) = icon_map.get(target) else { continue };
+                        if hi_res == "none" {
+                            continue;
+                        }
+                        for it in items.iter_mut() {
+                            if it.target == *target && it.icon != *hi_res {
+                                it.icon = hi_res.clone();
+                                folder_changed = true;
+                            }
                         }
                     }
-                }
-                if folder_changed {
-                    set_folder_items(r, &items);
-                }
-            }
+                    if folder_changed {
+                        set_folder_items(r, &items);
+                    }
+                    folder_changed
+                })
+                .unwrap_or(false);
         }
-    }
+    });
 
     if changed {
-        persist(app);
         for (id, _) in &to_upgrade {
             app.emit("floaty-icon-refreshed", id).ok();
         }
@@ -881,19 +876,17 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
 
 #[tauri::command]
 pub(crate) async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Result<(), String> {
-    let needed: Vec<String> = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        let rec = guard.widgets.get(&folder_id).ok_or("folder not found")?;
+    let needed: Vec<String> = store::with(&app, |s| -> Result<Vec<String>, String> {
+        let rec = s.get(&folder_id).ok_or("folder not found")?;
         let items = folder_items(rec);
-        items
+        Ok(items
             .into_iter()
             // directories included: skipping them left every subfolder inside a
             // folder widget blank (only the startup pass ever filled those in)
             .filter(|it| icons::is_missing(&it.icon) && !it.target.trim().is_empty())
             .map(|it| it.target)
-            .collect()
-    };
+            .collect())
+    })?;
 
     if needed.is_empty() {
         return Ok(());
@@ -904,10 +897,8 @@ pub(crate) async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandl
             .await
             .map_err(|e| e.to_string())?;
 
-    let changed = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        if let Some(rec) = guard.widgets.get_mut(&folder_id) {
+    let changed = store::with(&app, |s| {
+        s.edit(&folder_id, |rec| {
             let mut items = folder_items(rec);
             let mut modified = false;
             for it in &mut items {
@@ -924,13 +915,11 @@ pub(crate) async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandl
             } else {
                 false
             }
-        } else {
-            false
-        }
-    };
+        })
+        .unwrap_or(false)
+    });
 
     if changed {
-        persist(&app);
         app.emit("floaty-folder-changed", &folder_id).ok();
     }
 

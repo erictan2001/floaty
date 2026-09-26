@@ -34,12 +34,7 @@ pub(crate) async fn floaty_diagnostics(app: AppHandle) -> diagnostics::Report {
 
     let (installed, rejected) = plugins::install_from(&plugins_dir(&app));
 
-    let records = app
-        .state::<AppState>()
-        .0
-        .lock()
-        .map(|guard| guard.widgets.len() as u64)
-        .unwrap_or(0);
+    let records = store::with(&app, |s| s.count() as u64);
 
     let now = elapsed_ms();
     let mut heartbeats: Vec<diagnostics::BeatInfo> = heartbeats()
@@ -151,7 +146,7 @@ pub(crate) async fn floaty_diagnostics(app: AppHandle) -> diagnostics::Report {
             bytes: icon_bytes,
         },
         records,
-        installed_plugins: installed,
+        installed_plugins: plugins::labels(&installed),
         rejected_plugins: rejected,
         display: display.to_string(),
         heartbeats,
@@ -251,16 +246,12 @@ pub(crate) fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
     if list.is_empty() {
         return Vec::new();
     }
-    let mut moved: Vec<String> = Vec::new();
-    {
-        let state = app.state::<AppState>();
-        let Ok(mut guard) = state.0.lock() else {
-            return Vec::new();
-        };
+    let moved: Vec<String> = store::with(app, |s| {
+        let mut moved: Vec<String> = Vec::new();
         // What is already on each screen, so a floatie coming back lands *beside* its
         // neighbours rather than under them.
         let mut taken: Vec<Vec<screens::Rect>> = vec![Vec::new(); list.len()];
-        for rec in guard.widgets.values() {
+        for rec in s.iter() {
             let (x, y) = (rec.x as f64, rec.y as f64);
             if let Some(index) = screens::screen_of(&list, x, y) {
                 let (w, h) = plugins::size(&rec.kind, &rec.data);
@@ -270,9 +261,8 @@ pub(crate) fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
 
         // Top-down, left-to-right: with several coming back at once, which one ends up
         // where should not depend on a hash map's iteration order.
-        let mut stranded: Vec<(i32, i32, String, String, serde_json::Value)> = guard
-            .widgets
-            .values()
+        let mut stranded: Vec<(i32, i32, String, String, serde_json::Value)> = s
+            .iter()
             .filter(|rec| screens::screen_of(&list, rec.x as f64, rec.y as f64).is_none())
             .map(|rec| {
                 (rec.y, rec.x, rec.id.clone(), rec.kind.clone(), rec.data.clone())
@@ -281,7 +271,7 @@ pub(crate) fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
         stranded.sort_by_key(|(y, x, _, _, _)| (*y, *x));
 
         for (_, _, id, kind, data) in stranded {
-            let Some(rec) = guard.widgets.get(&id) else {
+            let Some(rec) = s.get(&id) else {
                 continue;
             };
             let (x, y) = (rec.x as f64, rec.y as f64);
@@ -303,10 +293,10 @@ pub(crate) fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
                 screens::GAP,
             );
             taken[index].push(screens::Rect::new(nx, ny, w, h));
-            if let Some(rec) = guard.widgets.get_mut(&id) {
+            s.edit(&id, |rec| {
                 rec.x = nx as i32;
                 rec.y = ny as i32;
-            }
+            });
             moved.push(id);
         }
 
@@ -316,34 +306,34 @@ pub(crate) fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
         // wherever it overlapped nothing. Flush is allowed: this is a clamp, not a re-home,
         // so a widget a person pushed to the edge stays where they put it, just wholly on the
         // screen.
-        for (id, rec) in guard.widgets.iter_mut() {
-            let (w, h) = plugins::size(&rec.kind, &rec.data);
-            if screens::within_one_screen(&list, rec.x as f64, rec.y as f64, w, h) {
-                continue;
-            }
-            let Some((nx, ny)) = screens::confine(&list, rec.x as f64, rec.y as f64, w, h, 0.0)
-            else {
-                continue;
-            };
-            rec.x = nx as i32;
-            rec.y = ny as i32;
-            moved.push(id.clone());
+        // Picked out first, then written: the store hands out one record at a time, and
+        // this pass is a read to decide and a write to apply.
+        let flush: Vec<(String, i32, i32)> = s
+            .iter()
+            .filter_map(|rec| {
+                let (w, h) = plugins::size(&rec.kind, &rec.data);
+                if screens::within_one_screen(&list, rec.x as f64, rec.y as f64, w, h) {
+                    return None;
+                }
+                let (nx, ny) =
+                    screens::confine(&list, rec.x as f64, rec.y as f64, w, h, 0.0)?;
+                Some((rec.id.clone(), nx as i32, ny as i32))
+            })
+            .collect();
+        for (id, nx, ny) in flush {
+            s.edit(&id, |rec| {
+                rec.x = nx;
+                rec.y = ny;
+            });
+            moved.push(id);
         }
-    }
+        moved
+    });
     if moved.is_empty() {
         return moved;
     }
-    persist(app);
-    let records: Vec<WidgetRecord> = {
-        let state = app.state::<AppState>();
-        let Ok(guard) = state.0.lock() else {
-            return moved;
-        };
-        moved
-            .iter()
-            .filter_map(|id| guard.widgets.get(id).cloned())
-            .collect()
-    };
+    let records: Vec<WidgetRecord> =
+        store::with(app, |s| moved.iter().filter_map(|id| s.get(id).cloned()).collect());
     for rec in &records {
         app.emit("floaty-widget-updated", rec).ok();
     }
@@ -442,14 +432,7 @@ pub(crate) fn remember_drag_origin(app: &AppHandle, id: &str) {
     }
     // read the position *before* taking the other lock: two locks held at once in two
     // orders is how a deadlock gets written
-    let origin = {
-        let state = app.state::<AppState>();
-        let guard = match state.0.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        guard.widgets.get(id).map(|rec| (rec.x, rec.y))
-    };
+    let origin = store::with(app, |s| s.get(id).map(|rec| (rec.x, rec.y)));
     if let Some((x, y)) = origin {
         let mut slot = match DRAG_ORIGIN.lock() {
             Ok(guard) => guard,
@@ -507,16 +490,11 @@ pub(crate) fn checkpoint_with_origin(
     ids: &[&str],
     origin: Option<(&str, i32, i32)>,
 ) {
-    let restore: Vec<undo::Restore> = {
-        let state = app.state::<AppState>();
-        let guard = match state.0.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+    let restore: Vec<undo::Restore> = store::with(app, |s| {
         ids.iter()
             .map(|id| undo::Restore {
                 id: (*id).to_string(),
-                record: guard.widgets.get(*id).map(|rec| {
+                record: s.get(*id).map(|rec| {
                     let mut value = serde_json::to_value(rec).unwrap_or(serde_json::Value::Null);
                     // only the record the drag moved: the others keep their live position
                     if let (Some((dragged, x, y)), Some(map)) = (origin, value.as_object_mut()) {
@@ -529,7 +507,7 @@ pub(crate) fn checkpoint_with_origin(
                 }),
             })
             .collect()
-    };
+    });
     undo::push(label, restore);
 }
 
@@ -539,19 +517,14 @@ pub(crate) fn checkpoint_with_origin(
 /// record on every move. The rule this serves is at the top of `undo.rs`.
 #[tauri::command]
 pub(crate) fn floaty_gesture_begin(label: String, ids: Vec<String>, app: AppHandle) {
-    let restore: Vec<undo::Restore> = {
-        let state = app.state::<AppState>();
-        let guard = match state.0.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+    let restore: Vec<undo::Restore> = store::with(&app, |s| {
         ids.iter()
             .map(|id| undo::Restore {
                 id: id.clone(),
-                record: guard.widgets.get(id).and_then(|rec| serde_json::to_value(rec).ok()),
+                record: s.get(id).and_then(|rec| serde_json::to_value(rec).ok()),
             })
             .collect()
-    };
+    });
     let label = if label.trim().is_empty() {
         "move".to_string()
     } else {
@@ -574,12 +547,9 @@ pub(crate) fn floaty_gesture_end(app: AppHandle) -> Option<String> {
     // into the void, and redo would put the widget back where nothing can see it.
     rehome_stranded(&app, "gesture");
     let pushed = undo::commit_gesture(&|id| {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().ok()?;
-        guard.widgets.get(id).and_then(|rec| serde_json::to_value(rec).ok())
+        store::with(&app, |s| s.get(id).and_then(|rec| serde_json::to_value(rec).ok()))
     });
     if let Some(label) = pushed.as_deref() {
-        persist(&app);
         log_line(&app, &format!("gesture: '{label}' is undoable now"));
     }
     pushed
@@ -590,14 +560,7 @@ pub(crate) fn record_move(app: &AppHandle, id: &str, origin: Option<(i32, i32)>)
     let Some((ox, oy)) = origin else {
         return;
     };
-    let now = {
-        let state = app.state::<AppState>();
-        let guard = match state.0.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        guard.widgets.get(id).map(|rec| (rec.x, rec.y))
-    };
+    let now = store::with(app, |s| s.get(id).map(|rec| (rec.x, rec.y)));
     // a drop that landed where it started is not a change worth an undo step
     if now.is_none() || now == Some((ox, oy)) {
         return;
@@ -611,12 +574,13 @@ pub(crate) fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Optio
     let (mut nx, mut ny) = (x.round(), y.round());
     let mut handover: Option<WidgetRecord> = None;
     let mut stray = false;
-    {
-        let state = app.state::<AppState>();
-        let Ok(mut guard) = state.0.lock() else {
-            return None;
-        };
-        let rec = guard.widgets.get_mut(id)?;
+    // The record has to be there before anything else is judged: a drag for an id the store
+    // no longer holds is simply not a drag, and used to leave here before the stray check
+    // below — no log line, no re-home.
+    let missing = store::with(app, |s| -> bool {
+        if s.get(id).is_none() {
+            return true;
+        }
         // A position on no screen is only ever a moment *inside* a drag. The band between two
         // screens at different scales belongs to neither, and a drag crossing it has to be
         // able to pass through — but with no gesture open nothing is holding the pointer, so
@@ -627,7 +591,9 @@ pub(crate) fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Optio
         // widget back where a window can draw it.
         if screens::screen_of(&list, nx, ny).is_none() && !undo::gesture_pending() {
             stray = true;
-        } else {
+            return false;
+        }
+        s.edit(id, |rec| {
             // A drag may leave a *screen* — the band between two screens has to stay
             // crossable — but not the *desktop*: past the outermost edge there is no window at
             // all, so a widget dragged out there is drawn by nobody. The whole rectangle is
@@ -644,7 +610,11 @@ pub(crate) fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Optio
             if was != now {
                 handover = Some(rec.clone());
             }
-        }
+        });
+        false
+    });
+    if missing {
+        return None;
     }
     if stray {
         log_line(
@@ -656,7 +626,6 @@ pub(crate) fn drag_record_to(app: &AppHandle, id: &str, x: f64, y: f64) -> Optio
     }
     // Debounced by `persist`: a drag that ends off its own screen is not lost to a hard
     // kill before the release path runs.
-    persist(app);
     if let Some(rec) = handover {
         app.emit("floaty-widget-updated", rec).ok();
     }

@@ -5,6 +5,9 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
 
 ## Known bugs
 
+- Path placement decides whether a name is free by looking, and then moves; Windows' `rename`
+  writes over whatever is there, so two placements racing for one name is the case
+  `placement.rs` does not close (a reservation would). Nothing has hit it yet.
 - `verify/app-ready.mjs` times out even when the app is up and healthy, so every probe that
   waits on it can report a false negative.
 - No `.gitattributes`: the tree is CRLF and mixed endings churn diffs.

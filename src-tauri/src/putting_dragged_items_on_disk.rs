@@ -11,43 +11,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 // ---------- putting dragged items on disk ----------
 
-/// The name Windows itself gives a folder made by hand: the shell takes the
-/// first free one, so a second folder is "New folder (2)".
-pub(crate) const NEW_FOLDER_BASE: &str = "New folder";
-
-/// The next free "New folder (n)" in `dir`, without creating it.
-pub(crate) fn new_folder_path(dir: &std::path::Path) -> std::path::PathBuf {
-    let first = dir.join(NEW_FOLDER_BASE);
-    if !first.exists() {
-        return first;
-    }
-    for i in 2..1000 {
-        let candidate = dir.join(format!("{NEW_FOLDER_BASE} ({i})"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    first
-}
-
-/// Create the next free "New folder (n)". The create is what reserves the name:
-/// a name Explorer (or a second drag) takes in between is retried rather than
-/// written over.
-pub(crate) fn create_new_folder(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    if !dir.is_dir() {
-        return Err(format!("{} is not a directory", dir.display()));
-    }
-    for _ in 0..64 {
-        let candidate = new_folder_path(dir);
-        match fs::create_dir(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e.to_string()),
-        }
-    }
-    Err("could not create a new folder".into())
-}
-
 /// The pointed root: the directory the floaties mirror. `None` when nothing is
 /// pointed at (or the pointer went stale), which is the callers' cue to keep
 /// their no-directory behaviour instead of inventing a location.
@@ -152,10 +115,7 @@ pub(crate) fn place_item_in_dir(
             .file_name()
             .ok_or_else(|| format!("{} has no file name", src.display()))?
             .to_os_string();
-        let dest = unique_dest_path(dest_dir, &file_name);
-        if dest != src {
-            fs::rename(&src, &dest).map_err(|e| format!("move {} FAILED: {e}", src.display()))?;
-        }
+        let dest = placement::place_into(&src, dest_dir, None)?;
         out.target = dest.to_string_lossy().to_string();
         out.name = dest
             .file_name()
@@ -177,7 +137,7 @@ pub(crate) fn place_item_in_dir(
     } else {
         std::ffi::OsString::from(shortcut_file_name(&item.name))
     };
-    let dest = unique_dest_path(dest_dir, &file_name);
+    let dest = placement::free_name(dest_dir, &file_name);
     let made: Result<(), String> = if is_lnk_path(&src) {
         fs::copy(&src, &dest).map(|_| ()).map_err(|e| e.to_string())
     } else {
@@ -215,7 +175,7 @@ pub(crate) fn shortcut_into_root(
     } else {
         std::ffi::OsString::from(shortcut_file_name(name))
     };
-    let dest = unique_dest_path(root, &file_name);
+    let dest = placement::free_name(root, &file_name);
     let made: Result<(), String> = if is_lnk_path(src) {
         fs::copy(src, &dest).map(|_| ()).map_err(|e| e.to_string())
     } else {
@@ -367,12 +327,8 @@ pub(crate) fn launch_target(app: &AppHandle, target: &str) -> Result<(), String>
 
 #[tauri::command]
 pub(crate) fn floaty_launch(id: String, app: AppHandle) -> Result<(), String> {
-    let target = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard
-            .widgets
-            .get(&id)
+    let target = store::with(&app, |s| {
+        s.get(&id)
             .filter(|r| is_path_kind(&r.kind))
             .and_then(|r| {
                 r.data
@@ -380,8 +336,8 @@ pub(crate) fn floaty_launch(id: String, app: AppHandle) -> Result<(), String> {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .ok_or("launcher not found")?
-    };
+            .ok_or("launcher not found")
+    })?;
     if target.trim().is_empty() {
         return Err("launcher has no target".into());
     }
@@ -438,13 +394,11 @@ pub(crate) fn floaty_dropped_inner(
     // with nothing on screen to explain it. The record is where the floatie actually is,
     // because the drag handed it over on the way.
     let list = screens(&app);
-    let (w, h, stored) = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().ok()?;
-        let rec = guard.widgets.get(&id)?;
+    let (w, h, stored) = store::with(&app, |s| {
+        let rec = s.get(&id)?;
         let (w, h) = plugins::size(&rec.kind, &rec.data);
-        (w as i32, h as i32, (rec.x, rec.y))
-    };
+        Some((w as i32, h as i32, (rec.x, rec.y)))
+    })?;
     let on_screen = |px: i32, py: i32| screens::screen_of(&list, px as f64, py as f64);
     let (cx, cy) = if let (Some(px), Some(py)) = (x, y) {
         let (px, py) = if on_screen(px, py) == on_screen(stored.0, stored.1) {
@@ -457,10 +411,8 @@ pub(crate) fn floaty_dropped_inner(
         // the drop is judged where it actually is.
         if on_screen(px, py).is_none() {
             rehome_stranded(&app, "drop");
-            let state = app.state::<AppState>();
-            let guard = state.0.lock().ok()?;
-            let rec = guard.widgets.get(&id)?;
-            (rec.x, rec.y)
+            let (x, y) = store::with(&app, |s| s.get(&id).map(|rec| (rec.x, rec.y)))?;
+            (x, y)
         } else {
             (px, py)
         };
@@ -473,28 +425,25 @@ pub(crate) fn floaty_dropped_inner(
     };
 
     // candidate targets (snapshot under the lock, probe windows after release)
-    let cands: Vec<(String, String)> = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().ok()?;
-        guard
-            .widgets
-            .iter()
-            .filter(|(oid, r)| *oid != &id && plugins::is_desktop_item(&r.kind))
-            .map(|(oid, r)| (oid.clone(), r.kind.clone()))
+    let cands: Vec<(String, String)> = store::with(&app, |s| {
+        s.iter()
+            .filter(|r| r.id != id && plugins::is_desktop_item(&r.kind))
+            .map(|r| (r.id.clone(), r.kind.clone()))
             .collect()
-    };
+    });
     let is_overlay = app.get_webview_window("desktop-overlay").is_some();
     let mut hit: Option<(String, String)> = None;
     for (oid, kind) in cands {
         let (hx, hy, ww, hh) = if is_overlay {
-            let state = app.state::<AppState>();
-            let guard = state.0.lock().ok()?;
-            if let Some(r) = guard.widgets.get(&oid) {
-                let (w, h) = plugins::size(&r.kind, &r.data);
-                (r.x - 12, r.y - 12, w as i32 + 24, h as i32 + 24)
-            } else {
+            let Some((hx, hy, ww, hh)) = store::with(&app, |s| {
+                s.get(&oid).map(|r| {
+                    let (w, h) = plugins::size(&r.kind, &r.data);
+                    (r.x - 12, r.y - 12, w as i32 + 24, h as i32 + 24)
+                })
+            }) else {
                 continue;
-            }
+            };
+            (hx, hy, ww, hh)
         } else if let Some(w) = app.get_webview_window(&widget_label(&oid)) {
             if let (Ok(p), Ok(s)) = (w.outer_position(), w.inner_size()) {
                 (p.x - 12, p.y - 12, s.width as i32 + 24, s.height as i32 + 24)
@@ -534,29 +483,22 @@ pub(crate) fn floaty_dropped_inner(
 
     // snapshot the dragged item, then remove it (tombstone blocks its late
     // saves from resurrecting it)
-    let mut dragged = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().ok()?;
-        let rec = guard.widgets.get(&id)?;
+    let mut dragged = store::with(&app, |s| {
+        let rec = s.get(&id)?;
         let item = widget_as_folder_item(rec)?;
         if item.target.trim().is_empty() {
             return None;
         }
-        guard.widgets.remove(&id);
-        guard.dead.insert(id.clone());
-        item
-    };
-    persist(&app);
+        s.remove(&id);
+        Some(item)
+    })?;
     close_widget_async(&app, &id);
 
     // the pointed root, read once — outside the widget lock (it comes from disk)
     let root = files_root_dir(&app);
 
     if target_kind == "folder" {
-        {
-            let state = app.state::<AppState>();
-            let mut guard = state.0.lock().ok()?;
-            let rec = guard.widgets.get_mut(&target_id)?;
+        store::with(&app, |s| s.edit(&target_id, |rec| {
             let folder_path = rec.data.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
 
             // A folder backed by a directory on disk takes the item into that
@@ -603,8 +545,7 @@ pub(crate) fn floaty_dropped_inner(
                 items.push(dragged);
                 set_folder_items(rec, &items);
             }
-        }
-        persist(&app);
+        }))?;
         app.emit("floaty-folder-changed", &target_id).ok();
         log_line(&app, &format!("merged {id} into folder {target_id}"));
         return Some(target_id);
@@ -614,20 +555,18 @@ pub(crate) fn floaty_dropped_inner(
     // named the way Windows names one. The dragged files move into it; an app
     // icon, whose program lives outside the root, is carried in as a shortcut
     // file instead of being moved out of its install directory.
-    let titem = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().ok()?;
-        let trec = guard.widgets.get(&target_id)?;
-        widget_as_folder_item(trec)?
-    };
+    let titem = store::with(&app, |s| widget_as_folder_item(s.get(&target_id)?))?;
 
-    if let Some(dir) = root.as_deref().and_then(|r| match create_new_folder(r) {
-        Ok(d) => Some(d),
-        Err(e) => {
-            log_line(&app, &format!("new folder FAILED in {}: {e}", r.display()));
-            None
-        }
-    }) {
+    if let Some(dir) = root
+        .as_deref()
+        .and_then(|r| match placement::create_new_folder(r) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                log_line(&app, &format!("new folder FAILED in {}: {e}", r.display()));
+                None
+            }
+        })
+    {
         // The folder is new on disk, so undoing this grouping has to take it
         // away again — after the items inside it have been moved back out.
         undo::add_disk(undo::DiskOp::discard_dir(&dir.to_string_lossy()));
@@ -656,14 +595,8 @@ pub(crate) fn floaty_dropped_inner(
             }
         }
         if !placed.is_empty() {
-            let (tx, ty) = {
-                let state = app.state::<AppState>();
-                let mut guard = state.0.lock().ok()?;
-                let trec = guard.widgets.remove(&target_id)?;
-                guard.dead.insert(target_id.clone());
-                (trec.x, trec.y)
-            };
-            persist(&app);
+            let trec = store::with(&app, |s| s.remove(&target_id))?;
+            let (tx, ty) = (trec.x, trec.y);
             close_widget_async(&app, &target_id);
 
             // rescan the directory: items are files again (the shortcuts are new
@@ -711,14 +644,8 @@ pub(crate) fn floaty_dropped_inner(
             it.icon = resolve_icon_url(&it.target).unwrap_or_default();
         }
     }
-    let (tx, ty) = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().ok()?;
-        let trec = guard.widgets.remove(&target_id)?;
-        guard.dead.insert(target_id.clone());
-        (trec.x, trec.y)
-    };
-    persist(&app);
+    let trec = store::with(&app, |s| s.remove(&target_id))?;
+    let (tx, ty) = (trec.x, trec.y);
     close_widget_async(&app, &target_id);
     let data = serde_json::json!({ "name": "Folder", "items": items });
     match create_record_with(&app, "folder", data, Some((tx, ty))) {
@@ -761,10 +688,10 @@ pub(crate) fn ungroup_dest_dir(
 #[tauri::command]
 pub(crate) fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, app: AppHandle) -> Result<WidgetRecord, String> {
     checkpoint(&app, "ungroup", &[&folder_id]);
-    let (mut item, folder_path) = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        let rec = guard.widgets.get_mut(&folder_id).ok_or("folder not found")?;
+    let (mut item, folder_path) = store::with(&app, |s| -> Result<_, String> {
+        // Read-only until the record is really being changed, so a refusal below
+        // leaves the store as untouched as it found it.
+        let rec = s.get(&folder_id).ok_or("folder not found")?;
         if rec.kind != "folder" {
             return Err("not a folder".into());
         }
@@ -777,10 +704,11 @@ pub(crate) fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, ap
         if item.target.trim().is_empty() {
             return Err("empty target".into());
         }
-        set_folder_items(rec, &items);
-        (item, folder_path)
-    };
-    persist(&app);
+        if s.edit(&folder_id, |rec| set_folder_items(rec, &items)).is_none() {
+            return Err("folder not found".into());
+        }
+        Ok((item, folder_path))
+    })?;
     app.emit("floaty-folder-changed", &folder_id).ok();
 
     // Move file/directory out on disk to the parent directory
@@ -796,18 +724,23 @@ pub(crate) fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, ap
                 .file_name()
                 .filter(|_| dest_dir_path.is_dir() && dest_dir_path != parent)
             {
-                let dest_path = unique_dest_path(&dest_dir_path, file_name);
-                // The rename's own success is the condition: nothing to do when the path did
+                // The move's own outcome is the condition: nothing to do when the path did
                 // not change, and the log and the undo below only make sense if it moved.
-                if dest_path != src_path && std::fs::rename(&src_path, &dest_path).is_ok() {
-                    log_line(&app, &format!("moved out of folder on disk: {} -> {}", src_path.display(), dest_path.display()));
-                    undo::add_disk(undo::DiskOp::moved(
-                        &src_path.to_string_lossy(),
-                        &dest_path.to_string_lossy(),
-                    ));
-                    item.target = dest_path.to_string_lossy().to_string();
-                    item.name = dest_path.file_name().unwrap_or(file_name).to_string_lossy().to_string();
-                    item.is_dir = dest_path.is_dir();
+                // A failed move leaves the item where it is, so it becomes a floatie below
+                // all the same — only the reason is worth saying out loud.
+                match placement::place_into(&src_path, &dest_dir_path, None) {
+                    Ok(dest_path) if dest_path != src_path => {
+                        log_line(&app, &format!("moved out of folder on disk: {} -> {}", src_path.display(), dest_path.display()));
+                        undo::add_disk(undo::DiskOp::moved(
+                            &src_path.to_string_lossy(),
+                            &dest_path.to_string_lossy(),
+                        ));
+                        item.target = dest_path.to_string_lossy().to_string();
+                        item.name = dest_path.file_name().unwrap_or(file_name).to_string_lossy().to_string();
+                        item.is_dir = dest_path.is_dir();
+                    }
+                    Ok(_) => {}
+                    Err(e) => log_line(&app, &e),
                 }
             }
         }
@@ -844,41 +777,46 @@ pub(crate) fn floaty_ungroup(folder_id: String, index: usize, x: i32, y: i32, ap
 
 #[tauri::command]
 pub(crate) fn floaty_rename_folder_dir(folder_id: String, new_name: String, app: AppHandle) -> Result<(), String> {
-    let (old_path, new_path) = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        let rec = guard.widgets.get_mut(&folder_id).ok_or("folder not found")?;
+    let renamed = store::with(&app, |s| -> Result<Option<_>, String> {
+        // Read-only until the directory rename actually happens, so an early
+        // return leaves the store as untouched as it found it.
+        let rec = s.get(&folder_id).ok_or("folder not found")?;
         let path = rec.data.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
-        if let Some(old_p) = path {
-            let p = std::path::Path::new(&old_p);
-            if let Some(parent) = p.parent() {
-                let dest = parent.join(&new_name);
-                if p.exists() && dest != p {
-                    std::fs::rename(p, &dest).map_err(|e| e.to_string())?;
-                    let new_p_str = dest.to_string_lossy().to_string();
-                    if let Some(obj) = rec.data.as_object_mut() {
-                        obj.insert("path".to_string(), serde_json::Value::String(new_p_str.clone()));
-                        obj.insert("name".to_string(), serde_json::Value::String(new_name));
-                    }
-                    // A rescan starts every item with no icon; the items are the
-                    // same files under a new parent, so keep them by name (a
-                    // rename used to blank every icon in the folder).
-                    let old_items = folder_items(rec);
-                    let mut items = scan_folder_items(&dest);
-                    carry_icons_by_name(&old_items, &mut items);
-                    set_folder_items(rec, &items);
-                    (old_p, new_p_str)
-                } else {
-                    return Ok(());
-                }
-            } else {
-                return Ok(());
-            }
-        } else {
-            return Ok(());
+        let Some(old_p) = path else {
+            return Ok(None);
+        };
+        let p = std::path::PathBuf::from(&old_p);
+        if !p.exists() {
+            return Ok(None);
         }
+        // The folder's directory is renamed by the same rule as anything else on disk: the
+        // name is checked the way Explorer checks it, a name that is taken is refused rather
+        // than written over, and a rename that only changes the case is still a rename. This
+        // used to build its destination by hand and call `std::fs::rename`, so a name the
+        // window refused was accepted here.
+        let dest = placement::rename_in_place(&p, &new_name)?;
+        if dest == p {
+            return Ok(None);
+        }
+        let new_p_str = dest.to_string_lossy().to_string();
+        // A rescan starts every item with no icon; the items are the
+        // same files under a new parent, so keep them by name (a
+        // rename used to blank every icon in the folder).
+        s.edit(&folder_id, |rec| {
+            if let Some(obj) = rec.data.as_object_mut() {
+                obj.insert("path".to_string(), serde_json::Value::String(new_p_str.clone()));
+                obj.insert("name".to_string(), serde_json::Value::String(new_name.clone()));
+            }
+            let old_items = folder_items(rec);
+            let mut items = scan_folder_items(&dest);
+            carry_icons_by_name(&old_items, &mut items);
+            set_folder_items(rec, &items);
+        });
+        Ok(Some((old_p, new_p_str)))
+    })?;
+    let Some((old_path, new_path)) = renamed else {
+        return Ok(());
     };
-    persist(&app);
     app.emit("floaty-folder-changed", &folder_id).ok();
     log_line(&app, &format!("renamed folder dir on disk: {old_path} -> {new_path}"));
     Ok(())
@@ -949,24 +887,22 @@ pub(crate) fn sync_root(root: Option<String>, app: AppHandle, quiet: bool) -> Re
     let mut files_count = 0;
     let mut dirs_count = 0;
 
-    let (mut occupied_positions, existing_map, mut next_id) = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        let occupied: Vec<(i32, i32)> = guard.widgets.values().map(|w| (w.x, w.y)).collect();
+    let (mut occupied_positions, existing_map, mut next_id) = store::with(&app, |s| {
+        let occupied: Vec<(i32, i32)> = s.iter().map(|w| (w.x, w.y)).collect();
         let mut map: HashMap<String, (String, String)> = HashMap::new();
-        for (id, w) in &guard.widgets {
+        for w in s.iter() {
             if w.kind == "folder" {
                 if let Some(p) = w.data.get("path").and_then(|v| v.as_str()) {
-                    map.insert(p.to_string(), (id.clone(), "folder".to_string()));
+                    map.insert(p.to_string(), (w.id.clone(), "folder".to_string()));
                 }
             } else if is_path_kind(&w.kind) {
                 if let Some(p) = w.data.get("target").and_then(|v| v.as_str()) {
-                    map.insert(p.to_string(), (id.clone(), w.kind.clone()));
+                    map.insert(p.to_string(), (w.id.clone(), w.kind.clone()));
                 }
             }
         }
-        (occupied, map, guard.next)
-    };
+        (occupied, map, s.next_counter())
+    });
 
     let next_pos = |occupied: &mut Vec<(i32, i32)>| -> (i32, i32) {
         let mut cur_x = 80;
@@ -1018,17 +954,21 @@ pub(crate) fn sync_root(root: Option<String>, app: AppHandle, quiet: bool) -> Re
                 match existing_map.get(&path_str) {
                     Some((fid, kind)) if kind == "folder" => {
                         let mut refreshed = true;
-                        if let Ok(guard) = app.state::<AppState>().0.lock() {
-                            if let Some(w) = guard.widgets.get(fid) {
-                                let old_items = folder_items(w);
-                                carry_icons_by_target(&old_items, &mut items);
-                                // an external rename moved every target at once:
-                                // the items are the same files under new paths
-                                carry_icons_by_name(&old_items, &mut items);
-                                // An idle folder must not look changed: the write
-                                // below is what the store persist hangs on.
-                                refreshed = old_items != items;
-                            }
+                        // The outer code does not hold the store here, so this
+                        // read can take the lock on its own.
+                        let check = store::with(&app, |s| {
+                            let w = s.get(fid)?;
+                            let old_items = folder_items(w);
+                            carry_icons_by_target(&old_items, &mut items);
+                            // an external rename moved every target at once:
+                            // the items are the same files under new paths
+                            carry_icons_by_name(&old_items, &mut items);
+                            // An idle folder must not look changed: the write
+                            // below is what the store persist hangs on.
+                            Some(old_items != items)
+                        });
+                        if let Some(was_changed) = check {
+                            refreshed = was_changed;
                         }
                         if refreshed {
                             updated_folders.push((fid.clone(), items));
@@ -1096,49 +1036,47 @@ pub(crate) fn sync_root(root: Option<String>, app: AppHandle, quiet: bool) -> Re
             &format!("synced files root '{}': listing incomplete — keeping every floatie it could not account for", target_root),
         );
     } else {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        for (id, w) in &guard.widgets {
-            let Some(path) = record_path(w) else { continue };
-            if !mirrors_root_entry(&target_root, &path) {
-                continue;
+        vanished = store::with(&app, |s| -> Vec<String> {
+            let mut vanished = Vec::new();
+            for w in s.iter() {
+                let Some(path) = record_path(w) else { continue };
+                if !mirrors_root_entry(&target_root, &path) {
+                    continue;
+                }
+                if on_disk.contains(&path.to_ascii_lowercase()) {
+                    continue;
+                }
+                vanished.push(w.id.clone());
             }
-            if on_disk.contains(&path.to_ascii_lowercase()) {
-                continue;
-            }
-            vanished.push(id.clone());
-        }
-    }
-
-    let mut changed = false;
-    {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard.next = next_id;
-        for (fid, items) in &updated_folders {
-            if let Some(w) = guard.widgets.get_mut(fid) {
-                set_folder_items(w, items);
-                changed = true;
-            }
-        }
-        for rec in &new_records {
-            guard.widgets.insert(rec.id.clone(), rec.clone());
-            changed = true;
-        }
-        for id in &vanished {
-            if guard.widgets.remove(id).is_some() {
-                changed = true;
-            }
-        }
+            vanished
+        });
     }
 
     // A reconcile that found nothing must not rewrite the store: it is megabytes
     // with every icon inlined, and the watcher calls this on any name change —
     // including ones that turn out to be nothing, or a folder that is simply
-    // idle while OneDrive touches its metadata.
-    if changed {
-        persist(&app);
-    }
+    // idle while OneDrive touches its metadata. With all three lists empty
+    // nothing here changes the store, so `with` writes nothing.
+    let changed = store::with(&app, |s| {
+        let mut changed = false;
+        s.set_next(next_id);
+        for (fid, items) in &updated_folders {
+            if s.edit(fid, |w| set_folder_items(w, items)).is_some() {
+                changed = true;
+            }
+        }
+        for rec in &new_records {
+            s.put(rec.clone());
+            changed = true;
+        }
+        for id in &vanished {
+            if s.get(id).is_some() {
+                s.remove(id);
+                changed = true;
+            }
+        }
+        changed
+    });
 
     for (fid, _) in &updated_folders {
         app.emit("floaty-folder-changed", fid).ok();
@@ -1249,41 +1187,38 @@ pub(crate) fn apply_root_renames(app: &AppHandle, renames: &[(String, String)]) 
     if renames.is_empty() {
         return 0;
     }
-    let mut moved: Vec<WidgetRecord> = Vec::new();
-    {
-        let state = app.state::<AppState>();
-        let Ok(mut guard) = state.0.lock() else {
-            return 0;
-        };
+    let moved = store::with(app, |s| {
+        let mut moved: Vec<WidgetRecord> = Vec::new();
         for (old, new) in renames {
             let from = old.to_ascii_lowercase();
-            let hit = guard
-                .widgets
+            let hit = s
                 .iter()
-                .find(|(_, w)| record_path(w).is_some_and(|p| p.to_ascii_lowercase() == from))
-                .map(|(id, w)| (id.clone(), plugins::path_key(&w.kind).unwrap_or_default()));
+                .find(|w| record_path(w).is_some_and(|p| p.to_ascii_lowercase() == from))
+                .map(|w| (w.id.clone(), plugins::path_key(&w.kind).unwrap_or_default()));
             let Some((id, key)) = hit else { continue };
             let label = std::path::Path::new(new)
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let Some(w) = guard.widgets.get_mut(&id) else {
+            let Some(moved_rec) = s.edit(&id, |w| {
+                if let Some(obj) = w.data.as_object_mut() {
+                    obj.insert(key, serde_json::Value::String(new.clone()));
+                    // the label follows the file it points at
+                    if !label.is_empty() && obj.contains_key("name") {
+                        obj.insert("name".to_string(), serde_json::Value::String(label));
+                    }
+                }
+                w.clone()
+            }) else {
                 continue;
             };
-            if let Some(obj) = w.data.as_object_mut() {
-                obj.insert(key, serde_json::Value::String(new.clone()));
-                // the label follows the file it points at
-                if !label.is_empty() && obj.contains_key("name") {
-                    obj.insert("name".to_string(), serde_json::Value::String(label));
-                }
-            }
-            moved.push(w.clone());
+            moved.push(moved_rec);
         }
-    }
+        moved
+    });
     if moved.is_empty() {
         return 0;
     }
-    persist(app);
     for rec in &moved {
         // the event `floaty_rename` sends: the overlay remounts that slot
         app.emit("floaty-widget-updated", rec).ok();

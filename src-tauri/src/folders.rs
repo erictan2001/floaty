@@ -77,24 +77,3 @@ pub(crate) fn widget_as_folder_item(rec: &WidgetRecord) -> Option<FolderItem> {
         None
     }
 }
-
-pub(crate) fn unique_dest_path(dest_dir: &std::path::Path, file_name: &std::ffi::OsStr) -> std::path::PathBuf {
-    let original = dest_dir.join(file_name);
-    if !original.exists() {
-        return original;
-    }
-    let p_name = std::path::Path::new(file_name);
-    let stem = p_name.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-    let ext = p_name.extension().and_then(|s| s.to_str());
-    for i in 1..1000 {
-        let candidate_name = match ext {
-            Some(e) => format!("{} ({}).{}", stem, i, e),
-            None => format!("{} ({})", stem, i),
-        };
-        let candidate = dest_dir.join(candidate_name);
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    original
-}

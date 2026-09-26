@@ -381,35 +381,35 @@ pub(crate) fn migrate_float_settings(value: &mut serde_json::Value) {
 /// The folder floatie under a point in record space, if any — the same 12px inflation
 /// `floaty_dropped` uses, because a drop and the merge preview must agree.
 pub(crate) fn folder_under(app: &AppHandle, x: f64, y: f64) -> Option<(String, std::path::PathBuf)> {
-    let state = app.state::<AppState>();
-    let guard = state.0.lock().ok()?;
-    let mut hit: Option<(String, std::path::PathBuf)> = None;
-    for (id, rec) in guard.widgets.iter() {
-        if rec.kind != "folder" {
-            continue;
+    store::with(app, |s| {
+        let mut hit: Option<(String, std::path::PathBuf)> = None;
+        for rec in s.iter() {
+            if rec.kind != "folder" {
+                continue;
+            }
+            let (w, h) = plugins::size(&rec.kind, &rec.data);
+            let tile = exchange::Hit {
+                x: rec.x as f64,
+                y: rec.y as f64,
+                w,
+                h,
+            };
+            if !exchange::hits(&tile, x, y) {
+                continue;
+            }
+            let Some(path) = rec.data.get("path").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let dir = std::path::PathBuf::from(path);
+            if dir.is_dir() {
+                // serde keeps the map sorted, so two overlapping folders resolve the same way
+                // here as they do in the drop rule
+                hit = Some((rec.id.clone(), dir));
+                break;
+            }
         }
-        let (w, h) = plugins::size(&rec.kind, &rec.data);
-        let tile = exchange::Hit {
-            x: rec.x as f64,
-            y: rec.y as f64,
-            w,
-            h,
-        };
-        if !exchange::hits(&tile, x, y) {
-            continue;
-        }
-        let Some(path) = rec.data.get("path").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let dir = std::path::PathBuf::from(path);
-        if dir.is_dir() {
-            // serde keeps the map sorted, so two overlapping folders resolve the same way
-            // here as they do in the drop rule
-            hit = Some((id.clone(), dir));
-            break;
-        }
-    }
-    hit.map(|(_, dir)| (String::new(), dir))
+        hit.map(|(_, dir)| (String::new(), dir))
+    })
 }
 
 /// Files dropped onto the desktop from outside floaty — Explorer, another app, or a paste.
@@ -456,22 +456,24 @@ pub(crate) fn floaty_drop_paths(paths: Vec<String>, x: i32, y: i32, app: AppHand
         let how = exchange::arrival(path, inside, &dest_dir);
         match how {
             exchange::Arrival::Move | exchange::Arrival::Copy => {
-                let dest = exchange::unique_destination(&dest_dir, &name);
-                // a folder across volumes is not copied here (a recursive copy is not a
-                // drop's job) — the failure is reported instead of a half-copied directory
                 let copying = how == exchange::Arrival::Copy;
-                let result = if copying && !path.is_dir() {
-                    std::fs::copy(path, &dest).map(|_| ())
-                } else if copying {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Unsupported,
-                        "a folder on another drive is left where it is",
-                    ))
+                // one name in one place: a collision is numbered (2), (3) … whichever way it
+                // arrives, and a folder across volumes is not copied here (a recursive copy is
+                // not a drop's job) — the failure is reported instead of a half-copied directory
+                let result: Result<std::path::PathBuf, String> = if copying {
+                    let dest = placement::free_name(&dest_dir, &name);
+                    if path.is_dir() {
+                        Err("a folder on another drive is left where it is".into())
+                    } else {
+                        std::fs::copy(path, &dest)
+                            .map(|_| dest)
+                            .map_err(|e| e.to_string())
+                    }
                 } else {
-                    std::fs::rename(path, &dest)
+                    placement::place_into(path, &dest_dir, None)
                 };
                 match result {
-                    Ok(()) => {
+                    Ok(dest) => {
                         log_line(
                             &app,
                             &format!(
@@ -537,18 +539,13 @@ pub(crate) fn place_arrived(app: &AppHandle, landed: &[String], x: i32, y: i32) 
     let list = screens(app);
     let mut placed = 0usize;
     let mut moved: Vec<WidgetRecord> = Vec::new();
-    {
-        let state = app.state::<AppState>();
-        let Ok(mut guard) = state.0.lock() else {
-            return 0;
-        };
+    store::with(app, |s| {
         for (index, target) in landed.iter().enumerate() {
             // A file record keeps its path in `target` and a folder in `path`; either way
             // this is the record for the file that just arrived.
-            let Some(id) = guard
-                .widgets
+            let Some(id) = s
                 .iter()
-                .find(|(_, r)| {
+                .find(|r| {
                     ["path", "target"].iter().any(|key| {
                         r.data
                             .get(*key)
@@ -556,15 +553,14 @@ pub(crate) fn place_arrived(app: &AppHandle, landed: &[String], x: i32, y: i32) 
                             .is_some_and(|p| p.eq_ignore_ascii_case(target))
                     })
                 })
-                .map(|(id, _)| id.clone())
+                .map(|r| r.id.clone())
             else {
                 continue;
             };
             let step = index as i32 * 26;
             let (mut nx, mut ny) = (x + step, y + step);
             // a drop near an edge must not push the floatie off the screen
-            let (w, h) = guard
-                .widgets
+            let (w, h) = s
                 .get(&id)
                 .map(|r| plugins::size(&r.kind, &r.data))
                 .unwrap_or((92.0, 112.0));
@@ -577,19 +573,20 @@ pub(crate) fn place_arrived(app: &AppHandle, landed: &[String], x: i32, y: i32) 
                 nx = (nx as f64).clamp(area.x, max_x) as i32;
                 ny = (ny as f64).clamp(area.y, max_y) as i32;
             }
-            if let Some(rec) = guard.widgets.get_mut(&id) {
-                rec.x = nx;
-                rec.y = ny;
-                moved.push(rec.clone());
+            if s
+                .edit(&id, |rec| {
+                    rec.x = nx;
+                    rec.y = ny;
+                    moved.push(rec.clone());
+                })
+                .is_some()
+            {
                 placed += 1;
             }
         }
-    }
+    });
     for rec in moved {
         let _ = app.emit("floaty-widget-updated", rec);
-    }
-    if placed > 0 {
-        persist(app);
     }
     placed
 }
@@ -629,11 +626,9 @@ pub(crate) fn floaty_clipboard_paste(x: i32, y: i32, app: AppHandle) -> Result<S
 /// them. `cut` stages the same list for floaty's own next paste, which *moves* them.
 #[tauri::command]
 pub(crate) fn floaty_clipboard_copy(ids: Vec<String>, cut: bool, app: AppHandle) -> Result<usize, String> {
-    let paths: Vec<std::path::PathBuf> = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|_| "busy".to_string())?;
+    let paths: Vec<std::path::PathBuf> = store::with(&app, |s| {
         ids.iter()
-            .filter_map(|id| guard.widgets.get(id))
+            .filter_map(|id| s.get(id))
             // `target` for a file, `path` for a folder — the same two keys the drop
             // placement reads, because a widget's file lives wherever its kind says it does
             .filter_map(|rec| {
@@ -643,7 +638,7 @@ pub(crate) fn floaty_clipboard_copy(ids: Vec<String>, cut: bool, app: AppHandle)
             })
             .map(std::path::PathBuf::from)
             .collect()
-    };
+    });
     if paths.is_empty() {
         return Err("nothing to copy".into());
     }

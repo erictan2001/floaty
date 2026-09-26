@@ -393,18 +393,12 @@ pub(crate) fn sync_top_overlay(app: &AppHandle) {
     let mut pinned_on = vec![0usize; list.len()];
     // Collected before anything is counted: holding the lock while creating windows is
     // how a deadlock gets built.
-    let pinned: Vec<(f64, f64)> = {
-        let state = app.state::<AppState>();
-        let Ok(guard) = state.0.lock() else {
-            return;
-        };
-        guard
-            .widgets
-            .values()
+    let pinned: Vec<(f64, f64)> = store::with(app, |s| {
+        s.iter()
             .filter(|r| wants_on_top(r))
             .map(|r| (r.x as f64, r.y as f64))
             .collect()
-    };
+    });
     for (x, y) in pinned {
         if let Some(index) = screens::screen_of(&list, x, y) {
             pinned_on[index] += 1;
@@ -435,16 +429,15 @@ pub(crate) fn sync_top_overlay(app: &AppHandle) {
 /// reconcile, so each one draws exactly the widgets that belong to it.
 #[tauri::command]
 pub(crate) fn floaty_set_on_top(id: String, on_top: bool, app: AppHandle) -> Result<(), String> {
-    let rec = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        let rec = guard.widgets.get_mut(&id).ok_or("widget not found")?;
-        if let Some(obj) = rec.data.as_object_mut() {
-            obj.insert("on_top".to_string(), serde_json::Value::Bool(on_top));
-        }
-        rec.clone()
-    };
-    persist(&app);
+    let rec = store::with(&app, |s| {
+        s.edit(&id, |rec| {
+            if let Some(obj) = rec.data.as_object_mut() {
+                obj.insert("on_top".to_string(), serde_json::Value::Bool(on_top));
+            }
+            rec.clone()
+        })
+    });
+    let rec = rec.ok_or("widget not found")?;
     sync_top_overlay(&app);
     // straight to the front when something is pinned, rather than waiting for the
     // next watchdog tick
@@ -561,24 +554,20 @@ pub(crate) fn create_record_with(
             set_plugin_enabled(app, kind, true);
         }
     }
-    let rec = {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard.next += 1;
-        let n = guard.next;
+    let rec = store::with(app, |s| {
+        let n = s.next_number();
         let id = format!("{kind}-{n}");
         let (x, y) = at.unwrap_or((140 + ((n as i32 * 47) % 480), 140 + ((n as i32 * 31) % 320)));
         let rec = WidgetRecord {
-            id: id.clone(),
+            id,
             kind: kind.to_string(),
             x,
             y,
             data,
         };
-        guard.widgets.insert(id, rec.clone());
+        s.put(rec.clone());
         rec
-    };
-    persist(app);
+    });
     show_widget(app, &rec);
     Ok(rec)
 }
