@@ -379,6 +379,17 @@ pub fn manifest(disabled: &[String], approved: impl Fn(&str) -> bool) -> Vec<Plu
     out
 }
 
+/// Whether `id` can name a folder inside the plugins directory.
+///
+/// This is the shape check `uninstall` needs, and it is deliberately weaker than
+/// `valid_id`: a plugin whose manifest was broken by hand is exactly the one that
+/// needs removing, so its folder cannot be held to the grammar its manifest is. The
+/// whole of the rule is that the name must not escape the plugins folder — the same
+/// question the installer answers when it writes `plugins_dir/<id>`.
+pub(crate) fn is_plugin_folder_name(id: &str) -> bool {
+    !id.is_empty() && !id.contains(['/', '\\']) && !id.contains("..")
+}
+
 /// The plugin's `id`, or why it is not usable: 2-32 characters of `a-z`, `0-9`,
 /// `-` and `_`, starting with a letter or a digit, and never a built-in's.
 ///
@@ -423,6 +434,27 @@ fn validate_plugin_sizes(json: &serde_json::Value) -> Result<PluginSizes, String
             return Err("minSize is larger than maxSize".into());
         }
     }
+    // The default has to be a size the manifest allows. `InstalledPlugin::size` clamps
+    // every record to these bounds, so a `size` outside them means a fresh widget is not
+    // born at the manifest's own default — silently, and in the one place a plugin author
+    // would look first. A manifest that contradicts itself is not a version question, so
+    // this is a refusal and not a note.
+    if let Some(min) = min_size {
+        if w < min.0 || h < min.1 {
+            return Err(format!(
+                "size {w}x{h} is smaller than minSize {}x{}",
+                min.0, min.1
+            ));
+        }
+    }
+    if let Some(max) = max_size {
+        if w > max.0 || h > max.1 {
+            return Err(format!(
+                "size {w}x{h} is larger than maxSize {}x{}",
+                max.0, max.1
+            ));
+        }
+    }
     Ok(((w, h), min_size, max_size))
 }
 
@@ -448,22 +480,38 @@ fn validate_entry_path(dir: &std::path::Path, json: &serde_json::Value) -> Resul
     Ok(entry)
 }
 
-fn parse_desktop_item(json: &serde_json::Value, name: &str) -> Option<PluginDesktopItem> {
-    json.get("desktopItem")
-        .and_then(|v| v.as_object())
-        .map(|d| PluginDesktopItem {
-            path_key: d
-                .get("pathKey")
-                .and_then(|v| v.as_str())
-                .unwrap_or("target")
-                .to_string(),
-            noun: d
-                .get("noun")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("{name} floatie")),
-            group: d.get("group").and_then(|v| v.as_bool()).unwrap_or(false),
-        })
+/// The `desktopItem` a manifest declares, or why it is not usable.
+///
+/// `pathKey` is where a record of this kind keeps the path it stands for, and it defaults
+/// to `"target"` — the one-item convention an app or a file follows. A *group* is not one
+/// item, so it has to say where its paths live: defaulting it to `"target"` would silently
+/// point the kind at a key its records never write, which is the shape of the hole the
+/// countdown's date fell through on the frontend side.
+fn parse_desktop_item(
+    json: &serde_json::Value,
+    name: &str,
+) -> Result<Option<PluginDesktopItem>, String> {
+    let Some(d) = json.get("desktopItem").and_then(|v| v.as_object()) else {
+        return Ok(None);
+    };
+    let path_key = d.get("pathKey").and_then(|v| v.as_str());
+    let group = d.get("group").and_then(|v| v.as_bool()).unwrap_or(false);
+    if group && path_key.is_none() {
+        return Err(
+            "desktopItem with group: true must name its pathKey (\"target\" is the one-item \
+             default, and a group's records are not one path)"
+                .into(),
+        );
+    }
+    Ok(Some(PluginDesktopItem {
+        path_key: path_key.unwrap_or("target").to_string(),
+        noun: d
+            .get("noun")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{name} floatie")),
+        group,
+    }))
 }
 
 /// How `incoming` compares to what is already installed: `"new"`, `"same"`,
@@ -550,7 +598,7 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
         return Err("defaultData must be an object".into());
     }
 
-    let desktop_item = parse_desktop_item(&json, &name);
+    let desktop_item = parse_desktop_item(&json, &name)?;
 
     Ok(InstalledPlugin {
         name,
@@ -936,7 +984,7 @@ mod tests {
 
     #[test]
     fn broken_plugin_folders_are_rejected_with_a_reason() {
-        let cases: [(&str, &str, Option<&str>, &str); 11] = [
+        let cases: [(&str, &str, Option<&str>, &str); 13] = [
             ("no-id", r#"{ "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "id"),
             ("bad-id", r#"{ "id": "Bad Id", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "id"),
             ("builtin-id", r#"{ "id": "note", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "built-in"),
@@ -950,6 +998,10 @@ mod tests {
             ("no-entry-file", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, None, "does not exist"),
             ("escaping-entry", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "entry": "../evil.js" }"#, Some("x"), "relative path"),
             ("bad-data", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "defaultData": 7 }"#, Some("x"), "defaultData"),
+            // A manifest that contradicts itself: the default has to be a size the same
+            // manifest allows, or a fresh widget is not born at its own declared default.
+            ("size-under-min", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "minSize": {"w":200,"h":200} }"#, Some("x"), "smaller than minSize"),
+            ("size-over-max", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":300,"h":300}, "maxSize": {"w":200,"h":200} }"#, Some("x"), "larger than maxSize"),
         ];
         for (name, manifest, entry, expected) in cases {
             let dir = fixture(name, manifest, entry);
@@ -959,6 +1011,66 @@ mod tests {
                 "{name}: expected {expected:?} in {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_group_desktop_item_has_to_name_its_path_key() {
+        // `pathKey` defaults to "target" - the one-item convention an app or a file follows.
+        // A group is not one item, so the default would silently point the kind at a key its
+        // records never write. This is the shape of the hole the countdown's date fell through
+        // on the frontend side (a `target` that was a moment, read as a path), closed here
+        // where the manifest is parsed.
+        let group = r#"{
+            "id": "shelf",
+            "name": "Shelf",
+            "apiVersion": 2,
+            "size": { "w": 200, "h": 200 },
+            "desktopItem": { "group": true, "noun": "shelf floatie" }
+        }"#;
+        let dir = fixture("group-no-key", group, Some("export default { mount() {} };"));
+        let err = read_plugin(&dir).unwrap_err();
+        assert!(err.contains("pathKey"), "the refusal has to name the field: {err}");
+
+        // Naming one is fine, and the flag survives the read.
+        let named = group.replace("\"group\": true", "\"group\": true, \"pathKey\": \"path\"");
+        let dir = fixture("group-key", &named, Some("export default { mount() {} };"));
+        let d = read_plugin(&dir).unwrap().desktop_item.expect("a desktop item");
+        assert_eq!((d.path_key.as_str(), d.group), ("path", true));
+
+        // And a plain item may still leave it out: "target" is what that convention means.
+        let plain = group.replace("\"group\": true, ", "");
+        let dir = fixture("plain-no-key", &plain, Some("export default { mount() {} };"));
+        let d = read_plugin(&dir).unwrap().desktop_item.expect("a desktop item");
+        assert_eq!((d.path_key.as_str(), d.group), ("target", false));
+    }
+
+    #[test]
+    fn the_examples_validate_like_any_other_plugin() {
+        // `examples/plugins/*` is what a plugin author copies, and it is not built in, so no
+        // other check covers it. `scripts/check-examples.mjs` used to re-implement the manifest
+        // rules in JavaScript to do it, which meant tightening a rule here changed nothing
+        // there. The validator is the one rule set now: this points it at every example folder
+        // in CI (`cargo test --lib`), so a manifest that install would refuse cannot sit in the
+        // repo looking like the way to write one.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("examples")
+            .join("plugins");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&root).expect("examples/plugins must exist") {
+            let dir = entry.unwrap().path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let plugin = read_plugin(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            // The folder name is the id: that is how an installed plugin is found again
+            // (`plugins_dir/<id>`), so an example whose two disagree teaches the wrong shape.
+            let folder = dir.file_name().unwrap().to_string_lossy().to_string();
+            assert_eq!(plugin.id, folder, "folder name and manifest id must agree");
+            assert!(plugin.entry.is_file(), "{} has no entry file", plugin.id);
+            checked += 1;
+        }
+        assert!(checked > 0, "examples/plugins holds no example at all");
     }
 
     #[test]
