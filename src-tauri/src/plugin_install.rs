@@ -256,7 +256,10 @@ fn inspect_into(
 /// nothing else. A plugin's folder is never deleted outright: it is somebody's work
 /// and it is in the Recycle Bin if they want it back.
 pub fn uninstall(id: &str, plugins_dir: &Path) -> Result<PluginUninstall, String> {
-    if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") {
+    // The name rule is `plugins::is_plugin_folder_name`, not this module's: it is the
+    // same question the installer answers when it writes `plugins_dir/<id>`, and it is
+    // deliberately weaker than the manifest's id grammar (see that function).
+    if !crate::plugins::is_plugin_folder_name(id) {
         return Err(format!("'{id}' is not a plugin id"));
     }
     // `plugins::exists` is "built-in *or* installed", which is the wrong question

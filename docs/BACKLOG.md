@@ -10,6 +10,26 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
   runs for a record with no place of its own — so a new note or clock can land on top of an
   icon and stay there. `placement.freeSpot` would clear it; the gate, not the policy, is what
   stops it.
+- A kind's size limits live in two places and already disagree in one: the table declares them
+  inside `custom_size`'s closure (`size_from_wh(base, data, min, max)`), so nothing outside
+  `plugins.rs` can read them, and each widget retypes its own minimum for the resize handle —
+  `visualizer` is 140×70 in the table and 160×80 in the widget, `note`/`clock`/`sysmon` and
+  the countdown example agree with their manifests only by hand, and the trail example's panel
+  is 146 high while its manifest's `minSize` is 182. The backend clamps the saved size to the
+  table's numbers, so the retyped one is a grip that stops somewhere the record does not:
+  declaring the limits as data (and carrying them on the wire, where `resizable` already goes —
+  it is declared in the payload and in `pluginManifest.ts` and read by neither, and it is
+  missing from `check-plugins.mjs`'s `WIRE_FIELDS`, so a rename there is silent) would make
+  them one owner.
+- The path key is honoured in `widget_path`, `record_path` and the launcher, and hardcoded
+  everywhere else: `app_discovery_launch.rs` reads `"target"` at :692 and :745,
+  `putting_dragged_items_on_disk.rs` reads `"path"`/`"target"` at :335, :502, :698, :784, :895
+  and :899 (and writes them at :612, :757, :765, :807, :985, :1008), and
+  `global_floating_settings.rs` tries `["path", "target"]` at :549 and :635. An installed plugin
+  with `pathKey: "where"` therefore works in three places and is invisible in the rest, and the
+  readers that guess can hand a non-path value to a shell verb. `plugins::path_key(kind)` is the
+  accessor; the writers need the same rule, which is why this is a pass of its own rather than a
+  rename.
 - Path placement decides whether a name is free by looking, and then moves; Windows' `rename`
   writes over whatever is there, so two placements racing for one name is the case
   `placement.rs` does not close (a reservation would). Nothing has hit it yet.

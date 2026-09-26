@@ -17,7 +17,9 @@ the plugin that provides it: `note`, `clock`, `live2d`, `visualizer`, `sysmon`. 
 
 **plugin** - a *source* of kinds. A built-in plugin ships inside Floaty; a third-party
 plugin is a folder under the app-data `plugins/` directory with a `plugin.json`. A plugin
-is never a thing on the desktop - the widget it creates is.
+is never a thing on the desktop - the widget it creates is. One validator reads a
+`plugin.json` — `plugins::read_plugin` — and the examples under `examples/plugins` are
+held to it by a test, so there is one rule set rather than one per language.
 
 **panel** - retired. It meant "a widget with a body you can drag by", which is most of them,
 so it distinguished nothing. Still in the code; not in the docs, not in new code.

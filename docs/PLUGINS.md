@@ -281,6 +281,11 @@ that holds the path (the frontend's `desktopItemFor(kind)` tells you whether a k
 is one of these), `noun` is what the removal dialog calls it, and `group: true`
 means other items can be dropped into it.
 
+`pathKey` defaults to `"target"`, the one-item convention an app or a file follows.
+A `group: true` item has to name its own: a group is not one item, so `read_plugin`
+refuses a manifest that leaves it out rather than pointing the kind at a key its
+records never write.
+
 The root is watched, so an item added, renamed or deleted on disk appears, moves or
 leaves on the desktop while floaty runs — a rename keeps the floatie's id,
 position and icon. Removal is only ever applied to entries that are direct children
