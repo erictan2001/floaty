@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { desktopItemFor, pathOf } from "./pluginManifest";
+import { onScreen, rippleIndex, screenAt } from "./placement";
 import { listen } from "@tauri-apps/api/event";
 import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 
@@ -35,11 +36,6 @@ export function isOverlayMode(): boolean {
  */
 export function isTopLayer(): boolean {
   return appWin.label === TOP_LAYER;
-}
-
-/** Whether a record belongs in this layer rather than the desktop one. */
-export function isPinned(rec: WidgetRecord): boolean {
-  return rec.data["on_top"] === true;
 }
 
 export interface OverlaySlot {
@@ -397,13 +393,15 @@ export function toRecords(x: number, y: number): { x: number; y: number } {
 /**
  * Is this point drawn by this window?
  *
- * True when nothing is known yet, so a page that has not managed to ask (or a build
- * where the command is missing) mounts everything rather than nothing.
+ * The test is the placement policy's (`placement.onScreen`); this is the adapter that hands
+ * it the screen this window draws. True when nothing is known yet, so a page that has not
+ * managed to ask (or a build where the command is missing) mounts everything rather than
+ * nothing.
  */
 export function onMyScreen(x: number, y: number): boolean {
   const screen = area?.screen.logical;
   if (!screen) return true;
-  return x >= screen.x && x < screen.x + screen.w && y >= screen.y && y < screen.y + screen.h;
+  return onScreen(screen, x, y);
 }
 
 /**
@@ -521,7 +519,9 @@ function followMonitors(): void {
  * same rectangle `monitorArea()` returns.
  */
 export function monitorAt(x: number): MonitorArea {
-  const hit = monitors.find((m) => x >= m.x && x < m.x + m.w);
+  // The rule is placement's; the screens are this module's cache (the physics needs the
+  // answer synchronously every frame, so the layout is held here rather than awaited).
+  const hit = screenAt(monitors, x);
   if (hit) return hit;
   // This window's own screen is the better answer than the whole arrangement: an
   // overlay draws one screen, and a widget falling in it rests on that screen's floor.
@@ -607,175 +607,6 @@ export function debounce<F extends (...args: never[]) => void>(
     window.clearTimeout(t);
     t = window.setTimeout(() => fn(...args), ms);
   };
-}
-
-/**
- * Anti-collision helper: ensures a widget placed at (x, y) does not overlap
- * any existing widget in the overlay, nudging it to the nearest collision-free position.
- */
-export interface PreventOverlapOptions {
-  mon?: MonitorArea;
-  gap?: number;
-}
-
-export interface PreventOverlapTarget {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  mon?: MonitorArea;
-  gap?: number;
-}
-
-interface ShiftContext {
-  curX: number;
-  curY: number;
-  w: number;
-  h: number;
-  gap: number;
-  clampX: (val: number) => number;
-  clampY: (val: number) => number;
-}
-
-export function findShiftCandidate(
-  colliding: OverlaySlot[],
-  ctx: ShiftContext,
-  collidesWithAny: (cx: number, cy: number) => boolean,
-): { x: number; y: number } | null {
-  const { curX, curY, w, h, gap, clampX, clampY } = ctx;
-  type Candidate = { x: number; y: number; dist: number };
-  const candidates: Candidate[] = [];
-
-  for (const o of colliding) {
-    const shifts = [
-      { x: clampX(o.x + o.w + gap + 4), y: clampY(curY) },
-      { x: clampX(o.x - w - gap - 4), y: clampY(curY) },
-      { x: clampX(curX), y: clampY(o.y + o.h + gap + 4) },
-      { x: clampX(curX), y: clampY(o.y - h - gap - 4) },
-      { x: clampX(o.x + o.w + gap + 4), y: clampY(o.y) },
-      { x: clampX(o.x - w - gap - 4), y: clampY(o.y) },
-    ];
-    for (const s of shifts) {
-      if (!collidesWithAny(s.x, s.y)) {
-        candidates.push({ x: s.x, y: s.y, dist: Math.hypot(s.x - curX, s.y - curY) });
-      }
-    }
-  }
-
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => a.dist - b.dist);
-  return { x: candidates[0].x, y: candidates[0].y };
-}
-
-interface GridContext {
-  curX: number;
-  curY: number;
-  minX: number;
-  minY: number;
-  clampX: (val: number) => number;
-  clampY: (val: number) => number;
-}
-
-export function findGridCandidate(
-  ctx: GridContext,
-  collidesWithAny: (cx: number, cy: number) => boolean,
-): { x: number; y: number } | null {
-  const { curX, curY, minX, minY, clampX, clampY } = ctx;
-  const CELL_W = 100;
-  const CELL_H = 116;
-  const baseCol = Math.round((curX - minX) / CELL_W);
-  const baseRow = Math.round((curY - minY) / CELL_H);
-
-  for (let r = 1; r <= 15; r++) {
-    for (let dc = -r; dc <= r; dc++) {
-      for (let dr = -r; dr <= r; dr++) {
-        if (Math.max(Math.abs(dc), Math.abs(dr)) !== r) continue;
-        const gx = clampX(minX + (baseCol + dc) * CELL_W);
-        const gy = clampY(minY + (baseRow + dr) * CELL_H);
-        if (!collidesWithAny(gx, gy)) {
-          return { x: gx, y: gy };
-        }
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * When a fresh widget drops on desktop without a stored position, check for
- * any existing widget in the overlay, nudging it to the nearest collision-free position.
- */
-export function preventOverlap(
-  targetOrId: string | PreventOverlapTarget,
-  ...args: [optX?: number, optY?: number, optW?: number, optH?: number, options?: PreventOverlapOptions]
-): { x: number; y: number } {
-  const [optX, optY, optW, optH, options] = args;
-  const isObj = typeof targetOrId !== "string";
-  const id = isObj ? targetOrId.id : targetOrId;
-  const x = isObj ? targetOrId.x : (optX ?? 0);
-  const y = isObj ? targetOrId.y : (optY ?? 0);
-  const w = isObj ? targetOrId.w : (optW ?? 0);
-  const h = isObj ? targetOrId.h : (optH ?? 0);
-  const mon = isObj ? targetOrId.mon : options?.mon;
-  const gap = isObj ? (targetOrId.gap ?? 8) : (options?.gap ?? 8);
-
-  if (!isOverlayMode()) {
-    return { x, y };
-  }
-
-  const screenX = mon ? mon.x : 0;
-  const screenY = mon ? mon.y : 0;
-  const screenW = mon && mon.w > 0 ? mon.w : (window.innerWidth || 1920);
-  const screenH = mon && mon.h > 0 ? mon.h : (window.innerHeight || 1080);
-  const minX = screenX + 16;
-  const minY = screenY + 16;
-  const maxX = Math.max(minX, screenX + screenW - w - 16);
-  const maxY = Math.max(minY, screenY + screenH - h - 16);
-
-  const clampX = (val: number) => Math.max(minX, Math.min(maxX, val));
-  const clampY = (val: number) => Math.max(minY, Math.min(maxY, val));
-  const curX = clampX(x);
-  const curY = clampY(y);
-
-  const others: OverlaySlot[] = [];
-  for (const slot of overlaySlots.values()) {
-    if (slot.id !== id) others.push(slot);
-  }
-
-  const collidesWithAny = (cx: number, cy: number): boolean => {
-    for (const o of others) {
-      const ox = Math.min(cx + w, o.x + o.w) - Math.max(cx, o.x);
-      const oy = Math.min(cy + h, o.y + o.h) - Math.max(cy, o.y);
-      if (ox > 12 && oy > 12) return true;
-    }
-    return false;
-  };
-
-  if (!collidesWithAny(curX, curY)) {
-    return { x: curX, y: curY };
-  }
-
-  const colliding = others.filter((o) => {
-    const ox = Math.min(curX + w, o.x + o.w) - Math.max(curX, o.x);
-    const oy = Math.min(curY + h, o.y + o.h) - Math.max(curY, o.y);
-    return ox > 12 && oy > 12;
-  });
-
-  const shifted = findShiftCandidate(
-    colliding,
-    { curX, curY, w, h, gap, clampX, clampY },
-    collidesWithAny,
-  );
-  if (shifted) return shifted;
-
-  const gridPos = findGridCandidate(
-    { curX, curY, minX, minY, clampX, clampY },
-    collidesWithAny,
-  );
-  if (gridPos) return gridPos;
-
-  return { x: curX, y: curY };
 }
 
 /**
@@ -1013,23 +844,6 @@ export function settingNum(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
 
-/** The launcher cell and its gap: what "the next icon along" means to the eye. */
-const CELL_W = 100;
-const CELL_H = 120;
-
-/**
- * Where an item sits in the ripple, read the way the eye reads a desktop —
- * left to right, top to bottom. A *place* is what a wave has to be ordered by:
- * the id it used to come from (`num % 6` of `app-17`, `folder-14`) scattered the
- * phases randomly across the screen, so even a stagger that applied would not
- * have read as a wave.
- */
-function rippleIndex(at: { x: number; y: number }): number {
-  const cols = Math.max(1, Math.ceil((window.innerWidth || 1920) / CELL_W));
-  const col = clampNum(Math.round(at.x / CELL_W), 0, cols - 1);
-  return Math.max(0, Math.round(at.y / CELL_H)) * cols + col;
-}
-
 /**
  * Applies the float settings to one desktop item: its mode, its travel and
  * period, and — in wave mode — where it sits in the ripple.
@@ -1075,7 +889,7 @@ export function applyFloatieAnimation(
   // motion in the one mode nobody had chosen.
   wrap.style.setProperty("--bob-amp", `${height}px`);
   wrap.style.setProperty("--bob-cycle", `${period}s`);
-  const ripple = mode === "wave" && at ? rippleIndex(at) : 0;
+  const ripple = mode === "wave" && at ? rippleIndex(at, window.innerWidth || 1920) : 0;
   wrap.style.setProperty("--bob-delay", `${((-ripple * spread) / 100) * period}s`);
 
   // The bob's step counts live in style.css as literal `steps(n)`: Chromium
