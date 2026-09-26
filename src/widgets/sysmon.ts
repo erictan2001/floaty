@@ -2,19 +2,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   addPinMenu,
-  addResizeHandle,
   appWin,
   currentSettings,
-  enableOverlayDrag,
   loadRecord,
   onSettings,
   removeSelf,
   saveRecord,
-  trackPosition,
   watchPluginEnabled,
   watchSettings,
   type WidgetRecord,
 } from "./lib";
+import { floatie } from "./floatie";
 import type { FloatyPlugin, PluginRecord, PluginSettingsContext } from "./plugin";
 
 interface SysmonSample {
@@ -249,10 +247,10 @@ export function mountSysmon(root: HTMLElement, id: string): void {
       e.stopPropagation();
       void removeSelf(rec!);
     });
-    addResizeHandle(wrap, rec, 180, 110);
+    floatie(rec).resizeHandle(wrap, 180, 110);
     // no title bar: the whole surface drags, and a click still cycles the graph
-    enableOverlayDrag(wrap, id);
-    trackPosition(rec);
+    floatie(rec).attachDrag(wrap);
+    floatie(rec).watch();
     addPinMenu(wrap, () => rec);
     window.addEventListener("beforeunload", () => {
       void invoke("floaty_sysmon_stop").catch(() => undefined);

@@ -241,7 +241,7 @@ describe("toWindow / toRecords", () => {
   });
 });
 
-describe("onMyScreen / isOnMyScreen", () => {
+describe("onMyScreen", () => {
   it("claims only the screen this window covers", async () => {
     const lib = await boot("A");
     expect(lib.onMyScreen(0, 0)).toBe(true);
@@ -257,12 +257,6 @@ describe("onMyScreen / isOnMyScreen", () => {
     expect(lib.onMyScreen(2719, 719)).toBe(true);
     expect(lib.onMyScreen(2720, 0)).toBe(false);
     expect(lib.onMyScreen(100, 100)).toBe(false);
-  });
-
-  it("isOnMyScreen is the same answer", async () => {
-    const lib = await boot("A");
-    expect(lib.isOnMyScreen(100, 100)).toBe(lib.onMyScreen(100, 100));
-    expect(lib.isOnMyScreen(2000, 100)).toBe(lib.onMyScreen(2000, 100));
   });
 });
 

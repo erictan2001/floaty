@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   currentSettings,
-  isOverlayMode,
   isPinned,
   isTopLayer,
   beatNow,
@@ -16,7 +15,6 @@ import {
   registerOverlaySlot,
   saveRecord,
   scheduleHitRectsUpdate,
-  setWidgetPos,
   toWindow,
   unregisterOverlaySlot,
   watchSettings,
@@ -24,13 +22,13 @@ import {
   type OverlaySlot,
   type WidgetRecord,
 } from "./widgets/lib";
+import { floatie } from "./widgets/floatie";
 import {
   clearWidgetScope,
   loadPlugins,
   pluginApi,
   pluginFor,
   pluginKinds,
-  widgetApi,
 } from "./widgets/plugin";
 import { crossCheckPlugins, isDesktopItem, layoutPriorityFor, pluginSize } from "./widgets/pluginManifest";
 
@@ -626,7 +624,13 @@ function mountDesktop(root: HTMLElement): void {
 
   function refreshMerge(draggedId: string): void {
     const dragged = overlaySlots.get(draggedId);
-    if (!dragged || !mountedSlots.has(draggedId)) {
+    // A drop only merges when *both* ends are desktop items: the backend's candidate
+    // list is the desktop items other than the dragged one, and a record that is not
+    // one of them cannot be folded into a folder on disk (`widget_as_folder_item`
+    // gives it no path and the merge stops). `notifyDragMove` is sent for every
+    // kind, so without this a note dragged over an icon would arm a preview
+    // promising a merge the drop will not perform.
+    if (!dragged || !mountedSlots.has(draggedId) || !isDesktopItem(dragged.kind)) {
       disarmMerge();
       return;
     }
@@ -647,16 +651,37 @@ function mountDesktop(root: HTMLElement): void {
   });
   window.addEventListener("floaty-drag-end", () => disarmMerge());
 
+  /**
+   * The records this window mounted, by id.
+   *
+   * The overlay is what creates a slot, and it does so from a record it was handed — so
+   * it is the one page that can still say which record a slot is. `mountWidget` fills
+   * this and `unmountWidget` clears it; nothing else in the page holds records, and the
+   * `floaty-drag-moved` echo above is the only path that needs one.
+   */
+  const overlayRecords = new Map<string, WidgetRecord>();
+
   // A dragged floatie is moved by the window the drag started in, which after a boundary
   // crossing is no longer the window drawing it: this is how the drawing window follows
   // the pointer for the rest of the drag. Kept separate from `floaty-widget-updated`
   // below, which re-mounts the floatie — wrong per move, and slower.
+  //
+  // The record is the position, so this goes through the floatie's session rather than
+  // at the slot: the window that has just taken the floatie over holds a record whose
+  // own x/y are stale, and a transform written without it would leave the next mount (and
+  // the next commit) drawing it where the drag left it, not where it was dropped. The
+  // session is the one thing that writes both, and `mountedSlots` is the answer to
+  // whether this window draws the floatie at all.
   listen<{ id: string; x: number; y: number }>("floaty-drag-moved", (e) => {
     const moved = e.payload;
     if (!moved?.id || !mountedSlots.has(moved.id)) return;
-    setWidgetPos(moved.id, moved.x, moved.y);
+    // The record behind the slot: the session is keyed by id, so this is the record the
+    // mount drew from. A slot with no session here (an id the backend re-homed to another
+    // window between the emit and this handler) has nothing to write, and the other window
+    // is already drawing it.
+    const rec = overlayRecords.get(moved.id);
+    if (rec) floatie(rec).place(moved.x, moved.y);
   }).catch(() => undefined);
-
 
   const mountWidget = (rec: WidgetRecord) => {
     if (mountedSlots.has(rec.id)) return;
@@ -691,6 +716,8 @@ function mountDesktop(root: HTMLElement): void {
 
     canvas.append(slot);
     mountedSlots.add(rec.id);
+    // The session's record is the one mounted here, so the drag echo can reach it.
+    overlayRecords.set(rec.id, rec);
 
     registerOverlaySlot({
       id: rec.id,
@@ -728,6 +755,12 @@ function mountDesktop(root: HTMLElement): void {
     // a widget on its way out cannot be half of a preview
     if (mergeArmed && (mergeArmed.target === id || mergeArmed.dragged === id)) disarmMerge();
     mountedSlots.delete(id);
+    // The session goes with the slot: it holds this window's watch timer and the
+    // record it is writing, and a remount makes a new one — so a slot that went
+    // away and came back must not keep answering to the floatie it used to draw.
+    const rec = overlayRecords.get(id);
+    overlayRecords.delete(id);
+    if (rec) floatie(rec).dispose();
     unregisterOverlaySlot(id);
     const slot = document.getElementById(`slot-${id}`);
     if (slot) slot.remove();

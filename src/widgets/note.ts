@@ -1,4 +1,5 @@
-import { addPinMenu, addResizeHandle, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, setWidgetSize, trackPosition, watchPluginEnabled } from "./lib";
+import { addPinMenu, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, watchPluginEnabled } from "./lib";
+import { floatie } from "./floatie";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 
 export function mountNote(root: HTMLElement, id: string): void {
@@ -14,7 +15,10 @@ export function mountNote(root: HTMLElement, id: string): void {
   void (async () => {
     const rec = await loadRecord(id);
     if (!rec) return;
-    wrap.prepend(makeBar("note", () => void removeSelf(rec), id));
+    wrap.prepend(makeBar("note", () => void removeSelf(rec)));
+    // the bar is not a handle of its own any more: a press anywhere on the panel
+    // drags, and the textarea below keeps its own behaviour
+    floatie(rec).attachDrag(wrap);
     addPinMenu(wrap, () => rec);
     // restore saved size
     const w = typeof rec.data["w"] === "number" ? (rec.data["w"] as number) : 0;
@@ -23,19 +27,19 @@ export function mountNote(root: HTMLElement, id: string): void {
       try {
         const s = await appWin.scaleFactor();
         const k = s > 0 ? s : 1;
-        setWidgetSize(id, Math.min(w, 1400), Math.min(h, 1400), k);
+        floatie(rec).size(Math.min(w, 1400), Math.min(h, 1400), k);
       } catch {
         /* keep default size */
       }
     }
-    addResizeHandle(wrap, rec, 180, 140);
+    floatie(rec).resizeHandle(wrap, 180, 140);
     area.value = typeof rec.data["text"] === "string" ? (rec.data["text"] as string) : "";
     const persist = debounce(() => {
       rec.data["text"] = area.value;
       void saveRecord(rec);
     }, 400);
     area.addEventListener("input", persist);
-    trackPosition(rec);
+    floatie(rec).watch();
   })();
 }
 

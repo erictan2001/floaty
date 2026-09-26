@@ -163,17 +163,13 @@ export function notifyDragMove(id: string, x: number, y: number): void {
 }
 
 /**
- * Slots a plugin has stretched over the desktop to catch the mouse (a drawing surface, a
- * page of save slots). While a widget is reserving, the slot's position is scaffolding and
- * not the user's choice, so the position watcher must not persist it — a click on the last
- * thing that happens inside the stretch is a `pointerup`, and the watcher's snap 60ms later
- * would otherwise save (0,0) over the widget's real place.
+ * The session's hands: write a position or a size, and the window draws it.
+ *
+ * This is the drawing end only. The record is the position, and a stretch that is
+ * scaffolding rather than a move is marked as one where the record is written —
+ * `floatie(rec).place(x, y, { transient: true })` — so nothing here has to know.
  */
-const reservingSlots = new Set<string>();
-
-export function setWidgetPos(id: string, x: number, y: number, scale = 1, opts?: { transient?: boolean }): void {
-  if (opts?.transient) reservingSlots.add(id);
-  else reservingSlots.delete(id);
+export function setWidgetPos(id: string, x: number, y: number, scale = 1): void {
   if (isOverlayMode()) {
     const slot = overlaySlots.get(id);
     if (slot) {
@@ -231,21 +227,6 @@ export async function logicalPos(id?: string): Promise<{ x: number; y: number }>
     return { x: p.x / s, y: p.y / s };
   } catch {
     return { x: 0, y: 0 };
-  }
-}
-
-export async function setLogicalPos(x: number, y: number, id?: string): Promise<void> {
-  if (isOverlayMode() && id) {
-    setWidgetPos(id, x, y);
-    return;
-  }
-  try {
-    const s = await scaleFactor();
-    await appWin.setPosition(new PhysicalPosition(Math.round(x * s), Math.round(y * s)));
-  } catch (err) {
-    void invoke("floaty_log", {
-      msg: `[lib] setLogicalPos failed: ${String(err)}`,
-    }).catch(() => undefined);
   }
 }
 
@@ -349,7 +330,7 @@ function pointerPhysical(e: { clientX: number; clientY: number }): { x: number; 
  * `null` when there are no screens to map through (a probe page, a window with no
  * screen), in which case the caller keeps its own delta maths.
  */
-export function dragPosition(ev: PointerEvent): { x: number; y: number } | null {
+export function dragPosition(ev: { clientX: number; clientY: number }): { x: number; y: number } | null {
   const spot = pointerPhysical(ev);
   return spot ? physicalToVirtual(spot) : null;
 }
@@ -362,14 +343,13 @@ export function dragPosition(ev: PointerEvent): { x: number; y: number } | null 
  * dead is what turned "drag an icon to the other screen" into "merge it with whatever
  * sits at this screen's edge".
  */
-export function dragGrab(ev: PointerEvent, x: number, y: number): { dx: number; dy: number } | null {
+export function dragGrab(
+  ev: { clientX: number; clientY: number },
+  x: number,
+  y: number,
+): { dx: number; dy: number } | null {
   const at = dragPosition(ev);
   return at ? { dx: at.x - x, dy: at.y - y } : null;
-}
-
-/** Is this record drawn by this window's screen? (true when there is no screen model) */
-export function isOnMyScreen(x: number, y: number): boolean {
-  return onMyScreen(x, y);
 }
 
 /**
@@ -602,18 +582,8 @@ export async function loadRecord(id: string): Promise<WidgetRecord | undefined> 
 }
 
 export async function saveRecord(rec: WidgetRecord): Promise<void> {
-  // A save carries a page-side copy of the record, and that copy can be older than the
-  // last drag: a widget saving unrelated data (a graph, a note's text) would otherwise
-  // write the position from before the drag, and the widget would jump back to where it
-  // used to be. The slot is where it actually is, so that is what is saved — in one place,
-  // because every widget that saves anything would otherwise have to remember this.
-  if (isOverlayMode()) {
-    const slot = overlaySlots.get(rec.id);
-    if (slot) {
-      rec.x = Math.round(slot.x);
-      rec.y = Math.round(slot.y);
-    }
-  }
+  // A plain save. The record *is* the position (a slot is a view written from it, never
+  // read back into it), so there is nothing here to repair before the write.
   try {
     await invoke("floaty_save", { record: rec });
   } catch (err) {
@@ -637,52 +607,6 @@ export function debounce<F extends (...args: never[]) => void>(
     window.clearTimeout(t);
     t = window.setTimeout(() => fn(...args), ms);
   };
-}
-
-/** Persist window position (logical px) every 2s + on unload. */
-const trackedPositions = new Set<string>();
-
-export function trackPosition(rec: WidgetRecord): void {
-  if (trackedPositions.has(rec.id)) return; // one watcher per widget
-  trackedPositions.add(rec.id);
-  const snap = async () => {
-    // a slot stretched over the desktop is scaffolding, not the widget's place
-    if (reservingSlots.has(rec.id)) return;
-    try {
-      if (isOverlayMode()) {
-        const slot = overlaySlots.get(rec.id);
-        if (!slot) return;
-        const x = Math.round(slot.x);
-        const y = Math.round(slot.y);
-        if (x !== rec.x || y !== rec.y) {
-          rec.x = x;
-          rec.y = y;
-          await saveRecord(rec);
-        }
-        return;
-      }
-      const p = await logicalPos(rec.id);
-      const x = Math.round(p.x);
-      const y = Math.round(p.y);
-      if (x !== rec.x || y !== rec.y) {
-        rec.x = x;
-        rec.y = y;
-        await saveRecord(rec);
-      }
-    } catch {
-      /* window gone */
-    }
-  };
-  if (!isOverlayMode()) {
-    window.setInterval(() => void snap(), 2000);
-  }
-  window.addEventListener("beforeunload", () => void snap());
-  // persist the moment a drag ends or the window hides instead of waiting
-  // for the next poll — quits otherwise lose the last move
-  window.addEventListener("pointerup", () => window.setTimeout(() => void snap(), 60));
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) void snap();
-  });
 }
 
 /**
@@ -854,168 +778,6 @@ export function preventOverlap(
   return { x: curX, y: curY };
 }
 
-export interface OverlayDragOptions {
-  /** Pointer travel (px) before a press counts as a drag rather than a click. */
-  threshold?: number;
-}
-
-/**
- * Make an element drag its widget around. Title bars use this, and so do
- * widgets with no bar (their whole surface is the handle).
- *
- * A press only becomes a drag after `threshold` px of travel, so widgets that
- * also react to plain clicks (visualizer modes, sysmon graph) keep working:
- * a press that really moved swallows the click that follows it.
- */
-export function enableOverlayDrag(
-  el: HTMLElement,
-  id: string | undefined,
-  opts: OverlayDragOptions = {},
-): void {
-  const threshold = opts.threshold ?? 4;
-
-  // Swallow the click that follows a real drag: it must not reach the widget's
-  // own click action. Installed at the window in the capture phase, because a
-  // listener on the widget itself would run *after* the widget's own handler.
-  const swallowClick = (e: Event): void => {
-    e.stopPropagation();
-    e.preventDefault();
-  };
-  const stopSwallowing = (): void => window.removeEventListener("click", swallowClick, true);
-
-  // controls inside the draggable surface keep their own behaviour
-  const isControl = (target: EventTarget | null): boolean => {
-    const t = target as HTMLElement | null;
-    return !!t?.closest?.("button, input, textarea, select, .resize-handle, .pin-menu, .model-menu");
-  };
-
-  el.addEventListener(
-    "pointerdown",
-    (e) => {
-      if (e.button !== 0) return;
-      if (isControl(e.target)) return;
-      stopSwallowing();
-      if (!isOverlayMode() || !id) {
-        void appWin.startDragging().catch(() => undefined);
-        return;
-      }
-      const slot = overlaySlots.get(id);
-      if (!slot) return;
-      e.stopPropagation();
-      // Announced before the first move: this is the snapshot of where the widget was,
-      // and after one move it would be the place the drag had already taken it to.
-      void invoke("floaty_gesture_begin", { label: "move", ids: [id] }).catch(() => undefined);
-      // The pointer capture is taken on the first move, not here — see `onMove`. Taking it
-      // now would move the browser's `click` target up to the body (the common ancestor of
-      // a captured down and up), and the widget's own click action would never fire: the
-      // countdown would not open its date picker, the visualizer would not cycle modes.
-      const startX = slot.x;
-      const startY = slot.y;
-      const startSX = e.clientX;
-      const startSY = e.clientY;
-      let active = false;
-      // The point of the floatie the pointer is holding, in record space. Placing it from
-      // the pointer's own position is what survives the change of scale part way through
-      // a drag: accumulating deltas in the window the drag began in pushed a floatie
-      // dragged onto the second screen into the band between the two screens (1440 + px
-      // past the edge, where the second screen begins at 1920) — a place no window draws,
-      // so it disappeared for good.
-      void screens();
-      const at = pointerPhysical(e);
-      const v = at && physicalToVirtual(at);
-      const grab = v ? { dx: v.x - startX, dy: v.y - startY } : null;
-
-      // The last move the pointer made, for a release that carries no coordinates of its
-      // own (a cancel): a placement must never fall back to the pointerdown point.
-      let lastMove: PointerEvent | null = null;
-
-      const onMove = (ev: PointerEvent) => {
-        lastMove = ev;
-        const dx = ev.clientX - startSX;
-        const dy = ev.clientY - startSY;
-        if (!active) {
-          if (Math.abs(dx) < threshold && Math.abs(dy) < threshold) return;
-          active = true;
-          // This is the moment a drag starts, and so the moment to capture the pointer: on
-          // the *body*, not on the widget, because the widget's slot is removed from the DOM
-          // when the drag crosses onto another screen (that window owns it now) and capture
-          // on a removed element stops delivering moves — the drag would freeze at the
-          // boundary. Doing it here rather than at pointerdown is what keeps a tap
-          // clickable: while the capture is held, `click` is fired at the capturing element,
-          // so the widget under the pointer never sees it.
-          try {
-            (el.ownerDocument?.body ?? el).setPointerCapture(ev.pointerId);
-          } catch {
-            /* a browser without pointer capture: the drag still works inside the window */
-          }
-          window.addEventListener("click", swallowClick, true);
-          notifyDragging(true);
-        }
-        const spot = pointerPhysical(ev);
-        const want = spot && physicalToVirtual(spot);
-        if (want && grab) {
-          const x = want.x - grab.dx;
-          const y = want.y - grab.dy;
-          // The backend is told on every move: it owns which screen the floatie is on and
-          // hands it between windows as that changes, in both directions.
-          void invoke("floaty_drag_to", { id, x, y }).catch(() => undefined);
-          if (onMyScreen(x, y)) setWidgetPos(id, x, y);
-          return;
-        }
-        // No screens to map through (or none under the pointer): the delta maths, which
-        // is exact while the pointer stays on one screen.
-        setWidgetPos(id, startX + dx, startY + dy);
-      };
-      const onUp = (up?: PointerEvent) => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
-        // One last placement, so a drop just past the edge still lands on the screen the
-        // pointer is on rather than on the last position the moves saw. The coordinates
-        // must come from the release (or the last move), never from `e` — `e` is the
-        // pointerdown this handler closed over, so using it placed every panel back where
-        // the drag began.
-        //
-        // It has to happen *before* the gesture ends. The backend re-homes a widget the
-        // release left on no screen, and a placement arriving after the commit writes the
-        // off-screen position straight back on top of the repair: the log says "brought
-        // back" and the widget is still gone. Placing first also puts this last position
-        // inside the gesture, so the one undo step holds it.
-        if (active) {
-          const at = up ?? lastMove ?? e;
-          const spot = pointerPhysical({ clientX: at.clientX, clientY: at.clientY });
-          const want = spot && physicalToVirtual(spot);
-          if (want && grab) {
-            void invoke("floaty_drag_to", {
-              id,
-              x: want.x - grab.dx,
-              y: want.y - grab.dy,
-            }).catch(() => undefined);
-          }
-        }
-        // One step for the gesture, if it changed anything at all.
-        void invoke("floaty_gesture_end").catch(() => undefined);
-        try {
-          (el.ownerDocument?.body ?? el).releasePointerCapture?.(e.pointerId);
-        } catch {
-          /* never captured */
-        }
-        if (active) {
-          notifyDragging(false);
-          // the click lands in the same gesture; drop the guard right after
-          window.setTimeout(stopSwallowing, 350);
-        }
-      };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
-    },
-    // capture, so a widget's own pointerdown handler (which stops propagation)
-    // cannot swallow the drag
-    true,
-  );
-}
-
 /**
  * Title row for the widgets that have one — the note and the clock.
  *
@@ -1023,8 +785,12 @@ export function enableOverlayDrag(
  * close button that stays quiet until the widget is under the cursor. No dots,
  * no coloured strip: a panel floats on the wallpaper and the chrome stays part
  * of the panel (`--panel-*` in style.css).
+ *
+ * The bar is not a drag handle of its own: it is a child of the surface the session's
+ * `attachDrag` listens on, in the capture phase, so a press on it drags the floatie
+ * exactly as a press on the panel does.
  */
-export function makeBar(title: string, onClose: () => void, id?: string): HTMLElement {
+export function makeBar(title: string, onClose: () => void): HTMLElement {
   const bar = document.createElement("div");
   bar.className = "bar";
   const label = document.createElement("span");
@@ -1040,7 +806,6 @@ export function makeBar(title: string, onClose: () => void, id?: string): HTMLEl
     onClose();
   });
   bar.append(label, close);
-  enableOverlayDrag(bar, id);
   return bar;
 }
 
@@ -1474,73 +1239,6 @@ export function iconIsMissing(url: string | undefined): boolean {
   if (!url || url === "none") return true;
   if (!url.startsWith("data:")) return false;
   return iconSize(url) === undefined;
-}
-
-// ---------- resize handle (notes + clocks) ----------
-
-/** Bottom-right corner grip that resizes the window and persists its size. */
-export function addResizeHandle(
-  wrap: HTMLElement,
-  rec: WidgetRecord,
-  minW: number,
-  minH: number,
-): void {
-  wrap.style.position = "relative";
-  const grip = document.createElement("div");
-  grip.className = "resize-handle";
-  grip.title = "Resize";
-  wrap.append(grip);
-  grip.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    e.stopPropagation();
-    e.preventDefault();
-    notifyDragging(true);
-    // a resize is a gesture like a drag: snapshot the record before the first move
-    void invoke("floaty_gesture_begin", { label: "resize", ids: [rec.id] }).catch(() => undefined);
-    void (async () => {
-      let scale = 1;
-      try {
-        const s = await appWin.scaleFactor();
-        if (s > 0) scale = s;
-      } catch {
-        /* keep */
-      }
-      let startW = wrap.offsetWidth;
-      let startH = wrap.offsetHeight;
-      if (!isOverlayMode()) {
-        try {
-          const sz = await appWin.innerSize();
-          startW = sz.width / scale;
-          startH = sz.height / scale;
-        } catch {
-          return;
-        }
-      }
-      const isOverlay = isOverlayMode();
-      const startSX = isOverlay ? e.clientX : e.screenX;
-      const startSY = isOverlay ? e.clientY : e.screenY;
-      const onMove = (ev: PointerEvent) => {
-        const curSX = isOverlay ? ev.clientX : ev.screenX;
-        const curSY = isOverlay ? ev.clientY : ev.screenY;
-        const w = Math.max(minW, startW + (curSX - startSX));
-        const h = Math.max(minH, startH + (curSY - startSY));
-        setWidgetSize(rec.id, w, h, scale);
-      };
-      const onUp = () => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
-        void invoke("floaty_gesture_end").catch(() => undefined);
-        notifyDragging(false);
-        rec.data["w"] = Math.round(wrap.offsetWidth);
-        rec.data["h"] = Math.round(wrap.offsetHeight);
-        void saveRecord(rec);
-      };
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
-    })();
-  });
 }
 
 // ---------- pin-on-top context menu ----------

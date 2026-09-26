@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as PIXI from "pixi.js";
 import "@pixi/unsafe-eval";
 import { Live2DModel, MotionPriority } from "pixi-live2d-display";
-import { BASE_H, BASE_W, boxFor, fitInside, maxScaleFor, scaleForBox } from "./live2dBounds";
+import { BASE_H, BASE_W, boxFor, fitInside, scaleForBox } from "./live2dBounds";
 // live2dPlugin imports this module lazily, so this is not a cycle in practice:
 // by the time a widget mounts, the plugin module is fully evaluated.
 import { addModelMenuRow } from "./live2dPlugin";
@@ -19,20 +19,17 @@ import {
   ensureLive2DCore,
   isOverlayMode,
   loadRecord,
-  logicalPos,
   monitorArea,
   notifyDragging,
   overlaySlots,
   refreshSettings,
   removeSelf,
   saveRecord,
-  setLogicalPos,
-  setWidgetSize,
-  trackPosition,
   watchPluginEnabled,
   type MonitorArea,
   type WidgetRecord,
 } from "./lib";
+import { floatie } from "./floatie";
 
 type L2DModel = Awaited<ReturnType<typeof Live2DModel.from>>;
 
@@ -222,8 +219,24 @@ export function mountLive2D(root: HTMLElement, id: string): void {
   };
 
   /** The record the widget is mounted with, kept in sync with the persisted one
-   *  so a later save from trackPosition cannot drop the box we just wrote. */
+   *  so a later save cannot drop the box we just wrote. */
   let liveRec: WidgetRecord | undefined;
+
+  /**
+   * This widget's floatie session, or nothing before its record has landed. The
+   * gesture below is its own (it clamps the model to its screen rather than
+   * handing it between overlays), but where it and the session are the same
+   * thing — the position and the box — they go through the session, so the
+   * record, the slot and the window can only ever be told once.
+   */
+  const session = () => (liveRec ? floatie(liveRec) : undefined);
+
+  /**
+   * The window's scale factor, cached: a position in window mode is physical px
+   * on the way to Tauri, and this widget's drag reads one on every pointermove.
+   * `applyZoom` and the mount both refresh it.
+   */
+  let winScale = 1;
 
   /** Persist the box (and any position nudge) so the backend agrees with the screen. */
   const saveGeometry = debounce((patch: Record<string, number>) => {
@@ -270,16 +283,21 @@ export function mountLive2D(root: HTMLElement, id: string): void {
     boxH = h;
     modelScale = scale;
     const factor = await appWin.scaleFactor().catch(() => 1);
-    setWidgetSize(id, w, h, factor);
+    if (factor > 0) winScale = factor;
+    const s = session();
+    s?.size(w, h, factor);
     const moved: Record<string, number> = {};
     try {
-      const p = fitInside(await logicalPos(id), { w, h }, mon);
-      const nx = p.x;
-      const ny = p.y;
-      if (nx !== p.x || ny !== p.y) {
-        void setLogicalPos(nx, ny, id).catch(() => undefined);
-        moved["x"] = nx;
-        moved["y"] = ny;
+      if (s) {
+        const p = fitInside(await s.position(), { w, h }, mon);
+        const nx = p.x;
+        const ny = p.y;
+        if (nx !== p.x || ny !== p.y) {
+          // the same scale the old `setLogicalPos` used in window mode
+          s.place(nx, ny, { scale: factor });
+          moved["x"] = nx;
+          moved["y"] = ny;
+        }
       }
     } catch {
       /* keep */
@@ -454,7 +472,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       // need a trip through the settings window
       rows: (api) => addModelMenuRow(api, () => liveRec),
     });
-    trackPosition(rec);
+    floatie(rec).watch();
 
     try {
       await ensureLive2DCore();
@@ -664,7 +682,8 @@ export function mountLive2D(root: HTMLElement, id: string): void {
     const startTime = performance.now();
 
     let hasDragged = false;
-    const posPromise = logicalPos(id).catch(() => ({ x: 0, y: 0 }));
+    const s = session();
+    const posPromise = s ? s.position().catch(() => ({ x: 0, y: 0 })) : null;
 
     const onMove = async (ev: PointerEvent) => {
       const curSX = isOverlay ? ev.clientX : ev.screenX;
@@ -682,6 +701,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       }
       if (hasDragged) {
         boostActivity(1000);
+        if (!posPromise) return;
         const p = await posPromise;
         // clamp to the desktop: dragging the model off the boundary is exactly
         // what leaves half of it outside the screen
@@ -690,7 +710,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
           { w: boxW, h: boxH },
           mon,
         );
-        void setLogicalPos(Math.round(dest.x), Math.round(dest.y), id).catch(() => undefined);
+        s?.place(Math.round(dest.x), Math.round(dest.y), { scale: winScale });
       }
     };
 
@@ -708,6 +728,11 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       }
 
       if (hasDragged) {
+        // This drag is the widget's own, so it ends the gesture itself: the session's
+        // `watch` is what would write the record back in window mode, and it is a
+        // no-op in an overlay — so the release saves it, which is the one moment a
+        // drag's place is the user's choice rather than a position being tried out.
+        void s?.commit();
         window.setTimeout(() => {
           dragging = false;
           notifyDragging(false);
