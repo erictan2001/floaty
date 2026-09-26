@@ -1,6 +1,9 @@
 /**
- * Unit tests for the pure logic in lib.ts: the screen/record coordinate mapping,
- * the placement and confinement maths, and the small calculation helpers.
+ * Unit tests for the pure logic in lib.ts: the screen/record coordinate mapping
+ * and the small calculation helpers.
+ *
+ * Where a floatie goes is not here any more: that policy is placement.ts, and
+ * placement.test.ts tests it as plain numbers with no window at all.
  *
  * lib.ts is a Tauri page module, so the only two things it reaches for at import
  * time — the current window handle and the IPC bridge — are stubbed here. Nothing
@@ -10,7 +13,7 @@
  * 1920x1080, side by side in x as Windows arranges monitors).
  */
 import { describe, expect, it, vi } from "vitest";
-import type { MonitorArea, OverlaySlot, WidgetRecord } from "./lib";
+import type { MonitorArea, WidgetRecord } from "./lib";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -101,23 +104,6 @@ async function boot(which: "A" | "B" = "A", opts: { cold?: boolean } = {}): Prom
   await lib.myArea();
   await lib.watchMonitors();
   return lib;
-}
-
-function slot(id: string, x: number, y: number, w: number, h: number): OverlaySlot {
-  // preventOverlap reads the slot's geometry only; the element is never touched.
-  return { id, kind: "note", x, y, w, h, element: null as unknown as HTMLElement };
-}
-
-function overlaps(
-  cx: number,
-  cy: number,
-  w: number,
-  h: number,
-  o: { x: number; y: number; w: number; h: number },
-): boolean {
-  const ox = Math.min(cx + w, o.x + o.w) - Math.max(cx, o.x);
-  const oy = Math.min(cy + h, o.y + o.h) - Math.max(cy, o.y);
-  return ox > 12 && oy > 12;
 }
 
 describe("physicalToVirtual", () => {
@@ -280,154 +266,6 @@ describe("monitorAreaSync", () => {
   it("is the desktop rectangle the backend reported", async () => {
     const lib = await boot();
     expect(lib.monitorAreaSync()).toEqual(DESKTOP);
-  });
-});
-
-describe("preventOverlap", () => {
-  it("leaves a widget entirely inside the screen alone", async () => {
-    const lib = await boot();
-    lib.overlaySlots.set("other", slot("other", 1500, 300, 120, 120));
-    expect(lib.preventOverlap({ id: "new", x: 100, y: 100, w: 120, h: 120, mon: DESKTOP })).toEqual({
-      x: 100,
-      y: 100,
-    });
-  });
-
-  it("brings a widget whose whole body hangs off the right edge back inside the union", async () => {
-    const lib = await boot();
-    const r = lib.preventOverlap({ id: "new", x: 2900, y: 200, w: 120, h: 120, mon: DESKTOP });
-    expect(r.x).toBe(DESKTOP.w - 120 - 16); // 2584
-    expect(r.x + 120).toBeLessThanOrEqual(DESKTOP.w);
-    expect(r.x).toBeGreaterThanOrEqual(16);
-    expect(r.y).toBe(200);
-  });
-
-  it("trims a widget that only partly hangs off the right edge", async () => {
-    const lib = await boot();
-    expect(lib.preventOverlap({ id: "new", x: 2700, y: 200, w: 120, h: 120, mon: DESKTOP })).toEqual({
-      x: 2584,
-      y: 200,
-    });
-  });
-
-  it("clamps a widget that hangs off the top-left", async () => {
-    const lib = await boot();
-    expect(lib.preventOverlap({ id: "new", x: -400, y: -400, w: 120, h: 120, mon: DESKTOP })).toEqual({
-      x: 16,
-      y: 16,
-    });
-  });
-
-  it("confines to the screen it was given, not the union", async () => {
-    const lib = await boot("B");
-    const r = lib.preventOverlap({ id: "new", x: 5000, y: 100, w: 120, h: 120, mon: SCREEN_B.logical });
-    expect(r.x).toBe(1440 + 1280 - 120 - 16); // 2584
-    expect(r.x).toBeGreaterThanOrEqual(1440 + 16); // never left of the second screen
-  });
-
-  it("nudges a widget off a widget it would land on", async () => {
-    const lib = await boot();
-    const other = slot("other", 300, 100, 120, 120);
-    lib.overlaySlots.set("other", other);
-    const r = lib.preventOverlap({ id: "new", x: 400, y: 100, w: 120, h: 120, mon: DESKTOP });
-    expect(r).toEqual({ x: 432, y: 100 });
-    expect(overlaps(r.x, r.y, 120, 120, other)).toBe(false);
-  });
-
-  it("ignores the widget's own slot when looking for collisions", async () => {
-    const lib = await boot();
-    lib.overlaySlots.set("new", slot("new", 100, 100, 120, 120));
-    expect(lib.preventOverlap({ id: "new", x: 100, y: 100, w: 120, h: 120, mon: DESKTOP })).toEqual({
-      x: 100,
-      y: 100,
-    });
-  });
-
-  it("accepts the legacy positional form", async () => {
-    const lib = await boot();
-    expect(lib.preventOverlap("new", 2900, 200, 120, 120, { mon: DESKTOP })).toEqual({
-      x: 2584,
-      y: 200,
-    });
-  });
-});
-
-describe("findShiftCandidate", () => {
-  it("picks the nearest non-colliding shift", async () => {
-    const lib = await boot();
-    const obstacle = slot("o", 300, 100, 150, 150);
-    const ctx = {
-      curX: 400,
-      curY: 100,
-      w: 100,
-      h: 100,
-      gap: 8,
-      clampX: (v: number) => v,
-      clampY: (v: number) => v,
-    };
-    const collides = (cx: number, cy: number) => overlaps(cx, cy, 100, 100, obstacle);
-    // the obstacle ends at 450, so 462 is the shortest way clear of it
-    expect(lib.findShiftCandidate([obstacle], ctx, collides)).toEqual({ x: 462, y: 100 });
-  });
-
-  it("takes the next-nearest shift when the nearest is blocked too", async () => {
-    const lib = await boot();
-    const obstacle = slot("o", 300, 100, 150, 150);
-    const ctx = {
-      curX: 400,
-      curY: 100,
-      w: 100,
-      h: 100,
-      gap: 8,
-      clampX: (v: number) => v,
-      clampY: (v: number) => v,
-    };
-    const collides = (cx: number, cy: number) =>
-      overlaps(cx, cy, 100, 100, obstacle) || cx >= 450;
-    // right is blocked; down (400, 262) is 162 away, up (400, -12) is 112
-    expect(lib.findShiftCandidate([obstacle], ctx, collides)).toEqual({ x: 400, y: -12 });
-  });
-
-  it("returns null when nothing is free", async () => {
-    const lib = await boot();
-    const ctx = {
-      curX: 0,
-      curY: 0,
-      w: 10,
-      h: 10,
-      gap: 8,
-      clampX: (v: number) => v,
-      clampY: (v: number) => v,
-    };
-    expect(lib.findShiftCandidate([slot("o", 0, 0, 10, 10)], ctx, () => true)).toBeNull();
-  });
-});
-
-describe("findGridCandidate", () => {
-  const ctx = {
-    curX: 100,
-    curY: 100,
-    minX: 16,
-    minY: 16,
-    clampX: (v: number) => v,
-    clampY: (v: number) => v,
-  };
-
-  it("returns the nearest cell when nothing is in the way", async () => {
-    const lib = await boot();
-    expect(lib.findGridCandidate(ctx, () => false)).toEqual({ x: 16, y: 16 });
-  });
-
-  it("skips the blocked cells and takes the first free one in ring order", async () => {
-    const lib = await boot();
-    const blocked = new Set(["16,16", "16,132", "16,248"]);
-    const collides = (cx: number, cy: number) => blocked.has(`${cx},${cy}`);
-    expect(lib.findGridCandidate(ctx, collides)).toEqual({ x: 116, y: 16 });
-  });
-
-  it("gives up (null) when every cell in reach collides", async () => {
-    const lib = await boot();
-    expect(lib.findGridCandidate({ ...ctx, curX: 0, curY: 0, minX: 0, minY: 0 }, () => true)).toBeNull();
   });
 });
 

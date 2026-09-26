@@ -5,6 +5,11 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
 
 ## Known bugs
 
+- A fresh widget is born where the backend's cascade puts it (`140 + (n*47 % 480)`,
+  `140 + (n*31 % 320)`), which knows nothing about the desktop, and the overlay's nudge only
+  runs for a record with no place of its own — so a new note or clock can land on top of an
+  icon and stay there. `placement.freeSpot` would clear it; the gate, not the policy, is what
+  stops it.
 - Path placement decides whether a name is free by looking, and then moves; Windows' `rename`
   writes over whatever is there, so two placements racing for one name is the case
   `placement.rs` does not close (a reservation would). Nothing has hit it yet.

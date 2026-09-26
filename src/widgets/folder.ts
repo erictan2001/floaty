@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { addPinMenu, appWin, applyFloatieAnimation, displayName, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, monitorArea, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import { floatie, DRAG_CONTROLS } from "./floatie";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
+import { BODY } from "./placement";
 
 interface FolderItem {
   name: string;
@@ -11,8 +12,6 @@ interface FolderItem {
   is_dir?: boolean;
 }
 
-const WIN_W = 92;
-const WIN_H = 112;
 const CELL = 84;
 
 export function mountFolder(root: HTMLElement, id: string): void {
@@ -140,13 +139,13 @@ export function mountFolder(root: HTMLElement, id: string): void {
     try {
       const mon = await monitorArea();
       const MARGIN = 16;
-      if (px + WIN_W > mon.x + mon.w - MARGIN) px = mon.x + mon.w - MARGIN - WIN_W;
+      if (px + BODY.w > mon.x + mon.w - MARGIN) px = mon.x + mon.w - MARGIN - BODY.w;
       if (px < mon.x + MARGIN) px = mon.x + MARGIN;
-      if (py + WIN_H > mon.y + mon.h - MARGIN) py = mon.y + mon.h - MARGIN - WIN_H;
+      if (py + BODY.h > mon.y + mon.h - MARGIN) py = mon.y + mon.h - MARGIN - BODY.h;
       if (py < mon.y + MARGIN) py = mon.y + MARGIN;
 
       persist();
-      await setWindowSize(WIN_W, WIN_H);
+      await setWindowSize(BODY.w, BODY.h);
     } catch {
       /* ignore */
     }
@@ -244,7 +243,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
     nm.textContent = folderName();
     nm.title = folderName();
     wrap.append(tile, x, nm);
-    void setWindowSize(WIN_W, WIN_H);
+    void setWindowSize(BODY.w, BODY.h);
   };
 
   const setupItemDrag = (b: HTMLButtonElement, it: FolderItem) => {
@@ -325,8 +324,8 @@ export function mountFolder(root: HTMLElement, id: string): void {
         if (isOverlay) {
           const monW = window.innerWidth || 1920;
           const monH = window.innerHeight || 1080;
-          nx = Math.max(16, Math.min(monW - 92 - 16, nx));
-          ny = Math.max(16, Math.min(monH - 112 - 16, ny));
+          nx = Math.max(16, Math.min(monW - BODY.w - 16, nx));
+          ny = Math.max(16, Math.min(monH - BODY.h - 16, ny));
         }
         const index = items.indexOf(it);
         if (index >= 0) {

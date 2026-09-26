@@ -166,6 +166,16 @@ export function pluginSize(rec: WidgetRecord): Size {
 }
 
 /**
+ * Which layer a floatie is on: the desktop layer, or in front of it.
+ *
+ * A record fact like the size and the path above, so it lives with them — the placement
+ * policy reads it to decide which records a layout pass owns.
+ */
+export function isPinned(rec: WidgetRecord): boolean {
+  return rec.data["on_top"] === true;
+}
+
+/**
  * Cross-check the built-in plugins at runtime: a kind the backend serves but no
  * module mounts (or the other way round) is a build mistake — the check script
  * catches it in CI, this names the window it happened in. Installed plugins are

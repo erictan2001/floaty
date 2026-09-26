@@ -45,6 +45,12 @@ made on demand for a record and reached with `floatie(rec)`. The record is the p
 a slot is a view of it, so a page that draws a floatie and the backend that stores it are
 never two opinions — the session writes both. (Code: `src/widgets/floatie.ts`.)
 
+**placement** - where a floatie goes: the grid, the margins, the floor icons stack up from,
+and how much overlap still counts as clear. A policy, not a state: the load pass gives a
+place to records that have none and leaves every saved position alone, and "tidy the
+desktop" is the same policy asked for a deliberate rearrangement. (Code:
+`src/widgets/placement.ts`.)
+
 **presence** - whether Floaty should be showing and animating right now: hidden when a
 fullscreen app is in front, quiet when the machine has been idle. Decided per screen,
 applied to the machine as a whole.

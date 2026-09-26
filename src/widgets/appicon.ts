@@ -21,11 +21,9 @@ import {
   type WidgetRecord,
 } from "./lib";
 import { floatie } from "./floatie";
+import { BODY } from "./placement";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 import { isDesktopItem } from "./pluginManifest";
-
-const WIN_W = 92;
-const WIN_H = 112;
 
 interface LayoutItem {
   id: string;
@@ -304,8 +302,8 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         // overlay mode deliberately has no clamp: the desktop is every screen
         if (isOverlayMode()) return { x: px, y: py };
         return {
-          x: Math.min(Math.max(px, mon.x), mon.x + mon.w - WIN_W),
-          y: Math.min(Math.max(py, mon.y), mon.y + mon.h - WIN_H),
+          x: Math.min(Math.max(px, mon.x), mon.x + mon.w - BODY.w),
+          y: Math.min(Math.max(py, mon.y), mon.y + mon.h - BODY.h),
         };
       },
       onRelease: async (_ev, moved) => {
@@ -453,7 +451,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       if (!settled || own()?.dragging) return;
       // no layout data yet (the fetch is async): that is not "support gone"
       if (others.length === 0) return;
-      if (supportGone({ x, y, w: WIN_W, h: WIN_H }, others)) wake();
+      if (supportGone({ x, y, w: BODY.w, h: BODY.h }, others)) wake();
     }, 250);
   };
 
@@ -485,7 +483,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     // or every icon first jumps to default coordinates and bunches up.
     if (ready && !own()?.dragging && !settled && !document.hidden) {
       const out = stepBody({
-        body: { x, y, vx, vy, w: WIN_W, h: WIN_H, restTime, restingOn, bounces },
+        body: { x, y, vx, vy, w: BODY.w, h: BODY.h, restTime, restingOn, bounces },
         gravity: currentSettings().gravity,
         restitution: currentSettings().bounce,
         // The floor of the screen this icon is actually over: with two monitors of
