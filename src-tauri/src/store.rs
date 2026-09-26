@@ -22,16 +22,130 @@ pub(crate) struct WidgetRecord {
     pub(crate) data: serde_json::Value,
 }
 
+/// The desktop's records, and the rules for changing them.
+///
+/// Callers used to reach in: take the mutex, edit a map, drop the guard, then remember
+/// to `persist`. That four-step protocol was repeated at every mutation site, so two
+/// rules travelled with whoever happened to remember them — a removed id must not come
+/// back (the tombstone set), and no change is durable until someone marks the store
+/// dirty. Both live here now: `with` takes the lock once, the methods below keep the
+/// tombstone and the dirty mark honest, and the maps are private to this module.
 #[derive(Default)]
 pub(crate) struct StoreData {
-    pub(crate) widgets: HashMap<String, WidgetRecord>,
-    pub(crate) next: u64,
+    widgets: HashMap<String, WidgetRecord>,
+    next: u64,
     /// ids removed at runtime (remove / folder-merge): late saves from dying
     /// windows must not resurrect them
-    pub(crate) dead: HashSet<String>,
+    dead: HashSet<String>,
+    /// set by every method that changed something, read and cleared by `with`
+    touched: bool,
 }
 
-pub(crate) struct AppState(pub(crate) Mutex<StoreData>);
+impl StoreData {
+    /// One record, by id.
+    pub(crate) fn get(&self, id: &str) -> Option<&WidgetRecord> {
+        self.widgets.get(id)
+    }
+
+    /// Every record.
+    pub(crate) fn iter(&self) -> std::collections::hash_map::Values<'_, String, WidgetRecord> {
+        self.widgets.values()
+    }
+
+    /// Take the records that were on disk back into memory, before anything is on
+    /// screen. This is the store *loading*, not the store changing: it deliberately does
+    /// not mark the store dirty, so a launch that reclassifies nothing leaves the 3MB
+    /// file alone.
+    pub(crate) fn load_records(&mut self, records: Vec<WidgetRecord>) {
+        for rec in records {
+            self.widgets.insert(rec.id.clone(), rec);
+        }
+    }
+
+    /// How many records there are.
+    pub(crate) fn count(&self) -> usize {
+        self.widgets.len()
+    }
+
+    /// Whether this id was removed and must not come back.
+    pub(crate) fn is_dead(&self, id: &str) -> bool {
+        self.dead.contains(id)
+    }
+
+    /// Add or replace a record. A record that is here is live, so the tombstone goes:
+    /// that is what makes undo's restore (and a folder-merge's re-add) work.
+    pub(crate) fn put(&mut self, record: WidgetRecord) {
+        self.dead.remove(&record.id);
+        self.widgets.insert(record.id.clone(), record);
+        self.touched = true;
+    }
+
+    /// Take a record out, and tombstone its id so a late save cannot bring it back.
+    pub(crate) fn remove(&mut self, id: &str) -> Option<WidgetRecord> {
+        let out = self.widgets.remove(id);
+        self.dead.insert(id.to_string());
+        self.touched = true;
+        out
+    }
+
+    /// Change one record in place. `None` when there is no such record, and no change
+    /// to write.
+    pub(crate) fn edit<R>(
+        &mut self,
+        id: &str,
+        f: impl FnOnce(&mut WidgetRecord) -> R,
+    ) -> Option<R> {
+        let out = self.widgets.get_mut(id).map(f);
+        if out.is_some() {
+            self.touched = true;
+        }
+        out
+    }
+
+    /// The number a new record gets.
+    pub(crate) fn next_number(&mut self) -> u64 {
+        self.next += 1;
+        self.touched = true;
+        self.next
+    }
+
+    /// The counter as it stands, without taking a number.
+    pub(crate) fn next_counter(&self) -> u64 {
+        self.next
+    }
+
+    /// Move the counter forward, past the ids already on disk (and back, when a merge
+    /// or an undo puts a batch of them back).
+    pub(crate) fn set_next(&mut self, n: u64) {
+        self.next = n;
+    }
+}
+
+/// The store's mutex, as Tauri-managed state. Private to this module: the rest of the
+/// crate crosses at `with`, never at the lock.
+pub(crate) struct AppState(Mutex<StoreData>);
+
+/// The state `lib.rs` hands to Tauri at startup.
+pub(crate) fn new_state() -> AppState {
+    AppState(Mutex::new(StoreData::default()))
+}
+
+/// Take the records, change them, and have the change written.
+///
+/// The lock is taken once and released when `f` returns; the store is marked dirty only
+/// if something in here changed it, and the background writer does the writing. Nothing
+/// inside `f` may call back into the store — the mutex is not reentrant — so a caller
+/// that needs a second look reads through `get`/`iter` or returns a value out.
+pub(crate) fn with<R>(app: &AppHandle, f: impl FnOnce(&mut StoreData) -> R) -> R {
+    let state = app.state::<AppState>();
+    let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let out = f(&mut guard);
+    if guard.touched {
+        guard.touched = false;
+        persist(app);
+    }
+    out
+}
 
 /// The app's own data folder (`%APPDATA%\com.floaty.app`), created if missing.
 /// The store, the settings and the icons folder all live here, so they must all
@@ -208,5 +322,109 @@ pub(crate) fn load_all(app: &AppHandle) -> Vec<WidgetRecord> {
             }
             vec![]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(id: &str) -> WidgetRecord {
+        WidgetRecord {
+            id: id.to_string(),
+            kind: "note".to_string(),
+            x: 0,
+            y: 0,
+            data: serde_json::json!({ "text": "hi" }),
+        }
+    }
+
+    /// The rule the tombstone exists for: a window that saves a record after its floatie
+    /// was removed (a folder-merge, a delete) must not bring it back.
+    #[test]
+    fn a_removed_id_is_dead_and_putting_it_back_revives_it() {
+        let mut store = StoreData::default();
+        store.put(rec("note-1"));
+        assert!(!store.is_dead("note-1"));
+
+        let gone = store.remove("note-1");
+        assert!(gone.is_some(), "remove hands the record back");
+        assert!(store.get("note-1").is_none());
+        assert!(store.is_dead("note-1"), "a late save must be refused");
+
+        // undo of a remove puts it back, and the id is live again
+        store.put(rec("note-1"));
+        assert!(!store.is_dead("note-1"));
+        assert_eq!(store.count(), 1);
+    }
+
+    /// The dirty mark is what decides whether a 3MB file gets written: looking must not
+    /// set it, and every real change must.
+    #[test]
+    fn only_a_change_marks_the_store_dirty() {
+        let mut store = StoreData::default();
+        store.put(rec("note-1"));
+        store.touched = false;
+
+        let _ = store.get("note-1");
+        let _ = store.iter().count();
+        let _ = store.count();
+        let _ = store.is_dead("note-1");
+        store.set_next(7);
+        assert!(!store.touched, "reading is not a change");
+        assert_eq!(store.next_counter(), 7);
+
+        store.put(rec("note-1"));
+        assert!(store.touched, "a put is a change");
+        store.touched = false;
+
+        assert!(store.edit("note-1", |r| r.x = 120).is_some());
+        assert!(store.touched, "an edit is a change");
+        assert_eq!(store.get("note-1").unwrap().x, 120);
+        store.touched = false;
+
+        assert!(store.remove("note-1").is_some());
+        assert!(store.touched, "a remove is a change");
+    }
+
+    /// `edit` is the only way to touch a record in place, so it has to say whether there
+    /// was one — callers turn `None` into "widget not found".
+    #[test]
+    fn edit_answers_whether_the_record_was_there() {
+        let mut store = StoreData::default();
+        assert!(store.edit("nothing-here", |r| r.x = 1).is_none());
+        assert!(!store.touched, "no record, nothing to write");
+
+        store.put(rec("note-1"));
+        store.touched = false;
+        let out = store.edit("note-1", |r| {
+            r.y = 40;
+            "done"
+        });
+        assert_eq!(out, Some("done"));
+        assert_eq!(store.get("note-1").unwrap().y, 40);
+    }
+
+    /// Loading the store is not changing it: a launch that reclassifies nothing must
+    /// leave the file alone (that is why this is not `put` in a loop).
+    #[test]
+    fn loading_the_records_from_disk_is_not_a_change() {
+        let mut store = StoreData::default();
+        store.load_records(vec![rec("note-1"), rec("clock-2")]);
+        assert_eq!(store.count(), 2);
+        assert!(!store.touched);
+    }
+
+    /// The counter belongs to the store: ids must not repeat after a restart, and a
+    /// merge or an undo may have to move it.
+    #[test]
+    fn the_counter_is_taken_and_moved_by_the_store() {
+        let mut store = StoreData::default();
+        assert_eq!(store.next_number(), 1);
+        assert_eq!(store.next_number(), 2);
+        assert_eq!(store.next_counter(), 2);
+
+        store.set_next(9);
+        assert_eq!(store.next_number(), 10);
     }
 }

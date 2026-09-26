@@ -19,22 +19,26 @@ pub(crate) fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         write_text_atomic(&settings_file(app), &json);
     }
-    app.emit("floaty-plugins-changed", &plugins::manifest(&s.disabled)).ok();
+    app.emit("floaty-plugins-changed", &plugin_listing(app)).ok();
 }
 
 #[tauri::command]
 pub(crate) fn floaty_plugins(app: AppHandle) -> Vec<PluginInfo> {
-    let settings = load_settings(&app);
-    let mut list = plugins::manifest(&settings.disabled);
-    // Built-ins are floaty's own code and always approved; an installed plugin is
-    // approved by *fingerprint*, so the approval covers the files the user read.
-    let dir = plugins_dir(&app);
-    for info in list.iter_mut() {
-        if info.source == "installed" {
-            info.trusted = plugin_approved(&settings, &dir.join(&info.id), &info.id);
-        }
-    }
-    list
+    plugin_listing(&app)
+}
+
+/// The plugin list as the windows see it, approval included.
+///
+/// The one producer: the settings page and both `floaty-plugins-changed` emit sites hand
+/// out this list and no other, so a payload cannot claim that the user approved code they
+/// never read. Built-ins are floaty's own code and always approved; an installed plugin is
+/// approved by *fingerprint*, meaning the files on disk are the ones the user read.
+pub(crate) fn plugin_listing(app: &AppHandle) -> Vec<PluginInfo> {
+    let settings = load_settings(app);
+    let dir = plugins_dir(app);
+    plugins::manifest(&settings.disabled, |id| {
+        plugin_approved(&settings, &dir.join(id), id)
+    })
 }
 
 /// Approve what was already on the desktop before approvals existed.
@@ -53,22 +57,16 @@ pub(crate) fn migrate_plugin_trust(app: &AppHandle) {
     if installed.is_empty() {
         return;
     }
-    let kinds: std::collections::HashSet<String> = app
-        .state::<AppState>()
-        .0
-        .lock()
-        .map(|guard| guard.widgets.values().map(|rec| rec.kind.clone()).collect())
-        .unwrap_or_default();
+    let kinds: std::collections::HashSet<String> =
+        store::with(app, |s| s.iter().map(|rec| rec.kind.clone()).collect());
     let mut settings = load_settings(app);
     let mut changed = false;
-    for entry in installed {
-        // the manifest list answers "countdown v1.0.0"
-        let id = entry.split_whitespace().next().unwrap_or("").to_string();
-        if id.is_empty() || settings.plugin_trust.contains_key(&id) || !kinds.contains(&id) {
+    for plugin in installed {
+        let id = plugin.id.clone();
+        if settings.plugin_trust.contains_key(&id) || !kinds.contains(&id) {
             continue;
         }
-        if let Ok(fingerprint) = plugin_install::folder_fingerprint(&dir.join(&id)) {
-            settings.plugin_trust.insert(id.clone(), fingerprint);
+        if remember_approval(&mut settings, &dir.join(&id), &id) {
             changed = true;
             log_line(
                 app,
@@ -93,11 +91,46 @@ pub(crate) fn plugin_approved(settings: &FloatSettings, dir: &std::path::Path, i
         .unwrap_or(false)
 }
 
+/// Record that this folder, as it stands now, is approved — and say whether it could be
+/// read at all.
+///
+/// Approving *is* recording the fingerprint of the files the user read, so the rule lives
+/// here once: the Plugins tab, an install, and the migration for plugins that predate
+/// approvals all say what they mean by approving through this. A folder that cannot be
+/// read records nothing, and is left unapproved rather than approved on a guess.
+fn remember_approval(settings: &mut FloatSettings, dir: &std::path::Path, id: &str) -> bool {
+    match plugin_install::folder_fingerprint(dir) {
+        Ok(fingerprint) => {
+            settings.plugin_trust.insert(id.to_string(), fingerprint);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Approve an installed plugin, or take the approval back, and write it to settings.
+///
+/// The two answers are not symmetric: withdrawing forgets the fingerprint and always
+/// succeeds, while approving needs the folder to be readable — that is the whole of what
+/// an approval is, so an unreadable one is an error the user can see rather than a silent
+/// no-op that looks like it worked.
+fn set_approval(app: &AppHandle, id: &str, trusted: bool) -> Result<(), String> {
+    let mut settings = load_settings(app);
+    if trusted {
+        if !remember_approval(&mut settings, &plugins_dir(app).join(id), id) {
+            return Err(format!("{id}'s folder could not be read, so it was not approved"));
+        }
+    } else {
+        settings.plugin_trust.remove(id);
+    }
+    write_settings(app, &settings);
+    Ok(())
+}
+
 /// Approve an installed plugin, or take the approval back.
 ///
-/// Approving records the fingerprint of the folder *as it is now*; withdrawing
-/// forgets it, and its widgets stop mounting (they are not removed — nothing here
-/// touches the desk, and approving again brings them back).
+/// Withdrawing only forgets the fingerprint: the plugin's widgets stop mounting, and
+/// nothing here touches the desk — approving again brings them back.
 #[tauri::command]
 pub(crate) fn floaty_plugin_trust(id: String, trusted: bool, app: AppHandle) -> Result<(), String> {
     if plugins::find(&id).is_some() {
@@ -107,21 +140,7 @@ pub(crate) fn floaty_plugin_trust(id: String, trusted: bool, app: AppHandle) -> 
     if !dir.is_dir() {
         return Err(format!("{id} is not installed"));
     }
-    let fingerprint = if trusted {
-        Some(plugin_install::folder_fingerprint(&dir)?)
-    } else {
-        None
-    };
-    let mut settings = load_settings(&app);
-    match fingerprint {
-        Some(fingerprint) => {
-            settings.plugin_trust.insert(id.clone(), fingerprint);
-        }
-        None => {
-            settings.plugin_trust.remove(&id);
-        }
-    }
-    write_settings(&app, &settings);
+    set_approval(&app, &id, trusted)?;
     log_line(
         &app,
         &format!(
@@ -174,7 +193,7 @@ pub(crate) fn reload_plugin_windows(app: &AppHandle) {
             let _ = w.eval("location.reload()");
         }
     }
-    app.emit("floaty-plugins-changed", &plugins::manifest(&load_settings(app).disabled))
+    app.emit("floaty-plugins-changed", &plugin_listing(app))
         .ok();
 }
 
@@ -206,16 +225,32 @@ pub(crate) async fn floaty_install_plugin(
     // other route is unapproved and stays that way until it is approved in the
     // Plugins tab.
     {
-        let dir = plugins_dir(&app).join(&report.id);
+        // Installing from an archive *is* the approval: the dialog showed the user what
+        // is in it, who wrote it, what it replaces and which version of the plugin
+        // contract it wants. A folder that appears in the plugins directory by some
+        // other route is unapproved and stays that way until it is approved in the
+        // Plugins tab.
         let mut settings = load_settings(&app);
-        if let Ok(fingerprint) = plugin_install::folder_fingerprint(&dir) {
-            settings.plugin_trust.insert(report.id.clone(), fingerprint);
+        let recorded =
+            remember_approval(&mut settings, &plugins_dir(&app).join(&report.id), &report.id);
+        if recorded {
             write_settings(&app, &settings);
+            log_line(
+                &app,
+                &format!(
+                    "plugins: approved {} v{} after the install report",
+                    report.id, report.version
+                ),
+            );
+        } else {
+            log_line(
+                &app,
+                &format!(
+                    "plugins: {} v{} could not be read back after the install; it stays unapproved",
+                    report.id, report.version
+                ),
+            );
         }
-        log_line(
-            &app,
-            &format!("plugins: approved {} v{} after the install report", report.id, report.version),
-        );
     }
 
     let (installed, rejected) = plugins::install_from(&plugins_dir(&app));
@@ -229,7 +264,7 @@ pub(crate) async fn floaty_install_plugin(
             path,
             report.files,
             installed.len(),
-            installed.join(", "),
+            plugins::labels(&installed).join(", "),
             if rejected.is_empty() {
                 String::new()
             } else {
@@ -274,16 +309,12 @@ pub(crate) async fn floaty_uninstall_plugin(
         return Err(format!("{id} is one of floaty's own widgets — it cannot be removed"));
     }
 
-    let widgets: Vec<String> = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard
-            .widgets
-            .values()
+    let widgets: Vec<String> = store::with(&app, |s| {
+        s.iter()
             .filter(|rec| rec.kind == id)
             .map(|rec| rec.id.clone())
             .collect()
-    };
+    });
     if !widgets.is_empty() && !remove_widgets {
         return Err(format!(
             "{} floatie(s) of that kind are on the desktop — remove them with it, or none",
@@ -301,18 +332,14 @@ pub(crate) async fn floaty_uninstall_plugin(
 
     // The records go the way any removal goes: out of the store, tombstoned so a
     // dying window cannot put them back, and hidden.
-    {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    store::with(&app, |s| {
         for widget_id in &widgets {
-            guard.widgets.remove(widget_id);
-            guard.dead.insert(widget_id.clone());
+            s.remove(widget_id);
         }
-    }
+    });
     for widget_id in &widgets {
         hide_widget(&app, widget_id);
     }
-    persist(&app);
 
     // Its kind is no longer in the manifest, so the records that used it are gone
     // too — and both windows have to be told.
@@ -326,7 +353,7 @@ pub(crate) async fn floaty_uninstall_plugin(
             report.recycled_to,
             widgets.len(),
             installed.len(),
-            installed.join(", "),
+            plugins::labels(&installed).join(", "),
             if rejected.is_empty() {
                 String::new()
             } else {
@@ -348,7 +375,7 @@ pub(crate) fn floaty_rescan_plugins(app: AppHandle) -> Result<Vec<String>, Strin
         &format!(
             "plugins: rescanned, {} installed [{}]{}",
             installed.len(),
-            installed.join(", "),
+            plugins::labels(&installed).join(", "),
             if rejected.is_empty() {
                 String::new()
             } else {
@@ -364,26 +391,15 @@ pub(crate) fn floaty_rescan_plugins(app: AppHandle) -> Result<Vec<String>, Strin
 /// is running. Spawning windows here while the overlay is up was what put a
 /// second copy of every file icon on the desktop.
 pub(crate) fn apply_plugin_visibility(app: &AppHandle, kind: &str, enabled: bool) {
-    let ids: Vec<String> = app
-        .state::<AppState>()
-        .0
-        .lock()
-        .map(|g| {
-            g.widgets
-                .values()
-                .filter(|r| r.kind == kind)
-                .map(|r| r.id.clone())
-                .collect()
-        })
-        .unwrap_or_default();
+    let ids: Vec<String> = store::with(app, |s| {
+        s.iter()
+            .filter(|r| r.kind == kind)
+            .map(|r| r.id.clone())
+            .collect()
+    });
     for wid in ids {
         if enabled {
-            let rec: Option<WidgetRecord> = app
-                .state::<AppState>()
-                .0
-                .lock()
-                .ok()
-                .and_then(|g| g.widgets.get(&wid).cloned());
+            let rec: Option<WidgetRecord> = store::with(app, |s| s.get(&wid).cloned());
             if let Some(r) = rec {
                 show_widget(app, &r);
             }

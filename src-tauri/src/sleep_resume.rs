@@ -670,13 +670,7 @@ pub(crate) fn recreate_window(app: &AppHandle, label: &str) {
 
 /// The record behind a per-widget window label, if that window has one.
 pub(crate) fn record_for_window(app: &AppHandle, label: &str) -> Option<WidgetRecord> {
-    let state = app.state::<AppState>();
-    let guard = state.0.lock().ok()?;
-    guard
-        .widgets
-        .values()
-        .find(|r| widget_label(&r.id) == label)
-        .cloned()
+    store::with(app, |s| s.iter().find(|r| widget_label(&r.id) == label).cloned())
 }
 
 /// Whether this widget asked to sit above other windows.

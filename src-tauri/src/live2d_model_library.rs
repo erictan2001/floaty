@@ -188,18 +188,19 @@ pub(crate) async fn floaty_scan_models(root: String, app: AppHandle) -> Vec<Live
 
 #[tauri::command]
 pub(crate) fn floaty_set_widget_model(id: String, model: String, app: AppHandle) -> Result<(), String> {
-    {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-        let rec = guard.widgets.get_mut(&id).ok_or("widget not found")?;
-        if rec.kind != "live2d" {
+    store::with(&app, |s| -> Result<(), String> {
+        // Read first, write second: a widget that is not a live2d one is refused before
+        // anything is touched, exactly as when the record was reached through `get_mut`.
+        if s.get(&id).ok_or("widget not found")?.kind != "live2d" {
             return Err("not a live2d widget".into());
         }
-        if let Some(obj) = rec.data.as_object_mut() {
-            obj.insert("model".to_string(), serde_json::Value::String(model));
-        }
-    }
-    persist(&app);
+        s.edit(&id, |rec| {
+            if let Some(obj) = rec.data.as_object_mut() {
+                obj.insert("model".to_string(), serde_json::Value::String(model));
+            }
+        });
+        Ok(())
+    })?;
     app.emit("floaty-live2d-changed", &id).ok();
     log_line(&app, &format!("live2d model changed for {id}"));
     Ok(())
@@ -264,30 +265,25 @@ pub(crate) struct LayoutItem {
 /// Logical-px rects of all gravity widgets, for inter-icon separation.
 #[tauri::command]
 pub(crate) fn floaty_layout(app: AppHandle) -> Vec<LayoutItem> {
-    let state = app.state::<AppState>();
-    let guard = match state.0.lock() {
-        Ok(g) => g,
-        Err(_) => return vec![],
-    };
-    guard
-        .widgets
-        .values()
-        // What the desktop is made of is what an icon can land on: every
-        // desktop item, folders included. This is the one-window-per-widget
-        // half of the same list the overlay builds from its own slots, and
-        // `is_path_kind` here (which excludes folders, and is about a record
-        // carrying its own path) left both folders and files out of the
-        // physics, so icons dropped from above fell straight through them.
-        .filter(|r| plugins::is_desktop_item(&r.kind))
-        .map(|r| {
-            let (w, h) = plugins::size(&r.kind, &r.data);
-            LayoutItem {
-                id: r.id.clone(),
-                x: r.x,
-                y: r.y,
-                w: w as i32,
-                h: h as i32,
-            }
-        })
-        .collect()
+    store::with(&app, |s| {
+        s.iter()
+            // What the desktop is made of is what an icon can land on: every
+            // desktop item, folders included. This is the one-window-per-widget
+            // half of the same list the overlay builds from its own slots, and
+            // `is_path_kind` here (which excludes folders, and is about a record
+            // carrying its own path) left both folders and files out of the
+            // physics, so icons dropped from above fell straight through them.
+            .filter(|r| plugins::is_desktop_item(&r.kind))
+            .map(|r| {
+                let (w, h) = plugins::size(&r.kind, &r.data);
+                LayoutItem {
+                    id: r.id.clone(),
+                    x: r.x,
+                    y: r.y,
+                    w: w as i32,
+                    h: h as i32,
+                }
+            })
+            .collect()
+    })
 }

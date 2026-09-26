@@ -24,6 +24,19 @@ so it distinguished nothing. Still in the code; not in the docs, not in new code
 
 **root** - the one folder Floaty watches and treats as the desktop.
 
+**record** - everything Floaty remembers about one floatie: its `id`, its `kind`, where it sits,
+and the data its kind needs. The thing a drag moves, the undo stack copies, and the store keeps.
+(Code: `WidgetRecord`.)
+
+**store** - the desktop, remembered: every record, in memory, written out to disk as one file.
+Reading it is not changing it, and a record that was removed stays removed even if a window
+saves it again on its way out. (Code: `store::with`, `store::StoreData`.)
+
+**approval** - the user's agreement to run a plugin's code, recorded as the fingerprint of that
+plugin's folder at the moment they agreed. Edit the files and the approval lapses until it is
+given again. Built-ins are Floaty's own code and need none. (Code: `plugin_trust`,
+`plugin_approved`.)
+
 **overlay** - the transparent, full-screen, always-at-the-bottom window per monitor that
 draws every floatie. One per screen; not the desktop itself.
 

@@ -4,7 +4,7 @@
 //! boundary now; nothing here changed shape on the way out.
 
 use crate::*;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter};
 
 // ---------- undo ----------
 
@@ -12,19 +12,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// back. Call it *before* the change: `undo::add_disk` and `undo::add_created`
 /// fill in the rest while the action runs.
 pub(crate) fn checkpoint(app: &AppHandle, label: &str, ids: &[&str]) {
-    let restore: Vec<undo::Restore> = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let restore: Vec<undo::Restore> = store::with(app, |s| {
         ids.iter()
             .map(|id| undo::Restore {
                 id: (*id).to_string(),
-                record: guard
-                    .widgets
-                    .get(*id)
-                    .and_then(|r| serde_json::to_value(r).ok()),
+                record: s.get(id).and_then(|r| serde_json::to_value(r).ok()),
             })
             .collect()
-    };
+    });
     let depth = undo::push(label, restore);
     log_line(
         app,
@@ -44,7 +39,6 @@ pub(crate) fn step_changes_anything(guard: &StoreData, step: &undo::Step) -> boo
     }
     step.restore.iter().any(|r| {
         let now = guard
-            .widgets
             .get(&r.id)
             .and_then(|rec| serde_json::to_value(rec).ok());
         now != r.record
@@ -151,12 +145,7 @@ pub(crate) fn reverse_disk(op: &undo::DiskOp) -> Result<String, String> {
 /// the inverse of a step is the state it finds.
 pub(crate) fn live_record(app: &AppHandle) -> impl Fn(&str) -> Option<serde_json::Value> + '_ {
     move |id: &str| {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .widgets
-            .get(id)
-            .and_then(|rec| serde_json::to_value(rec).ok())
+        store::with(app, |s| s.get(id).and_then(|rec| serde_json::to_value(rec).ok()))
     }
 }
 
@@ -169,9 +158,7 @@ pub(crate) fn apply_step_records(app: &AppHandle, step: &undo::Step) -> (usize, 
     let mut restored = 0usize;
     let mut removed = 0usize;
     let mut touched: Vec<String> = Vec::new();
-    {
-        let state = app.state::<AppState>();
-        let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    store::with(app, |s| {
         for entry in &step.restore {
             match &entry.record {
                 Some(json) => match serde_json::from_value::<WidgetRecord>(json.clone()) {
@@ -179,8 +166,7 @@ pub(crate) fn apply_step_records(app: &AppHandle, step: &undo::Step) -> (usize, 
                         // A restored record has to be allowed to live again: the tombstone
                         // is there to stop dying windows from resurrecting a removed
                         // widget, and this one is not dying, it is coming home.
-                        guard.dead.remove(&rec.id);
-                        guard.widgets.insert(rec.id.clone(), rec);
+                        s.put(rec);
                         restored += 1;
                         touched.push(entry.id.clone());
                     }
@@ -190,15 +176,14 @@ pub(crate) fn apply_step_records(app: &AppHandle, step: &undo::Step) -> (usize, 
                     ),
                 },
                 None => {
-                    if guard.widgets.remove(&entry.id).is_some() {
+                    if s.remove(&entry.id).is_some() {
                         removed += 1;
                     }
-                    guard.dead.insert(entry.id.clone());
                     touched.push(entry.id.clone());
                 }
             }
         }
-    }
+    });
     (restored, removed, touched)
 }
 
@@ -206,20 +191,18 @@ pub(crate) fn apply_step_records(app: &AppHandle, step: &undo::Step) -> (usize, 
 /// screen and one that is, since the page unmounts first — and a folder takes its item list
 /// with it.
 pub(crate) fn emit_step_changes(app: &AppHandle, touched: &[String]) {
-    let (now_here, now_gone): (Vec<WidgetRecord>, Vec<String>) = {
-        let state = app.state::<AppState>();
-        let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let (now_here, now_gone): (Vec<WidgetRecord>, Vec<String>) = store::with(app, |s| {
         touched.iter().fold(
             (Vec::new(), Vec::new()),
             |(mut here, mut gone), id| {
-                match guard.widgets.get(id).cloned() {
+                match s.get(id).cloned() {
                     Some(rec) => here.push(rec),
                     None => gone.push(id.clone()),
                 }
                 (here, gone)
             },
         )
-    };
+    });
     for rec in &now_here {
         app.emit("floaty-widget-updated", rec).ok();
     }
@@ -240,16 +223,12 @@ pub(crate) async fn floaty_undo(app: AppHandle) -> Result<undo::UndoReport, Stri
         let Some(step) = undo::pop() else {
             return Err("nothing left to undo".into());
         };
-        {
-            let state = app.state::<AppState>();
-            let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
-            if !step_changes_anything(&guard, &step) {
-                log_line(
-                    &app,
-                    &format!("undo: '{}' would change nothing; skipped", step.label),
-                );
-                continue;
-            }
+        if !store::with(&app, |s| step_changes_anything(s, &step)) {
+            log_line(
+                &app,
+                &format!("undo: '{}' would change nothing; skipped", step.label),
+            );
+            continue;
         }
 
         // The state this undo is about to overwrite is the "after" of the action being
@@ -270,7 +249,6 @@ pub(crate) async fn floaty_undo(app: AppHandle) -> Result<undo::UndoReport, Stri
         }
 
         let (restored, removed, touched) = apply_step_records(&app, &step);
-        persist(&app);
         emit_step_changes(&app, &touched);
         // Only after the work succeeded: a redo that could not finish leaves the future
         // unreachable rather than half-applied.
@@ -325,16 +303,12 @@ pub(crate) async fn floaty_redo(app: AppHandle) -> Result<undo::UndoReport, Stri
         let Some(step) = undo::pop_redo() else {
             return Err("nothing left to redo".into());
         };
-        {
-            let state = app.state::<AppState>();
-            let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
-            if !step_changes_anything(&guard, &step) {
-                log_line(
-                    &app,
-                    &format!("redo: '{}' would change nothing; skipped", step.label),
-                );
-                continue;
-            }
+        if !store::with(&app, |s| step_changes_anything(s, &step)) {
+            log_line(
+                &app,
+                &format!("redo: '{}' would change nothing; skipped", step.label),
+            );
+            continue;
         }
 
         // What this redo overwrites is the "before" of the action, and it goes back on the
@@ -356,7 +330,6 @@ pub(crate) async fn floaty_redo(app: AppHandle) -> Result<undo::UndoReport, Stri
         }
 
         let (restored, removed, touched) = apply_step_records(&app, &step);
-        persist(&app);
         emit_step_changes(&app, &touched);
         undo::push_from_redo(back);
 
@@ -402,11 +375,8 @@ pub(crate) fn floaty_undo_checkpoint(label: String, restore: Vec<undo::Restore>,
 pub(crate) fn floaty_remove(id: String, app: AppHandle) {
     log_line(&app, &format!("remove {id}"));
     checkpoint(&app, "remove", &[&id]);
-    let state: State<'_, AppState> = app.state::<AppState>();
-    if let Ok(mut guard) = state.0.lock() {
-        guard.widgets.remove(&id);
-        guard.dead.insert(id.clone());
-    }
-    persist(&app);
+    store::with(&app, |s| {
+        s.remove(&id);
+    });
     close_widget_async(&app, &id);
 }

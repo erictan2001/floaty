@@ -242,36 +242,6 @@ pub fn arrival(src: &std::path::Path, already_here: bool, dest_dir: &std::path::
     }
 }
 
-/// A name in `dir` that nothing is using yet: `report.txt`, `report (2).txt`, … — the way
-/// Explorer resolves a collision instead of overwriting.
-pub fn unique_destination(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
-    }
-    let path = std::path::Path::new(name);
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| name.to_string());
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    for n in 2..1000 {
-        let next = if ext.is_empty() {
-            format!("{stem} ({n})")
-        } else {
-            format!("{stem} ({n}).{ext}")
-        };
-        let candidate = dir.join(next);
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    dir.join(name)
-}
-
 /// Should this paste land in a *folder floatie*'s directory, given the drop point is
 /// inside it? The rule is the one `floaty_dropped` uses for the merge preview: the point
 /// against the tile's rect, inflated by 12px.
@@ -342,19 +312,6 @@ mod tests {
             arrival(&std::path::Path::new("C:/Users/erict/Documents/a.txt"), false, desktop),
             Arrival::Move
         );
-    }
-
-    #[test]
-    fn a_collision_gets_a_number_rather_than_overwriting() {
-        let dir = std::env::temp_dir().join("floaty-unique-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("report.txt"), b"first").unwrap();
-        assert_eq!(unique_destination(&dir, "report.txt"), dir.join("report (2).txt"));
-        std::fs::write(dir.join("report (2).txt"), b"second").unwrap();
-        assert_eq!(unique_destination(&dir, "report.txt"), dir.join("report (3).txt"));
-        assert_eq!(unique_destination(&dir, "fresh.txt"), dir.join("fresh.txt"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

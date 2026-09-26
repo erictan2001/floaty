@@ -359,10 +359,20 @@ export function mountFolder(root: HTMLElement, id: string): void {
       const commit = (save: boolean) => {
         if (save && rec) {
           const newName = input.value.trim() || "Folder";
-          rec.data["name"] = newName;
-          void saveRecord(rec).catch(() => undefined);
-          if (typeof rec.data["path"] === "string" && rec.data["path"]) {
-            invoke("floaty_rename_folder_dir", { folderId: id, newName }).catch(() => undefined);
+          const onDisk = typeof rec.data["path"] === "string" && rec.data["path"];
+          if (onDisk) {
+            // One writer: for a folder that is a real directory the disk rename *is* the
+            // rename — it writes the new name into the record and announces it, and a
+            // refusal (a name that is taken, one Windows will not accept) leaves the tile
+            // saying what the folder is really called instead of saving a name it never got.
+            void invoke("floaty_rename_folder_dir", { folderId: id, newName }).catch((err: unknown) => {
+              void invoke("floaty_log", { msg: `[folder] rename refused: ${String(err)}` }).catch(() => undefined);
+            });
+          } else {
+            // A folder made only of items exists in its record; there is nowhere else its
+            // name could live.
+            rec.data["name"] = newName;
+            void saveRecord(rec).catch(() => undefined);
           }
         }
         render();

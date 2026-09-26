@@ -4,7 +4,7 @@
 //! boundary now; nothing here changed shape on the way out.
 
 use crate::*;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 // ---------- commands ----------
 
@@ -17,19 +17,12 @@ use tauri::{AppHandle, Emitter, Manager};
 /// few KB.
 #[tauri::command]
 pub(crate) async fn floaty_get_record(id: String, app: AppHandle) -> Option<WidgetRecord> {
-    let state = app.state::<AppState>();
-    let guard = state.0.lock().ok()?;
-    guard.widgets.get(&id).cloned()
+    store::with(&app, |s| s.get(&id).cloned())
 }
 
 #[tauri::command]
 pub(crate) async fn floaty_list(app: AppHandle) -> Vec<WidgetRecord> {
-    let state = app.state::<AppState>();
-    state
-        .0
-        .lock()
-        .map(|g| g.widgets.values().cloned().collect())
-        .unwrap_or_default()
+    store::with(&app, |s| s.iter().cloned().collect())
 }
 
 #[tauri::command]
@@ -70,14 +63,13 @@ pub(crate) async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
         record.x = cx as i32;
         record.y = cy as i32;
     }
-    let state = app.state::<AppState>();
-    if let Ok(mut guard) = state.0.lock() {
-        if guard.dead.contains(&record.id) {
+    store::with(&app, |s| {
+        if s.is_dead(&record.id) {
             return; // removed meanwhile (remove / folder-merge)
         }
         // Protect a stored icon from being overwritten by stale incoming data:
         // never lose an icon, and never trade a crisp one for a blurry one.
-        if let Some(existing) = guard.widgets.get(&record.id) {
+        if let Some(existing) = s.get(&record.id) {
             if let Some(existing_icon) = existing.data.get("icon").and_then(|v| v.as_str()) {
                 let incoming_icon = record.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
                 let would_lose = icons::is_missing(incoming_icon) && !icons::is_missing(existing_icon);
@@ -108,9 +100,8 @@ pub(crate) async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
                 set_folder_items(&mut record, &incoming_items);
             }
         }
-        guard.widgets.insert(record.id.clone(), record);
-    }
-    persist(&app);
+        s.put(record);
+    });
 }
 
 /// Re-read these widgets from the store and rebuild them where they now are.
@@ -123,16 +114,8 @@ pub(crate) async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
 /// was put, instead of falling to the floor the next time it is mounted.
 #[tauri::command]
 pub(crate) fn floaty_refresh(ids: Vec<String>, app: AppHandle) {
-    let records: Vec<WidgetRecord> = {
-        let state = app.state::<AppState>();
-        let guard = match state.0.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
-        ids.iter()
-            .filter_map(|id| guard.widgets.get(id).cloned())
-            .collect()
-    };
+    let records: Vec<WidgetRecord> =
+        store::with(&app, |s| ids.iter().filter_map(|id| s.get(id).cloned()).collect());
     if records.is_empty() {
         return;
     }

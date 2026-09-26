@@ -2,7 +2,6 @@
 // built on, and the 20 sections that used to live in this one 9710-line file. The modules each
 // carry their own copy of the imports they need, so only what this file itself uses stays.
 use std::collections::HashSet;
-use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
@@ -13,6 +12,7 @@ mod exchange;
 mod fs_watch;
 mod icons;
 mod palette;
+mod placement;
 mod plugin_install;
 mod plugins;
 mod presence;
@@ -170,7 +170,7 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(AppState(Mutex::new(StoreData::default())))
+        .manage(store::new_state())
         .setup(|app| {
             let _ = SHARED_APP.set(app.handle().clone());
             // Icons are files (`<app data>/icons/<hash>.png`) that records point
@@ -228,10 +228,9 @@ pub fn run() {
             // the store we just loaded is known good: pin it as the backup
             refresh_backup(&store_file(&handle), true);
             let mut reclassified = 0usize;
-            {
-                let state = handle.state::<AppState>();
-                let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+            store::with(&handle, |s| {
                 let mut max_n: u64 = 0;
+                let mut loaded = Vec::with_capacity(saved.len());
                 for mut rec in saved {
                     if let Some(n) = rec
                         .id
@@ -257,10 +256,11 @@ pub fn run() {
                             }
                         }
                     }
-                    guard.widgets.insert(rec.id.clone(), rec);
+                    loaded.push(rec);
                 }
-                guard.next = max_n;
-            }
+                s.load_records(loaded);
+                s.set_next(max_n);
+            });
             if reclassified > 0 || icons_moved > 0 {
                 persist(&handle);
             }
@@ -271,13 +271,11 @@ pub fn run() {
             // nothing, and sweeping then would delete the whole desktop's icons.
             if store_loaded {
                 let mut referenced = HashSet::new();
-                {
-                    let state = handle.state::<AppState>();
-                    let guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
-                    for rec in guard.widgets.values() {
+                store::with(&handle, |s| {
+                    for rec in s.iter() {
                         icons::collect_referenced(&rec.data, &mut referenced);
                     }
-                }
+                });
                 let (removed, freed) = icons::sweep(&referenced);
                 if removed > 0 {
                     log_line(
@@ -377,25 +375,16 @@ pub fn run() {
             rehome_stranded(&handle, "startup");
 
             // spawn restored widgets, or a welcome note on first run
-            let ids: Vec<WidgetRecord> = {
-                let state = handle.state::<AppState>();
-                state
-                    .0
-                    .lock()
-                    .map(|g| g.widgets.values().cloned().collect())
-                    .unwrap_or_default()
-            };
+            let ids: Vec<WidgetRecord> = store::with(&handle, |s| s.iter().cloned().collect());
             if ids.is_empty() {
                 if let Ok(rec) = create_record(&handle, "note") {
-                    let state = handle.state::<AppState>();
-                    if let Ok(mut guard) = state.0.lock() {
-                        if let Some(r) = guard.widgets.get_mut(&rec.id) {
+                    store::with(&handle, |s| {
+                        s.edit(&rec.id, |r| {
                             r.data = serde_json::json!({
                                 "text": "welcome to floaty!\n\n- drag me by the top bar\n- right-click the tray icon for more\n- i live on your desktop now"
                             });
-                        }
-                    }
-                    persist(&handle);
+                        });
+                    });
                 }
             }
             // Before the overlay asks for its manifest: it reads the approval state
@@ -419,7 +408,7 @@ pub fn run() {
                     &format!(
                         "plugins: {} installed [{}]{}",
                         installed.len(),
-                        installed.join(", "),
+                        plugins::labels(&installed).join(", "),
                         if rejected.is_empty() {
                             String::new()
                         } else {
@@ -875,17 +864,29 @@ mod tests {
     #[test]
     fn a_new_folder_is_named_the_way_windows_names_one() {
         let dir = scratch_dir("newfolder");
-        assert_eq!(new_folder_path(&dir), dir.join("New folder"));
+        assert_eq!(
+            placement::free_name(&dir, placement::NEW_FOLDER_BASE),
+            dir.join("New folder")
+        );
 
-        let first = create_new_folder(&dir).unwrap();
+        let first = placement::create_new_folder(&dir).unwrap();
         assert_eq!(first, dir.join("New folder"));
-        assert_eq!(create_new_folder(&dir).unwrap(), dir.join("New folder (2)"));
-        assert_eq!(create_new_folder(&dir).unwrap(), dir.join("New folder (3)"));
+        assert_eq!(
+            placement::create_new_folder(&dir).unwrap(),
+            dir.join("New folder (2)")
+        );
+        assert_eq!(
+            placement::create_new_folder(&dir).unwrap(),
+            dir.join("New folder (3)")
+        );
 
         // the first free name in the sequence wins, exactly like the shell: with
         // "New folder" deleted again, that is the one it hands out next
         std::fs::remove_dir(&first).unwrap();
-        assert_eq!(create_new_folder(&dir).unwrap(), dir.join("New folder"));
+        assert_eq!(
+            placement::create_new_folder(&dir).unwrap(),
+            dir.join("New folder")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -935,7 +936,7 @@ mod tests {
         let src = root.join("notes.txt");
         std::fs::write(&src, "hello").unwrap();
 
-        let dir = create_new_folder(&root).unwrap();
+        let dir = placement::create_new_folder(&root).unwrap();
         let (item, log) =
             place_item_in_dir(&dir, &folder_item("notes.txt", &src), Some(&root)).unwrap();
 
@@ -960,7 +961,7 @@ mod tests {
         let exe = program_dir.join("Some App.exe");
         std::fs::write(&exe, b"MZ").unwrap();
 
-        let dir = create_new_folder(&root).unwrap();
+        let dir = placement::create_new_folder(&root).unwrap();
         let (item, log) = place_item_in_dir(&dir, &folder_item("Some App", &exe), Some(&root)).unwrap();
 
         assert!(exe.exists(), "the program must not be moved");
@@ -997,9 +998,9 @@ mod tests {
         assert!(exe.exists(), "the program is only pointed at, never moved");
 
         let (_, second, _) = shortcut_into_root(&root, "Thing", &exe.to_string_lossy()).unwrap();
-        // file collisions count from 1 here (the helper the folder moves share),
-        // unlike Explorer's folder numbering that starts at 2
-        assert_eq!(std::path::PathBuf::from(second), root.join("Thing (1).lnk"));
+        // the shell's numbering, and the same one a file moved into a folder gets: the
+        // unnumbered name is the first, so the second one is (2)
+        assert_eq!(std::path::PathBuf::from(second), root.join("Thing (2).lnk"));
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&program_dir);
@@ -1014,7 +1015,7 @@ mod tests {
         let lnk_src = owned.join("App.lnk");
         std::fs::write(&lnk_src, b"shell-authored shortcut bytes").unwrap();
 
-        let dir = create_new_folder(&root).unwrap();
+        let dir = placement::create_new_folder(&root).unwrap();
         let (item, log) = place_item_in_dir(&dir, &folder_item("App", &lnk_src), Some(&root)).unwrap();
 
         assert!(lnk_src.exists(), "the original shortcut stays where it was");
@@ -1036,28 +1037,6 @@ mod tests {
             println!("Desktop shell HWND found: {h:#x}");
             assert_ne!(h, 0, "Desktop shell HWND should not be 0!");
         }
-    }
-
-    #[test]
-    fn test_unique_dest_path() {
-        let temp_dir = std::env::temp_dir().join(format!("floaty_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let file_name = std::ffi::OsStr::new("test_file.txt");
-        let p1 = unique_dest_path(&temp_dir, file_name);
-        assert_eq!(p1, temp_dir.join("test_file.txt"));
-
-        // Create the file so it exists
-        std::fs::write(&p1, "hello").unwrap();
-
-        let p2 = unique_dest_path(&temp_dir, file_name);
-        assert_eq!(p2, temp_dir.join("test_file (1).txt"));
-
-        std::fs::write(&p2, "hello 2").unwrap();
-        let p3 = unique_dest_path(&temp_dir, file_name);
-        assert_eq!(p3, temp_dir.join("test_file (2).txt"));
-
-        std::fs::remove_dir_all(&temp_dir).ok();
     }
 
     #[test]
@@ -1121,7 +1100,7 @@ mod tests {
         assert!(file_inside.exists());
 
         let dest_dir = folder_dir.parent().unwrap();
-        let dest_file = unique_dest_path(dest_dir, file_inside.file_name().unwrap());
+        let dest_file = placement::free_name(dest_dir, file_inside.file_name().unwrap());
         assert_eq!(dest_file, temp_dir.join("doc.txt"));
 
         std::fs::rename(&file_inside, &dest_file).unwrap();
@@ -1134,7 +1113,7 @@ mod tests {
         std::fs::write(sub_inside.join("inner.txt"), "inner").unwrap();
         assert!(sub_inside.exists());
 
-        let dest_sub = unique_dest_path(dest_dir, sub_inside.file_name().unwrap());
+        let dest_sub = placement::free_name(dest_dir, sub_inside.file_name().unwrap());
         assert_eq!(dest_sub, temp_dir.join("SubProject"));
 
         std::fs::rename(&sub_inside, &dest_sub).unwrap();
@@ -1444,7 +1423,7 @@ mod tests {
             y: 50,
             data: serde_json::json!({ "name": "Arc" }),
         };
-        store.widgets.insert(rec.id.clone(), rec.clone());
+        store.put(rec.clone());
 
         let step = |restore: Vec<undo::Restore>, disk: Vec<undo::DiskOp>| undo::Step {
             label: "test".to_string(),
@@ -1455,7 +1434,6 @@ mod tests {
             vec![undo::Restore {
                 id: "app-1".to_string(),
                 record: store
-                    .widgets
                     .get("app-1")
                     .and_then(|r| serde_json::to_value(r).ok()),
             }]
@@ -1464,9 +1442,9 @@ mod tests {
         // nothing touched: the store is exactly what the checkpoint recorded
         assert!(!step_changes_anything(&store, &step(same(&store), vec![])));
         // a moved widget, a removed one, and a file move all count
-        let mut moved = store.widgets.get("app-1").unwrap().clone();
+        let mut moved = store.get("app-1").unwrap().clone();
         moved.x = 999;
-        store.widgets.insert(moved.id.clone(), moved);
+        store.put(moved);
         assert!(step_changes_anything(&store, &step(same(&store), vec![])) == false);
         let before = step(
             vec![undo::Restore {
