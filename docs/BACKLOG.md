@@ -5,6 +5,17 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
 
 ## Known bugs
 
+- `verify/stranded.mjs` leaves one step on the shared undo stack per run: it pushes two (the
+  placed drag and the pointer drag) and unwinds one. Its own output prints the depth before
+  and after, so the leak is visible, but a probe should leave the stack no deeper than it
+  found it.
+
+- The Rust tests write their fixtures into the system temp folder and never remove them:
+  thousands of directories accumulated from repeated `cargo test` runs (`floaty-plugin-*`,
+  `floaty-icons-*`, `floaty-shellops-restore-*`). Individually tiny, collectively a mess a
+  person sees when they look at `%TEMP%`. A `Drop` guard would fix it; the verify side has
+  the same shape and now sweeps its own stale folders (`launchChrome`).
+
 - A fresh widget is born where the backend's cascade puts it (`140 + (n*47 % 480)`,
   `140 + (n*31 % 320)`), which knows nothing about the desktop, and the overlay's nudge only
   runs for a record with no place of its own — so a new note or clock can land on top of an
@@ -33,8 +44,13 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
 - Path placement decides whether a name is free by looking, and then moves; Windows' `rename`
   writes over whatever is there, so two placements racing for one name is the case
   `placement.rs` does not close (a reservation would). Nothing has hit it yet.
-- `verify/app-ready.mjs` times out even when the app is up and healthy, so every probe that
-  waits on it can report a false negative.
+- The first overlay load after a dev-tree restart takes ~45s on this machine: a cold Vite
+  serves `src/bootstrap.ts` in 45s the first time and 30ms after that, so a probe that samples
+  the DOM once reports "0 mounted, 44 belong here" on an app that is perfectly healthy — and
+  `verify:app reload` fixes it, because the second load is warm. Probes must wait for the mount
+  (the runtime's `until`, ~60s) instead of sampling once. That is also the shape of the older
+  "`app-ready` times out even when the app is up" report, which has not reproduced since the
+  liveness check moved into `attach()`.
 - No `.gitattributes`: the tree is CRLF and mixed endings churn diffs.
 
 ## Process

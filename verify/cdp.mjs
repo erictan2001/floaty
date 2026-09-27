@@ -279,7 +279,7 @@ export function parseKey(combo) {
  * second one silently drives the *first one's* browser — which reads as a probe
  * that passes for no reason, or a connect error that looks like a broken harness.
  */
-async function freePort(start, tries = 24) {
+export async function freePort(start, tries = 24) {
   for (let port = start; port < start + tries; port++) {
     const free = await new Promise((resolve) => {
       const probe = createServer();
@@ -294,10 +294,22 @@ async function freePort(start, tries = 24) {
 
 export async function launchChrome({ port, window = "520,900", inject } = {}) {
   port ??= await freePort(DEFAULT_PORT);
-  // A profile per process: Chrome holds handles on its profile for a moment after
-  // it is killed, so the folder is left for the temp cleaner rather than deleted
-  // here (an EPERM on cleanup must not take a passing run down with it).
+  // A profile per process, so two probes never fight over one. `stop()` removes it, but
+  // a probe killed before it gets there (a timeout, a taskkill) leaves ~180MB of Chrome
+  // profile behind — so sweep the ones old enough that no live probe can own them.
   const profile = path.join(os.tmpdir(), `floaty-verify-chrome-${process.pid}`);
+  try {
+    const hour = 60 * 60 * 1000;
+    for (const entry of fs.readdirSync(os.tmpdir())) {
+      if (!entry.startsWith("floaty-verify-chrome-")) continue;
+      const stale = path.join(os.tmpdir(), entry);
+      if (Date.now() - fs.statSync(stale).mtimeMs > hour) {
+        fs.rmSync(stale, { recursive: true, force: true });
+      }
+    }
+  } catch {
+    /* a temp folder that cannot be listed or written is not this run's problem */
+  }
   try {
     fs.rmSync(profile, { recursive: true, force: true });
   } catch {

@@ -158,11 +158,12 @@ pub(crate) fn floaty_plugin_trust(id: String, trusted: bool, app: AppHandle) -> 
 
 
 /// Where user plugins live: one folder each, `plugin.json` + its module.
+///
+/// Through the helper like everything else. It used to resolve its own path with a
+/// fallback of `.` — the working directory — which put plugins in whatever folder
+/// the app happened to be started from whenever the data dir could not be read.
 pub(crate) fn plugins_dir(app: &AppHandle) -> std::path::PathBuf {
-    app.path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .join(plugins::PLUGINS_DIR_NAME)
+    store::app_data_dir(app).join(plugins::PLUGINS_DIR_NAME)
 }
 
 /// The plugins folder (created if missing) so the settings window can offer

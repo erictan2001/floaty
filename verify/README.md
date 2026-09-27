@@ -106,13 +106,58 @@ reports the fix as not working — it did, twice, and each time the "still broke
 was the old arithmetic. `npm run verify:app reload` reloads every overlay page; after a
 *Rust* change the app restarts itself and the pages come back anyway.
 
+## The runtime, and the world a probe runs in
+
+`runtime.mjs` is the toolkit; `cdp.mjs` underneath it is only the transport — a target
+list, one session, a key, a screenshot. The runtime owns what every probe used to write
+for itself:
+
+- **`attach()`** waits for overlay pages that are *live*. A debug port that answers is not
+  a live app (the corpse trap above), so it checks `window.__TAURI_INTERNALS__` and calls
+  a dead page what it is: a probe that could not run.
+- **`until(what, check)`** is the only wait there is — a predicate with a deadline, never
+  a stopwatch.
+- **`invoke`** is the JSON-safe backend call. **`pathOf`** asks the manifest which field
+  holds a record's path (never guess `target ?? path`). **`drawnBy`** answers which overlay
+  page is drawing a floatie. **`takeErrors`** drains the console errors, so "no errors"
+  is a property of every phase instead of a line four probes forgot. **`logLines`** reads
+  the app's own log. **`mouse`/`moveTo`/`grabPoint`** drive real input.
+- **`probe(name)`** owns the exit ladder: 0 healthy, 1 the app is wrong, 2 the probe could
+  not run.
+
+**A probe should not touch the user's desktop, and it no longer has to.** `Fixture` writes
+a scratch world — its own data folder, its own root, its own log — and `launch()` starts the
+app pointed at it with `FLOATY_DATA_DIR`, which the app resolves in one place
+(`store::app_data_dir`): the store, the settings, the plugins folder, the icon cache and the
+log all move together. `redo.mjs` is the reference — it merges, undoes and redoes in a folder
+it made, and the user's install is byte-identical afterwards.
+
+Two things that come with a world of your own:
+
+- **Drive the app you started.** `launch()` refuses to run when something already answers on
+  the port, because a probe that attaches to the previous run's app reports on a world it
+  never made.
+- **Leave nothing behind.** `stop()` kills the tree (parent first, so the children are still
+  findable) and closes the sockets — an open WebSocket keeps node's event loop alive, which
+  looks exactly like a hung probe.
+
+Not every probe can have a world of its own, and the ones that cannot are worth naming. A
+fixture store starts empty — a file tile, a folder tile, nothing else — so a probe whose
+first act is "find the sysmon panel" finds nothing to look at, and a probe that verifies
+*the gap between two screens* cannot invent the screens. `drag`, `panel-drag` and `stranded`
+still need the machine's own monitors for that reason, and they are also the three that move
+things a person owns. The split is deliberate: a fixture is the default, and the real desktop
+is for what a directory cannot fake — two screens at different scales, a foreground fullscreen
+window, the desktop window itself, the Recycle Bin, a global hotkey another app may hold.
+
 ## Writing a new probe
 
-`cdp.mjs` is the whole toolkit: `Session.open(port, "url-suffix")`, `evaluate`,
-`invoke`, `key`, `screenshot`, `launchChrome({ inject })`, and `errors` — the console
-errors and exceptions seen since connecting, which is the signal no DOM check has.
+Start with `runtime.mjs` and `redo.mjs`; reach for `cdp.mjs` directly only for what the
+runtime does not have yet. `Session.open(port, "url-suffix")`, `evaluate`, `key`,
+`screenshot`, `launchChrome({ inject })`, and `errors` — the console errors and exceptions
+seen since connecting, which is the signal no DOM check has.
 
-Four rules, each of which was learned the hard way:
+Six rules, each of which was learned the hard way:
 
 - **A stub must mirror the real shapes.** A field the backend returns and the stub
   omits makes a pane look fine here and break in the app, which is the one way a
@@ -132,6 +177,10 @@ Four rules, each of which was learned the hard way:
 - **Assert the effect, not the presence.** "The pane has a button" passes on a
   button that does nothing: check that the invoke it should make was made, that the
   record changed, or that the pixels moved.
+- **Give the probe a world of its own.** A probe that writes into the user's desktop,
+  store or log is one bug away from damaging what it verifies, and it cannot assert
+  what it left behind — the cleanup is unverifiable because the "before" was never
+  known. `Fixture` + `launch()` run it against a scratch world; `redo.mjs` is the shape.
 
 ## Checking the hotkey
 
