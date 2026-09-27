@@ -13,6 +13,7 @@
     "tauri": "tauri",
     "verify:panes": "node verify/panes.mjs",
     "verify:app": "node verify/app.mjs",
+    "verify:app-ready": "node verify/app-ready.mjs",
     "verify:palette": "node verify/palette.mjs",
     "verify:drag": "node verify/drag.mjs",
     "verify:presence": "node verify/presence.mjs",

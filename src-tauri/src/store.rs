@@ -151,10 +151,45 @@ pub(crate) fn with<R>(app: &AppHandle, f: impl FnOnce(&mut StoreData) -> R) -> R
 /// The store, the settings and the icons folder all live here, so they must all
 /// agree on where that is.
 pub(crate) fn app_data_dir(app: &AppHandle) -> std::path::PathBuf {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("floaty"));
+    resolve_data_dir(
+        data_dir_override(),
+        app.path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir().join("floaty")),
+    )
+}
+
+/// Where a *verification run* asked the app to keep its own folder, if it asked.
+///
+/// `FLOATY_DATA_DIR` moves the store, the settings, the plugins folder, the icon
+/// cache and the log in one move, so a probe can drive a world of its own instead
+/// of the user's install — the thing `verify/README.md` says a probe may not do to
+/// someone's desktop. It is only ever *read*: an environment variable cannot leave
+/// the machine changed, which is what makes it safe to point at a scratch folder.
+///
+/// Read per call rather than cached: the cost is a lookup, and a process-global
+/// cache would freeze whichever value came first — the shape of bug this file has
+/// been fixing.
+fn data_dir_override() -> Option<std::path::PathBuf> {
+    data_dir_override_from(std::env::var("FLOATY_DATA_DIR").ok().as_deref())
+}
+
+/// The override's rule, with the environment taken out so it can be tested.
+fn data_dir_override_from(value: Option<&str>) -> Option<std::path::PathBuf> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(trimmed))
+}
+
+/// The override if there is one, else `default` — created either way, so every
+/// caller can assume the folder exists.
+fn resolve_data_dir(
+    asked: Option<std::path::PathBuf>,
+    default: std::path::PathBuf,
+) -> std::path::PathBuf {
+    let dir = asked.unwrap_or(default);
     fs::create_dir_all(&dir).ok();
     dir
 }
@@ -337,6 +372,41 @@ mod tests {
             y: 0,
             data: serde_json::json!({ "text": "hi" }),
         }
+    }
+
+    /// The whole point of `FLOATY_DATA_DIR`: a probe can point the app at a scratch
+    /// folder, and the folder is there when it looks.
+    #[test]
+    fn a_scratch_data_dir_is_taken_and_made() {
+        let scratch = std::env::temp_dir().join(format!("floaty-data-dir-{}", std::process::id()));
+        let ignored = std::env::temp_dir().join("floaty-data-dir-not-this-one");
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(resolve_data_dir(Some(scratch.clone()), ignored), scratch);
+        assert!(scratch.is_dir(), "the override is created, not just named");
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn without_an_override_the_real_folder_is_used() {
+        let default = std::env::temp_dir().join(format!("floaty-data-default-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&default);
+        assert_eq!(resolve_data_dir(None, default.clone()), default);
+        assert!(default.is_dir(), "the default is created too");
+        let _ = std::fs::remove_dir_all(&default);
+    }
+
+    /// A variable that is set but empty is not a folder name, and neither is
+    /// whitespace — both mean "no override", so a shell that exports it blank
+    /// leaves the user's install alone.
+    #[test]
+    fn an_empty_override_is_no_override() {
+        assert_eq!(data_dir_override_from(None), None);
+        assert_eq!(data_dir_override_from(Some("")), None);
+        assert_eq!(data_dir_override_from(Some("   ")), None);
+        assert_eq!(
+            data_dir_override_from(Some(" C:\\scratch\\floaty ")),
+            Some(std::path::PathBuf::from("C:\\scratch\\floaty"))
+        );
     }
 
     /// The rule the tombstone exists for: a window that saves a record after its floatie

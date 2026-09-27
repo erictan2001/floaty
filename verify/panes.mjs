@@ -15,12 +15,14 @@
  *
  * The stub answers the same commands the backend does, with plausible values, and
  * records every call — so an action's invoke *sequence* can be asserted too
- * (`floaty_set_settings` then `floaty_sync_files`, and in that order).
+ * (`floaty_set_settings` then `floaty_sync_files`, and in that order). It is the
+ * reference stub: panes.mjs is what another probe's stub is measured against.
  */
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launchChrome, realErrors } from "./cdp.mjs";
+import { launchChrome } from "./cdp.mjs";
+import { App, probe } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const base = (process.argv[2] ?? "http://localhost:1420").replace(/\/$/, "");
@@ -171,6 +173,7 @@ const MEASURE = `(() => {
 })()`;
 
 const results = [];
+const { skip, finish, problems } = probe("panes");
 
 // The dev server has to answer before anything else is measured: pointed at a dead
 // port, a probe renders blank panes and reports them as broken, when the truth is
@@ -180,11 +183,24 @@ try {
   const alive = await fetch(base);
   if (!alive.ok) throw new Error(`HTTP ${alive.status}`);
 } catch (err) {
-  console.error(
-    `verify: could not reach ${base} — is \`npm run dev\` running?\n  ${err.message}`,
-  );
-  process.exit(2);
+  skip(`could not reach ${base} — is \`npm run dev\` running?\n  ${err.message}`);
 }
+
+// Nothing to look at is not the same as an app that is broken: exit 2 when the dev
+// server (or Chrome) cannot be reached, so a failed probe never reads as a failed app.
+let chrome;
+try {
+  chrome = await launchChrome({ inject: STUB, window: "500,900" });
+} catch (err) {
+  skip(`could not open ${base} — is \`npm run dev\` running?\n  ${err.message}`);
+}
+
+// One page, in the world the runtime drives: `until` for the wait, `takeErrors` for
+// the noise filter this file used to reach past the runtime for, `shot` for the
+// screenshot. `session` is what they are built on — a navigation is the only thing
+// left that needs the socket.
+const app = new App(chrome.port, [chrome.session]);
+const session = app.page(0);
 
 /**
  * Wait until the routed pane has actually rendered something.
@@ -194,10 +210,9 @@ try {
  * are "done". Failing that, wait for the host at all (an empty pane is a real
  * result, and the caller reports it as one).
  */
-async function drawUntil(session, hash, timeoutMs = 20000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const drawn = await session
+async function drawUntil(hash, { timeout = 20 } = {}) {
+  const drawn = async () => {
+    const state = await session
       .evaluate(
         `(() => {
            const body = document.querySelector(".set-pane-body");
@@ -210,29 +225,19 @@ async function drawUntil(session, hash, timeoutMs = 20000) {
          })()`,
       )
       .catch(() => null);
-    if (drawn?.drawn && drawn.hash === hash) return true;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  return false;
+    return state?.drawn && state.hash === hash ? state : null;
+  };
+  // Giving up is a result, not a crash: a pane that never drew is what the caller
+  // reports, and it is already saying so.
+  return (await app.until(`${hash} to be drawn`, drawn, { timeout }).catch(drawn)) ?? false;
 }
 
-// Nothing to look at is not the same as an app that is broken: exit 2 when the dev
-// server (or Chrome) cannot be reached, so a failed probe never reads as a failed app.
-let chrome;
-try {
-  chrome = await launchChrome({ inject: STUB, window: "500,900" });
-} catch (err) {
-  console.error(
-    `verify: could not open ${base} — is \`npm run dev\` running?\n  ${err.message}`,
-  );
-  process.exit(2);
-}
 try {
   for (const pane of PANES) {
     // A query as well as the hash: `Page.navigate` between two urls that differ
     // only after `#` is a *same-document* navigation, so the pane would never be
     // rebuilt and the probe would measure the previous one.
-    await chrome.session.send("Page.navigate", {
+    await session.send("Page.navigate", {
       url: `${base}/settings.html?pane=${pane}#/${pane}`,
     });
     // Wait for the pane to *be* drawn, not for a stopwatch. A fixed delay measures
@@ -240,12 +245,11 @@ try {
     // server, four panes were once reported as "drew nothing" with no console error
     // and no invoke — the truth was that the probe looked too early, which is the
     // one way a probe teaches you to ignore it.
-    await drawUntil(chrome.session, `#/${pane}`);
-    const measured = await chrome.session.evaluate(MEASURE);
-    const errors = realErrors(chrome.session.errors);
-    chrome.session.errors.length = 0;
+    await drawUntil(`#/${pane}`);
+    const measured = await session.evaluate(MEASURE);
+    const errors = app.takeErrors();
     if (shiny) {
-      await chrome.session.screenshot(path.join(here, "out", `pane-${pane}.png`));
+      await app.shot(path.join(here, "out", `pane-${pane}.png`));
     }
     results.push({ pane, ...measured, errors });
   }
@@ -253,10 +257,11 @@ try {
   chrome.stop();
 }
 
-let failed = 0;
 for (const r of results) {
   const bad = r.errors.length > 0 || r.horizontalOverflow > 0 || r.groups.length === 0;
-  if (bad) failed++;
+  // The verdict is counted here rather than through `check`, because this file's report
+  // is the table below and the lines under it, not one line per pane.
+  if (bad) problems.push(r.pane);
   console.log(
     `${bad ? "FAIL" : "ok  "} ${r.pane.padEnd(8)} groups=${r.groups.length} cards=${r.cards} ` +
       `buttons=${r.buttons.length} rows=${r.rows.length} overflow=${r.horizontalOverflow}`,
@@ -266,5 +271,9 @@ for (const r of results) {
   if (r.groups.length === 0) console.log(`       drew nothing: ${JSON.stringify(r.calls)}`);
 }
 if (process.argv.includes("--json")) console.log(JSON.stringify(results, null, 2));
-console.log(failed === 0 ? `\nall ${results.length} panes drew clean` : `\n${failed} pane(s) need a look`);
-process.exit(failed === 0 ? 0 : 1);
+console.log(
+  problems.length === 0
+    ? `\nall ${results.length} panes drew clean`
+    : `\n${problems.length} pane(s) need a look`,
+);
+await finish();

@@ -5,7 +5,7 @@
 
 use crate::*;
 use std::fs;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 // ---------- logging ----------
 
@@ -34,12 +34,11 @@ pub(crate) fn log_line(app: &AppHandle, msg: &str) {
     let _serialised = LOG_LOCK.lock();
     let msg = &format!("{} {msg}", timestamp());
     eprintln!("[floaty] {msg}");
-    let Ok(dir) = app.path().app_data_dir().inspect(|d| {
-        fs::create_dir_all(d).ok();
-    }) else {
-        return;
-    };
-    let path = dir.join("floaty.log");
+    // Through the helper, not `app.path()` directly: this is the one data-dir
+    // consumer that used to resolve its own path, and the log is written on every
+    // line — a fixture world would otherwise be half a world, with the file that
+    // changes most still landing in the real install.
+    let path = store::app_data_dir(app).join("floaty.log");
     // Roll rather than wipe: emptying the file destroys exactly the evidence
     // someone is looking for (see `diagnostics.rs`).
     //

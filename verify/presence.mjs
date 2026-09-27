@@ -17,43 +17,58 @@
  * the Visualizer bug, where the page never heard the machine at all because its presence
  * listener was only ever registered from inside the display-changed handler.
  *
- * It does put a window on one screen for a couple of seconds, and on all of them at the
- * end. Usage:
+ * The app runs against a fixture world (see `runtime.mjs`), so the user's store and log are
+ * left alone; the screens and the fullscreen windows are the real ones, which is the whole
+ * point of the probe. It does put a window on one screen for a couple of seconds, and on all
+ * of them at the end. Usage:
  *   node verify/presence.mjs [--keep-open]
  */
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { APP_PORT, Session } from "./cdp.mjs";
+import { join, resolve } from "node:path";
+import os from "node:os";
+import { Fixture, flag, launch, probe } from "./runtime.mjs";
 
 const keepOpen = process.argv.includes("--keep-open");
+const port = Number(flag("port", 9222));
+const { skip, finish, problems } = probe("presence");
 // Beside this file, not in a temp folder: a check that breaks when Temp is cleaned is not a
 // check. The script is ASCII-only on purpose — PowerShell parses a BOM-less non-ASCII file
 // in the console codepage and dies on the first dash it does not recognise.
 const PROBE = fileURLToPath(new URL("./fullscreen-probe.ps1", import.meta.url));
 
-const session = await Session.open(APP_PORT, "#/overlay", 0);
-/** Whether the shared audio capture is up — the thing a per-screen answer must not break. */
-const audioRunning = async () => {
-  const text = await session.evaluate(
-    `return JSON.stringify(await window.__TAURI_INTERNALS__.invoke("floaty_audio_status"));`,
-  );
-  return JSON.parse(text) === true;
-};
+const fixture = Fixture.create({ dir: join(os.tmpdir(), `floaty-presence-${process.pid}`) });
 
-const presence = () =>
-  session.evaluate(`return JSON.stringify(await window.__TAURI_INTERNALS__.invoke("floaty_presence"));`).then(JSON.parse);
+const app = await launch({ fixture, cwd: resolve(import.meta.dirname, ".."), port }).catch((error) =>
+  skip(error.message),
+);
+
+// After `launch`, not before: exit handlers run in the order they were registered, and the
+// one that stops the app has to run first — remove the folder while the app is still writing
+// and it is back a moment later, with a fresh log in it.
+process.on("exit", () => {
+  if (!keepOpen) fixture.remove();
+});
+
+/** Whether the shared audio capture is up — the thing a per-screen answer must not break. */
+const audioRunning = () => app.invoke("floaty_audio_status").then((up) => up === true);
+
+const presence = () => app.invoke("floaty_presence");
 const windows = async () => {
-  const report = await session.evaluate(
-    `return JSON.stringify((await window.__TAURI_INTERNALS__.invoke("floaty_diagnostics")).windows ?? []);`,
-  ).then(JSON.parse);
+  const report = (await app.invoke("floaty_diagnostics")).windows ?? [];
   return Object.fromEntries(report.map((w) => [w.label, w.visible]));
 };
 
 /** Every desktop layer, and whether it is hidden — the whole point of the check. */
 const hidden = async () => {
   const report = await presence();
-  const layers = report.screens ?? [];
+  // A desktop layer is a window that belongs to a screen: the overlay windows, one per
+  // screen. The app lists its panel windows (a note, the clock) in the same payload with
+  // `screen: null` — they are windows *on* a screen, not layers *of* one, and the per-screen
+  // rule is not about them. Including them made this probe try to cover "the screen of
+  // widget-note-1" and report four failures on any install with a panel open.
+  const layers = (report.screens ?? []).filter((s) => s.screen);
   return {
     byLabel: Object.fromEntries(layers.map((s) => [s.label, s.hidden])),
     byScreen: Object.fromEntries(layers.map((s) => [s.screen, s.hidden])),
@@ -62,6 +77,23 @@ const hidden = async () => {
     foreground: report.foreground,
   };
 };
+
+/**
+ * Wait for the state this is about to assert, and hand it back — or `null` if it never came.
+ * Presence has to *decide* on the absence (a fullscreen window that hid nothing is a finding,
+ * not a reason to stop), so this is `until` with the failure kept instead of thrown.
+ */
+const waitFor = (want, what, timeout) =>
+  app
+    .until(
+      what,
+      async () => {
+        const state = await hidden();
+        return want(state) ? state : null;
+      },
+      { timeout },
+    )
+    .catch(() => null);
 
 const openFullscreen = (index, all = false) => {
   // Keep the probe's own output: it says whether the window actually became foreground, and
@@ -152,65 +184,50 @@ const closeAll = () => {
   );
 };
 
-const waitFor = async (want, what, tries = 24) => {
-  for (let i = 0; i < tries; i += 1) {
-    const state = await hidden();
-    if (want(state)) return state;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return null;
-};
-
-const problems = [];
 const before = await hidden();
 const layers = Object.keys(before.byLabel);
 console.log(`presence: ${layers.length} desktop layer(s): ${layers.join(", ")}`);
 if (layers.length < 2) {
-  console.error("presence: needs two desktop layers — this desktop has one screen, or the app is not running");
-  process.exit(2);
+  skip("needs two desktop layers — this desktop has one screen");
 }
-// A fullscreen app already in front makes every assertion below meaningless — the desktop
-// is hidden before the probe opens anything, and the "came back" checks measure that app,
-// not the probe. Refuse, and say what to close.
-const alreadyHidden = Object.entries(before.byLabel).filter(([, isHidden]) => isHidden).map(([l]) => l);
+// A fullscreen app already in front makes every assertion below meaningless — the desktop is
+// hidden before the probe opens anything, and the "came back" checks measure that app, not
+// the probe. Refuse, and say what to close.
+const alreadyHidden = Object.entries(before.byLabel)
+  .filter(([, isHidden]) => isHidden)
+  .map(([l]) => l);
 if (alreadyHidden.length) {
-  console.error(
-    `presence: ${alreadyHidden.join(", ")} is already hidden by a fullscreen app in front ` +
-      `(${before.foreground}) — close it and run this again`,
+  skip(
+    `${alreadyHidden.join(", ")} is already hidden by a fullscreen app in front (${before.foreground}) — ` +
+      "close it and run this again",
   );
-  await session.close();
-  process.exit(2);
 }
 
 // One screen at a time, in the order the app labels them.
 for (const [index, label] of layers.entries()) {
   const screen = (await presence()).screens.find((s) => s.label === label)?.screen;
-  const probe = openFullscreen(index);
-  const state = await waitFor((s) => s.byLabel[label] === true, `fullscreen on ${label}`);
+  const run = openFullscreen(index);
+  const state = await waitFor((s) => s.byLabel[label] === true, `fullscreen on ${label}`, 6);
   try {
-    console.log(`  probe: ${readFileSync(probe.status, "utf8").trim()}`);
+    console.log(`  probe: ${readFileSync(run.status, "utf8").trim()}`);
   } catch {
     console.log("  probe: no status file — the window did not open");
   }
   if (!state) {
-    if (await busy(probe.status)) {
-      console.error(
-        `presence: ${label} was not hidden because another window is in front — the probe put its window at ` +
-          `${probeRect(probe.status)} but the app sees "${(await hidden()).foreground}". Someone is using the ` +
-          `machine; run this when the desktop is free.`,
+    if (await busy(run.status)) {
+      closeProbe(run.status);
+      skip(
+        `${label} was not hidden because another window is in front — the probe put its window at ` +
+          `${probeRect(run.status)} but the app sees "${(await hidden()).foreground}". Someone is using the ` +
+          "machine; run this when the desktop is free.",
       );
-      closeProbe(probe.status);
-      await session.close();
-      process.exit(2);
     }
     problems.push(`a fullscreen window on ${label} (${screen}) did not hide it — ${JSON.stringify(await hidden())}`);
   } else {
     const others = Object.entries(state.byLabel).filter(([l]) => l !== label);
     const leaked = others.filter(([, isHidden]) => isHidden).map(([l]) => l);
     if (leaked.length) {
-      problems.push(
-        `a fullscreen window on ${label} also hid ${leaked.join(", ")} — every screen decides for itself`,
-      );
+      problems.push(`a fullscreen window on ${label} also hid ${leaked.join(", ")} — every screen decides for itself`);
     }
     if (state.machineQuiet) {
       problems.push(
@@ -224,16 +241,24 @@ for (const [index, label] of layers.entries()) {
     // the capture stopped, so asserting on it then would fail for the right reason.
     if (!state.machineQuiet && !(await audioRunning())) {
       problems.push(
-        `a fullscreen window on ${label} stopped the shared audio capture while ${others.map(([l]) => l).join(", ")} still showed a desktop`,
+        `a fullscreen window on ${label} stopped the shared audio capture while ${others
+          .map(([l]) => l)
+          .join(", ")} still showed a desktop`,
       );
     }
     // The state is stored before the window is hidden, so a reader can see "hidden" a poll
     // before the hide lands. Wait for the fact this is asserting rather than sampling once.
-    let visible = await windows();
-    for (let i = 0; i < 8 && visible[label] !== false; i += 1) {
-      await new Promise((r) => setTimeout(r, 250));
-      visible = await windows();
-    }
+    const visible =
+      (await app
+        .until(
+          `${label}'s window to go invisible`,
+          async () => {
+            const v = await windows();
+            return v[label] === false ? v : null;
+          },
+          { timeout: 2 },
+        )
+        .catch(() => null)) ?? (await windows());
     if (visible[label] !== false) {
       problems.push(`${label} reports hidden but its window is still visible`);
     }
@@ -250,47 +275,38 @@ for (const [index, label] of layers.entries()) {
     console.log(`  --keep-open: leaving the probe on ${label} up`);
     break;
   }
-  closeProbe(probe.status);
+  closeProbe(run.status);
   // ...and everything comes back. Long enough to cover the probe closing itself, in case
   // closing it by pid did not take (its console is its own process).
-  const back = await waitFor((s) => Object.values(s.byLabel).every((h) => !h), "both back", 100);
+  const back = await waitFor((s) => Object.values(s.byLabel).every((h) => !h), "both back", 25);
   if (!back) problems.push(`the desktop did not come back after closing the probe on ${label}`);
 }
 
 // ---- and the machine: every screen covered at once is what "quiet" means --------------
 if (!keepOpen) {
-  const before = await audioRunning();
+  const wasUp = await audioRunning();
   // One window over every screen, not one per screen: two probes fight for the foreground,
   // and a window that covers each screen is what the rule needs to see.
-  const probes = [openFullscreen(0, true)];
-  const quiet = await waitFor((s) => s.machineQuiet, "the machine quiet", 60);
+  const covering = openFullscreen(0, true);
+  const quiet = await waitFor((s) => s.machineQuiet, "the machine quiet", 15);
   if (!quiet) {
-    if (await busy(probes[0].status)) {
-      console.error(
-        `presence: covering every screen did nothing because another window is in front — the probe put its ` +
-          `window at ${probeRect(probes[0].status)} but the app sees "${(await hidden()).foreground}". Someone ` +
-          `is using the machine; run this when the desktop is free.`,
-      );
+    if (await busy(covering.status)) {
       closeAll();
-      await session.close();
-      process.exit(2);
+      skip(
+        `covering every screen did nothing because another window is in front — the probe put its window at ` +
+          `${probeRect(covering.status)} but the app sees "${(await hidden()).foreground}". Someone is using the ` +
+          "machine; run this when the desktop is free.",
+      );
     }
     problems.push("covering every screen did not make the machine quiet");
   } else {
     // The page has to *hear* it: the capture is shared, and the page is the only thing that
     // starts it again. Both halves are checked — the page's own line in the app log, and the
     // capture itself.
-    const diag = JSON.parse(
-      await session.evaluate(`return JSON.stringify(await window.__TAURI_INTERNALS__.invoke("floaty_diagnostics"));`),
-    );
-    // floaty_diagnostics carries the log as {path, bytes, lines[], rotated}: `log` itself is
-    // an object, and reading it as text silently finds nothing.
-    const log = (diag.log?.lines ?? []).join("\n");
+    const log = (await app.logLines(1000)).join("\n");
     const heard = (log.match(/\[presence\] page quiet=true/g) ?? []).length;
     if (heard < 1) {
-      problems.push(
-        "the pages never heard the machine go quiet — nothing would restart the audio capture on wake",
-      );
+      problems.push("the pages never heard the machine go quiet — nothing would restart the audio capture on wake");
     }
     if (await audioRunning()) {
       problems.push("the shared audio capture kept running while every screen was covered");
@@ -298,21 +314,18 @@ if (!keepOpen) {
     console.log(`  every screen covered: machine quiet=${quiet.machineQuiet}, pages that heard it=${heard}`);
   }
   closeAll();
-  for (const probe of probes) void probe;
-  const back = await waitFor((s) => !s.machineQuiet && Object.values(s.byLabel).every((h) => !h), "awake", 100);
+  const back = await waitFor((s) => !s.machineQuiet && Object.values(s.byLabel).every((h) => !h), "awake", 25);
   if (!back) {
     problems.push("the machine did not come back after closing the probes");
   } else {
     // This is the fix: the capture is restarted by the page, and it has to actually come up.
-    let up = false;
-    for (let i = 0; i < 24 && !up; i += 1) {
-      up = await audioRunning();
-      if (!up) await new Promise((r) => setTimeout(r, 250));
-    }
+    const up = await app
+      .until("the audio capture to come back", async () => (await audioRunning()) || null, { timeout: 6 })
+      .catch(() => null);
     if (!up) {
       problems.push("the audio capture did not come back when the machine woke up");
     } else {
-      console.log(`  awake again: audio capture up=${up} (was ${before})`);
+      console.log(`  awake again: audio capture up=${up} (was ${wasUp})`);
     }
   }
 }
@@ -320,8 +333,7 @@ if (!keepOpen) {
 if (problems.length) {
   console.error(`presence: FAILED — ${problems.length} problem(s)`);
   for (const p of problems) console.error(`  - ${p}`);
-  await session.close();
-  process.exit(1);
+} else {
+  console.log("presence: each screen hid for its own fullscreen app and came back, the others untouched");
 }
-console.log("presence: each screen hid for its own fullscreen app and came back, the others untouched");
-await session.close();
+await finish(() => app.stop(), () => (keepOpen ? undefined : fixture.remove()));

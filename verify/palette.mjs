@@ -20,15 +20,23 @@
  * mirrors the real shapes (a hit carries every field the backend sends, and an
  * icon is a real url the page loads), and the keys are *real* key events, so the
  * arrows go through the same pipeline as the user's own.
+ *
+ * Every keystroke below is followed by a predicate on what it was supposed to
+ * draw, never by a guess at the page's 80ms debounce. A stopwatch cannot
+ * measure this page even in principle: the answer to "arc" and the answer to
+ * "arc" typed a second time are the same list, so only a wait that can tell the
+ * two apart says which keystroke was the one that was checked.
  */
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { launchChrome } from "./cdp.mjs";
+import { App, probe } from "./runtime.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const base = (process.argv[2] ?? "http://localhost:1420").replace(/\/$/, "");
 const shiny = process.argv.includes("--shot");
+const { check, skip, finish, problems } = probe("palette");
 
 /**
  * What the backend answers for the queries this probe types at it. Four kinds,
@@ -129,13 +137,8 @@ const MEASURE = `(() => {
   };
 })()`;
 
-/** Console noise that is not the app's fault and would fail every run. */
-const IGNORE = [/favicon\.ico/];
-
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const of = (view, cmd) => view.calls.filter((c) => c.cmd === cmd);
 const lastSearch = (view) => of(view, "floaty_palette_search").at(-1);
-const quiet = (session) => session.errors.filter((e) => !IGNORE.some((p) => p.test(e)));
 
 /** Just enough of the page to know whether it has become the palette yet. */
 const SETTLE = `(() => ({
@@ -146,12 +149,6 @@ const SETTLE = `(() => ({
   calls: (window.__CALLS__ ?? []).length,
 }))()`;
 
-let failed = 0;
-function check(name, ok, detail = "") {
-  if (!ok) failed++;
-  console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok || !detail ? "" : ` — ${detail}`}`);
-}
-
 // The dev server has to answer before anything else is measured: pointed at a dead
 // port, a probe renders blank panes and reports them as broken, when the truth is
 // that there was nothing to look at. Exit 2 for that, and 1 for a page that drew
@@ -160,10 +157,7 @@ try {
   const alive = await fetch(base);
   if (!alive.ok) throw new Error(`HTTP ${alive.status}`);
 } catch (err) {
-  console.error(
-    `verify: could not reach ${base} — is \`npm run dev\` running?\n  ${err.message}`,
-  );
-  process.exit(2);
+  skip(`could not reach ${base} — is \`npm run dev\` running?\n  ${err.message}`);
 }
 
 // Nothing to look at is not the same as an app that is broken: exit 2 when the dev
@@ -172,12 +166,33 @@ let chrome;
 try {
   chrome = await launchChrome({ inject: STUB, window: "560,380" });
 } catch (err) {
-  console.error(
-    `verify: could not open ${base} — is \`npm run dev\` running?\n  ${err.message}`,
-  );
-  process.exit(2);
+  skip(`could not open ${base} — is \`npm run dev\` running?\n  ${err.message}`);
 }
-const session = chrome.session;
+
+// The runtime's world, built over the page this probe launched for itself: `until`
+// for every wait below, `takeErrors` for the noise filter this file used to keep a
+// second copy of, `shot` for the screenshot. `session` is what they are built on — a
+// key press and a navigation are the only things left that need the socket.
+const app = new App(chrome.port, [chrome.session]);
+const session = app.page(0);
+
+/**
+ * Wait for the effect a key or an event was supposed to have, and hand the page's
+ * answer back. `want` is what says the effect has happened — a wait that gives up
+ * is not a crash either: the state it timed out on is the state the checks have to
+ * report, and each of their details says what was missing.
+ */
+async function after(what, want) {
+  let last = null;
+  const measure = async () => {
+    last = await session.evaluate(MEASURE);
+    return want(last) ? last : null;
+  };
+  // Giving up is a result and not a crash: an effect that never arrived is
+  // reported by the checks below, against the last state the page was really in.
+  await app.until(what, measure).catch(measure);
+  return last;
+}
 
 /**
  * One real key press, through the same input pipeline as the user's keyboard — a
@@ -198,15 +213,23 @@ function press(combo) {
  * open, and the checks are left to fail on their own if it happens twice.
  */
 async function settle(seconds = 20) {
-  const look = async (deadline) => {
-    let state = await session.evaluate(SETTLE);
-    while (!state.mounted && Date.now() < deadline) {
-      await wait(150);
-      state = await session.evaluate(SETTLE);
-    }
+  const look = async () => {
+    let state = null;
+    await app
+      .until(
+        "the palette to mount",
+        async () => {
+          state = await session.evaluate(SETTLE);
+          return state.mounted ? state : null;
+        },
+        { timeout: seconds },
+      )
+      // The wait gives up by throwing; what it was waiting on is still the last
+      // state it saw, and that is what the message below is made of.
+      .catch(async () => (state = await session.evaluate(SETTLE)));
     return state;
   };
-  const first = await look(Date.now() + seconds * 1000);
+  const first = await look();
   if (first.mounted) return first;
   console.log(
     `     the load never arrived (page=${first.ready}, stub=${
@@ -214,7 +237,7 @@ async function settle(seconds = 20) {
     }, calls=${first.calls}) — navigating again`,
   );
   await session.send("Page.navigate", { url: `${base}/index.html?palette=retry#/palette` });
-  return await look(Date.now() + seconds * 1000);
+  return await look();
 }
 
 try {
@@ -262,11 +285,12 @@ try {
   );
 
   // from here on, anything logged is this probe's own doing
-  session.errors.length = 0;
+  app.takeErrors();
 
+  // The arrows paint a class and scroll; nothing is asked of the backend, so the
+  // effect to wait for is the highlight having moved.
   await press("arrowdown");
-  await wait(150);
-  const down = await session.evaluate(MEASURE);
+  const down = await after("ArrowDown to move the highlight down", (v) => v.selected === 1);
   check(
     "ArrowDown selects the row below",
     down.selected === 1 && down.marked === 1 && down.titles[down.selected] === HITS[1].title,
@@ -275,8 +299,7 @@ try {
   check("the selected row is inside the list", down.inView);
 
   await press("arrowup");
-  await wait(150);
-  const up = await session.evaluate(MEASURE);
+  const up = await after("ArrowUp to move the highlight back up", (v) => v.selected === 0);
   check(
     "ArrowUp selects the row above",
     up.selected === 0 && up.marked === 1,
@@ -284,10 +307,11 @@ try {
   );
 
   // A whole string at once: one `Input.insertText` is one keystroke as far as
-  // the page is concerned, and twelve round trips would be twelve searches.
+  // the page is concerned, and twelve round trips would be twelve searches. Rows
+  // can only be gone if this answer drew them away — nothing else empties the
+  // list — so that is the effect to wait for.
   await session.send("Input.insertText", { text: "zzz" });
-  await wait(400);
-  const nothing = await session.evaluate(MEASURE);
+  const nothing = await after("an answer with no rows left to draw", (v) => v.titles.length === 0);
   check(
     "a query the backend has nothing for leaves the list empty",
     nothing.titles.length === 0 && nothing.selected === -1,
@@ -303,13 +327,12 @@ try {
     lastSearch(nothing)?.args?.query === "zzz",
     JSON.stringify(lastSearch(nothing)?.args ?? null),
   );
-  check("nothing threw while searching", quiet(session).length === 0, quiet(session).join(" | "));
-  session.errors.length = 0;
+  const whileSearching = app.takeErrors();
+  check("nothing threw while searching", whileSearching.length === 0, whileSearching.join(" | "));
 
   await press("ctrl+a");
   await session.send("Input.insertText", { text: "arc" });
-  await wait(400);
-  const narrowed = await session.evaluate(MEASURE);
+  const narrowed = await after("the narrower query's rows to draw", (v) => v.titles.length > 0);
   check(
     "typing a narrower query narrows the list",
     narrowed.titles.join(" | ") === "Arc",
@@ -330,8 +353,13 @@ try {
   // again. This is the bug that shipped — `blank()` emptied the list and nothing refilled
   // it, so the palette opened empty and stayed empty until the first keystroke.
   const fired = await session.evaluate(`window.__FIRE__("floaty-palette-shown", {})`);
-  await wait(400);
-  const summoned = await session.evaluate(MEASURE);
+  // The empty query is part of the predicate, not a detail: the rows this is
+  // waiting for are a single "Arc", so "there are rows" is already true of the
+  // state before the summon and the wait would hand that back.
+  const summoned = await after(
+    "the whole library to be drawn again",
+    (v) => v.input === "" && v.titles.length > 0,
+  );
   check(
     "summoning the palette shows every row again without typing",
     summoned.input === "" && summoned.titles.join(" | ") === HITS.map((h) => h.title).join(" | "),
@@ -348,12 +376,14 @@ try {
     `selected=${summoned.selected} marked=${summoned.marked} focused=${summoned.focused}`,
   );
 
+  // Enter runs *the selected row*, so this keystroke's answer has drawn before the
+  // key goes down: the whole library's first row is also "Arc", so a run made
+  // against rows that were about to be replaced would look exactly like a right one.
   await press("ctrl+a");
   await session.send("Input.insertText", { text: "arc" });
-  await wait(400);
+  await after("the one row to be selected", (v) => v.titles.length === 1);
   await press("enter");
-  await wait(300);
-  const ran = await session.evaluate(MEASURE);
+  const ran = await after("Enter to hand the hit to the backend", (v) => of(v, "floaty_palette_run").length > 0);
   const run = of(ran, "floaty_palette_run").at(-1);
   check("Enter runs a hit", run !== undefined, "floaty_palette_run was never invoked");
   check(
@@ -368,19 +398,27 @@ try {
   );
 
   await press("escape");
-  await wait(300);
-  const hid = await session.evaluate(MEASURE);
+  const hid = await after("Escape to ask the window to hide", (v) => of(v, "floaty_palette_hide").length >= 1);
   check(
     "Escape asks the window to hide",
     of(hid, "floaty_palette_hide").length >= 1,
     JSON.stringify(hid.calls.map((c) => c.cmd)),
   );
 
-  if (shiny) await session.screenshot(path.join(here, "out", "palette.png"));
-  check("no console errors or exceptions for the whole run", quiet(session).length === 0, quiet(session).join(" | "));
+  if (shiny) await app.shot(path.join(here, "out", "palette.png"));
+  const leftOver = app.takeErrors();
+  check(
+    "no console errors or exceptions for the whole run",
+    leftOver.length === 0,
+    leftOver.join(" | "),
+  );
 } finally {
+  // Stopped here and not handed to `finish`, so a throw in the middle cannot leave a
+  // browser behind for the next run to attach to.
   chrome.stop();
 }
 
-console.log(failed === 0 ? "\nthe palette behaves" : `\n${failed} palette check(s) need a look`);
-process.exit(failed === 0 ? 0 : 1);
+console.log(
+  problems.length === 0 ? "\nthe palette behaves" : `\n${problems.length} palette check(s) need a look`,
+);
+await finish();
