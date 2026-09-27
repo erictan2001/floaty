@@ -54,12 +54,28 @@ const byPath = (target, want = true) =>
     { timeout: 60 },
   );
 
-/** Wait for the undo state to satisfy `want`, and hand the state back. */
-const settled = (want, what) =>
-  app.until(what, async () => {
-    const s = await state();
-    return want(s) ? s : null;
-  });
+/**
+ * Wait for the undo state to satisfy `want`, and hand the state back — or hand back
+ * null when it never did, leaving the reason in `gaveUp`.
+ *
+ * `until` returns the state or throws, so a bare `!== null` against it can never be
+ * false: the check cannot fail, and a timeout becomes an unhandled rejection rather
+ * than a FAIL line. The stack is the one thing these checks wait for, so a timeout is
+ * the failure they have to be able to report, and the reason comes back with the answer.
+ */
+let gaveUp = null;
+const settled = (want, what) => {
+  gaveUp = null;
+  return app
+    .until(what, async () => {
+      const s = await state();
+      return want(s) ? s : null;
+    })
+    .catch((error) => {
+      gaveUp = error.message;
+      return null;
+    });
+};
 
 // The probe's own two artifacts, in its own root — which also exercises the watcher
 // noticing a file it did not know about.
@@ -97,7 +113,7 @@ check((await items()).includes(fileName), `the folder holds ${fileName} (items: 
 check(existsSync(join(folderPath, fileName)), "the file is inside the folder on disk");
 check(
   (await settled((s) => s.depth >= 1 && s.redo_depth === 0, "one step to undo, nothing to redo")) !== null,
-  `one step to undo, nothing to redo (${JSON.stringify(await state())})`,
+  `one step to undo, nothing to redo (${JSON.stringify(await state())})${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 
 // ---- undo: the file comes home, the folder does not move ------------------------------
@@ -111,7 +127,7 @@ check(!existsSync(join(folderPath, fileName)), "the file left the folder on disk
 check(await folderStill(), "the folder did not move");
 check(
   (await settled((s) => s.redo_depth === 1, "the undo to make one redo available")) !== null,
-  `the undo made one redo available (${JSON.stringify(await state())})`,
+  `the undo made one redo available (${JSON.stringify(await state())})${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 
 // ---- redo: the same file, the same folder, and the folder still does not move ---------
@@ -122,7 +138,7 @@ check(existsSync(join(folderPath, fileName)), "the file is inside the folder on 
 check(await folderStill(), "the folder still did not move");
 check(
   (await settled((s) => s.redo_depth === 0 && s.depth >= 1, "redo to hand the step back to undo")) !== null,
-  `redo handed the step back to undo (${JSON.stringify(await state())})`,
+  `redo handed the step back to undo (${JSON.stringify(await state())})${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 
 // ---- and back once more: the two keys trade the same step ----------------------------
@@ -131,14 +147,14 @@ const home2 = await byPath(filePath, true);
 check(home2 !== null && home2 !== true && home2.x === fileAt[0] && home2.y === fileAt[1], "undo put it home a second time");
 check(
   (await settled((s) => s.redo_depth === 1, "the redo to be available again")) !== null,
-  "and the redo is available again",
+  `and the redo is available again${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 
 // ---- a new action makes the future unreachable ---------------------------------------
 await app.tryInvoke("floaty_undo_checkpoint", { label: "redo-probe", restore: [] });
 check(
   (await settled((s) => s.redo_depth === 0, "a new action to clear what was left to redo")) !== null,
-  "a new action cleared what was left to redo",
+  `a new action cleared what was left to redo${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 const gone = await app.tryInvoke("floaty_redo");
 check(typeof gone?.error === "string" && gone.error.includes("nothing left to redo"), `redo now refuses: ${gone?.error ?? "no error"}`);

@@ -289,7 +289,7 @@ mod tests {
             Arrival::Move,
             "a file on the same drive is moved, as Explorer does"
         );
-        assert_eq!(arrival(&other_drive, false, desktop), Arrival::Copy);
+        assert_eq!(arrival(other_drive, false, desktop), Arrival::Copy);
         assert_eq!(
             arrival(&desktop.join("report.txt"), true, desktop),
             Arrival::Move,
@@ -304,12 +304,12 @@ mod tests {
         assert!(is_program_dir(exe));
         assert_eq!(arrival(exe, false, desktop), Arrival::Shortcut);
         assert_eq!(
-            arrival(&std::path::Path::new("C:/Windows/System32/notepad.exe"), false, desktop),
+            arrival(std::path::Path::new("C:/Windows/System32/notepad.exe"), false, desktop),
             Arrival::Shortcut
         );
         // ...but a file in Documents, on the same drive, is still a move
         assert_eq!(
-            arrival(&std::path::Path::new("C:/Users/erict/Documents/a.txt"), false, desktop),
+            arrival(std::path::Path::new("C:/Users/erict/Documents/a.txt"), false, desktop),
             Arrival::Move
         );
     }

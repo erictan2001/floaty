@@ -1,7 +1,16 @@
-//! `store` — moved out of lib.rs verbatim.
+//! The desktop's records: the store, the file format, and where they are written.
 //!
-//! Visibility is `pub(crate)` because the rest of the crate calls in across the module
-//! boundary now; nothing here changed shape on the way out.
+//! The store arrived here with its own rules, not just its maps. `with` is the
+//! only way in, and it keeps the two rules that used to travel with whoever
+//! happened to remember them: a removed id is tombstoned so a late save cannot
+//! resurrect it, and nothing is durable until a change marks the store dirty.
+//! This module also owns the app's data folder (the store, the settings, the
+//! plugins and the icon cache all have to agree on where that is), the atomic
+//! write and the rotated `.bak`, and the coalesced background writer that a
+//! 3MB store made necessary.
+//!
+//! Visibility is `pub(crate)` because the rest of the crate calls in across the
+//! module boundary.
 
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -142,7 +151,7 @@ pub(crate) fn with<R>(app: &AppHandle, f: impl FnOnce(&mut StoreData) -> R) -> R
     let out = f(&mut guard);
     if guard.touched {
         guard.touched = false;
-        persist(app);
+        persist();
     }
     out
 }
@@ -254,7 +263,10 @@ pub(crate) static STORE_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic
 /// thread that is a measured **18.8 seconds** of the app not answering, which is
 /// the "Not Responding" the user sees after a wake-up or a restart. Coalescing
 /// turns the sixty writes into one.
-pub(crate) fn persist(app: &AppHandle) {
+///
+/// No `AppHandle`: the writer thread reaches the app through `shared_app`, so
+/// every caller reaches this through `with` and needs nothing of its own.
+pub(crate) fn persist() {
     STORE_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
     static WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     WRITER.get_or_init(|| {
@@ -268,7 +280,6 @@ pub(crate) fn persist(app: &AppHandle) {
             }
         });
     });
-    let _ = app;
 }
 
 /// Write the store immediately, on this thread. Used by the background writer and

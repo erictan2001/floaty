@@ -40,7 +40,7 @@ vi.mock("./pluginManifest", async (importOriginal) => {
   };
 });
 
-const { BODY, GRID, clampTo, freeSpot, onScreen, overlaps, plan, rippleIndex, screenAt } =
+const { BODY, GRID, clampTo, freeSpot, hasPlace, onScreen, overlaps, plan, rippleIndex, screenAt } =
   await import("./placement");
 
 /** The 200% screen: 1440x960 logical, at the origin. */
@@ -242,6 +242,32 @@ describe("clampTo", () => {
         expect(r.y, `y for ${JSON.stringify(box)} on ${area.y}`).toBeGreaterThanOrEqual(area.y);
       }
     }
+  });
+
+  it("takes the margin as an argument, and the default is the grid's own", () => {
+    // The margin is a parameter because the two callers disagree on purpose: a dragged
+    // app tile sits flush against the border (margin 0, `appicon.ts`), while a folder and
+    // the item dragged out of one keep the grid's clearance (`folder.ts`).
+    expect(clampTo(SCREEN_A, { x: -500, y: -500, w: 100, h: 100 }, 0)).toEqual({ x: 0, y: 0 });
+    expect(clampTo(SCREEN_A, { x: -500, y: -500, w: 100, h: 100 })).toEqual({
+      x: GRID.edge,
+      y: GRID.edge,
+    });
+    // the same two margins on the far side, and on a screen that is not at the origin
+    const box = { x: 9999, y: 9999, w: 100, h: 100 };
+    expect(clampTo(SCREEN_B, box, 0)).toEqual({
+      x: SCREEN_B.x + SCREEN_B.w - 100,
+      y: SCREEN_B.y + SCREEN_B.h - 100,
+    });
+    expect(clampTo(SCREEN_B, box)).toEqual({
+      x: SCREEN_B.x + SCREEN_B.w - 100 - GRID.edge,
+      y: SCREEN_B.y + SCREEN_B.h - 100 - GRID.edge,
+    });
+    // a margin wider than the screen still answers the minimum rather than inverting
+    expect(clampTo(SCREEN_A, { x: 0, y: 0, w: 100, h: 100 }, 9999)).toEqual({
+      x: SCREEN_A.x + 9999,
+      y: SCREEN_A.y + 9999,
+    });
   });
 });
 
@@ -569,39 +595,87 @@ describe("plan", () => {
 describe("rippleIndex", () => {
   it("orders a row left to right", () => {
     // 1440 / 100 is 15 columns, so the first three cells of the top row are 0, 1, 2.
-    expect(rippleIndex({ x: 24, y: 24 }, 1440)).toBe(0);
-    expect(rippleIndex({ x: 124, y: 24 }, 1440)).toBe(1);
-    expect(rippleIndex({ x: 224, y: 24 }, 1440)).toBe(2);
+    expect(rippleIndex({ x: 24, y: 24 }, SCREEN_A)).toBe(0);
+    expect(rippleIndex({ x: 124, y: 24 }, SCREEN_A)).toBe(1);
+    expect(rippleIndex({ x: 224, y: 24 }, SCREEN_A)).toBe(2);
   });
 
   it("puts the second row after the whole first row", () => {
     // a cell in the first row, and the first cell of the second row
-    expect(rippleIndex({ x: 1424, y: 24 }, 1440)).toBe(14);
-    expect(rippleIndex({ x: 24, y: 140 }, 1440)).toBe(15);
+    expect(rippleIndex({ x: 1424, y: 24 }, SCREEN_A)).toBe(14);
+    expect(rippleIndex({ x: 24, y: 140 }, SCREEN_A)).toBe(15);
     // and the last cell of the second row is the last index of that row
-    expect(rippleIndex({ x: 1424, y: 140 }, 1440)).toBe(29);
+    expect(rippleIndex({ x: 1424, y: 140 }, SCREEN_A)).toBe(29);
   });
 
   it("reads the row off y in grid cells", () => {
     // three rows down, eight columns in: 2 * 15 + 8
-    expect(rippleIndex({ x: 824, y: 372 }, 1440)).toBe(53);
+    expect(rippleIndex({ x: 824, y: 372 }, SCREEN_A)).toBe(53);
   });
 
   it("uses the width it is given for the column count", () => {
     // 400 / 100 is 4 columns, so the second row starts at 4, not at 15
-    expect(rippleIndex({ x: 24, y: 24 }, 400)).toBe(0);
-    expect(rippleIndex({ x: 224, y: 24 }, 400)).toBe(2);
-    expect(rippleIndex({ x: 24, y: 140 }, 400)).toBe(4);
+    const narrow = { x: 0, y: 0, w: 400, h: 960 };
+    expect(rippleIndex({ x: 24, y: 24 }, narrow)).toBe(0);
+    expect(rippleIndex({ x: 224, y: 24 }, narrow)).toBe(2);
+    expect(rippleIndex({ x: 24, y: 140 }, narrow)).toBe(4);
   });
 
   it("stays in range for a place off the grid, and for a width with no room", () => {
-    expect(rippleIndex({ x: 99999, y: 24 }, 1440)).toBe(14); // clamped to the last column
-    expect(rippleIndex({ x: 24, y: -500 }, 1440)).toBe(0); // never negative
-    expect(rippleIndex({ x: 24, y: 24 }, 0)).toBe(0); // at least one column
+    expect(rippleIndex({ x: 99999, y: 24 }, SCREEN_A)).toBe(14); // clamped to the last column
+    expect(rippleIndex({ x: 24, y: -500 }, SCREEN_A)).toBe(0); // never negative
+    expect(rippleIndex({ x: 24, y: 24 }, { x: 0, y: 0, w: 0, h: 0 })).toBe(0); // at least one column
   });
 
-  it("indexes a place on the second screen without a gap", () => {
-    // a screen that starts at x 1440 still reads as the same desktop-wide grid
-    expect(rippleIndex({ x: 1464, y: 24 }, 1440)).toBe(14);
+  it("counts cells from the screen's own corner, so a second monitor reads the same", () => {
+    // 24px into screen B is the first cell, and 24px into screen A is the first cell:
+    // same place on the desktop, so the same place in the wave. Counting from zero made
+    // every icon on the second monitor a whole screen of columns late.
+    expect(rippleIndex({ x: SCREEN_B.x + 24, y: SCREEN_B.y + 24 }, SCREEN_B)).toBe(
+      rippleIndex({ x: 24, y: 24 }, SCREEN_A),
+    );
+    expect(rippleIndex({ x: SCREEN_B.x + 24, y: SCREEN_B.y + 24 }, SCREEN_B)).toBe(0);
+    expect(rippleIndex({ x: SCREEN_B.x + 124, y: SCREEN_B.y + 24 }, SCREEN_B)).toBe(1);
+    // 1280 / 100 is 13 columns, so the first cell of the second row is 13 — the row is
+    // counted off this screen's width, which is what the old width argument was for.
+    expect(rippleIndex({ x: SCREEN_B.x + 24, y: SCREEN_B.y + 140 }, SCREEN_B)).toBe(13);
+  });
+
+  it("clamps to the last column of the screen it was given, not the last of a wider one", () => {
+    // 1280 / 100 is 13 columns, so the last cell of screen B's top row is 12 — asking for
+    // the origin-screen's 15 columns here would put a tile a full row off the wave.
+    expect(rippleIndex({ x: 99999, y: SCREEN_B.y + 24 }, SCREEN_B)).toBe(12);
+  });
+});
+
+describe("hasPlace", () => {
+  it("is false for the corner a fresh record is written at", () => {
+    // The backend writes a new widget at (0, 0), and that is not a place anyone chose.
+    expect(hasPlace({ x: 0, y: 0 })).toBe(false);
+  });
+
+  it("is true for anything past the ten pixels by the origin", () => {
+    // Either axis counts: a widget dragged against the left edge has still been placed,
+    // and reading that as unplaced is what tidied a hand-dragged position over.
+    expect(hasPlace({ x: 11, y: 0 })).toBe(true);
+    expect(hasPlace({ x: 0, y: 11 })).toBe(true);
+  });
+
+  it("treats the first ten pixels as the corner, not as a position", () => {
+    // Not a bounds test: a widget 3px past the screen's edge keeps its place too, which
+    // is the whole reason this is "past the origin" rather than "inside the screen".
+    expect(hasPlace({ x: 4, y: 4 })).toBe(false);
+    expect(hasPlace({ x: 10, y: 0 })).toBe(false);
+  });
+
+  it("is what plan reads, so a record it calls placed is not moved", () => {
+    // The same question in both places: plan leaves it alone, and the predicate says so.
+    const saved = rec("s", "note", 4, 400);
+    expect(hasPlace(saved)).toBe(true);
+    expect(plan([saved], { area: SCREEN_A, top: false }).moves).toEqual([]);
+
+    const fresh = rec("f", "note", 0, 0);
+    expect(hasPlace(fresh)).toBe(false);
+    expect(plan([fresh], { area: SCREEN_A, top: false }).moves).toHaveLength(1);
   });
 });

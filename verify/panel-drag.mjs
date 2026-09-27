@@ -44,26 +44,8 @@ const drawn = await app.drawnBy(id);
 if (!drawn.length) skip(`no overlay page is drawing ${id}`);
 const nth = drawn[0];
 
-/** Where the record is stored, as [x, y] — or null once the store no longer holds it. */
-const at = async () => {
-  const rec = (await app.list()).find((r) => r.id === id);
-  return rec ? [rec.x, rec.y] : null;
-};
 /** Two places, compared by their numbers: an array is two objects and never equal. */
 const elsewhere = (a, b) => Boolean(a) && Boolean(b) && (a[0] !== b[0] || a[1] !== b[1]);
-
-// A mouse event on the window that draws the panel. `App.mouse` always drives the first
-// overlay window, and the panel is not always on the first screen — an event sent to a window
-// that is not drawing it proves nothing — so the page is named here.
-const pointer = (type, x, y) =>
-  app.page(nth).send("Input.dispatchMouseEvent", {
-    type,
-    x: Math.round(x),
-    y: Math.round(y),
-    button: "left",
-    buttons: type === "mouseReleased" ? 0 : 1,
-    clickCount: type === "mouseReleased" ? 1 : 0,
-  });
 
 // Grab it where a person would: a panel with a title bar is dragged by the bar (the middle
 // of a note is its text area, and dragging text must not move the note — the app is right
@@ -72,16 +54,16 @@ const box = await app.grabPoint(id, nth);
 if (!box) skip(`no overlay page is drawing ${id}`);
 console.log(`grabbing ${box.grabbed}`);
 
-const before = await at();
+const before = await app.placeOf(id);
 console.log(`${id} before: ${before}`);
 
-// Six steps, so the page sees a drag and not one jump.
-await pointer("mousePressed", box.x, box.y);
-for (let step = 1; step <= 6; step += 1) {
-  await pointer("mouseMoved", box.x + (200 * step) / 6, box.y + (80 * step) / 6);
-}
-const during = await at();
-await pointer("mouseReleased", box.x + 200, box.y + 80);
+// The mouse events go to the page that draws the panel, and the move is stepped so the
+// page sees a drag and not one jump — the `nth` is not a detail, because a window that is
+// not drawing the panel proves nothing.
+await app.mouse("mousePressed", box.x, box.y, nth);
+await app.moveTo(box.x + 200, box.y + 80, { from: box, nth, steps: 6 });
+const during = await app.placeOf(id);
+await app.mouse("mouseReleased", box.x + 200, box.y + 80, nth);
 
 // The stopwatch. The probe is measuring *when* the record settles, so the delay between
 // samples is the reading itself, not a guess at how long the app takes. Every other wait in
@@ -89,7 +71,7 @@ await pointer("mouseReleased", box.x + 200, box.y + 80);
 const samples = [];
 for (let i = 0; i < 12; i += 1) {
   await new Promise((r) => setTimeout(r, 100));
-  samples.push(await at());
+  samples.push(await app.placeOf(id));
 }
 console.log(`during drag: ${during}`);
 console.log("after release, every 100ms:");

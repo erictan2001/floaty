@@ -180,6 +180,11 @@ async function health(app) {
     problems.push(`${mountedTotal} floaties drawn across ${app.sessions.length} window(s) for ${expectedTotal} that belong to a screen`);
   if (expectedTotal !== total)
     problems.push(`${total - expectedTotal} floatie(s) are on no screen at all — run the Diagnostics tab's "bring back off-screen floaties"`);
+  // An empty desktop and an app that has lost its store look the same from here: no records
+  // to mount, none drawn, nothing to disagree about. `total` is the app's own count of what
+  // it knows, so zero of them means the store did not load — and a probe that calls that
+  // healthy has green-checked a broken install.
+  if (!total) problems.push("the app knows about no floaties at all — the store did not load");
 
   console.log(JSON.stringify({ windows, records: total, drawn: mountedTotal }, null, 2));
   if (problems.length === 0) {

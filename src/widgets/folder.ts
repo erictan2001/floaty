@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { addPinMenu, appWin, applyFloatieAnimation, displayName, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, monitorArea, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
 import { floatie, DRAG_CONTROLS } from "./floatie";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
-import { BODY } from "./placement";
+import { BODY, clampTo, GRID } from "./placement";
 
 interface FolderItem {
   name: string;
@@ -83,28 +83,16 @@ export function mountFolder(root: HTMLElement, id: string): void {
 
     try {
       const mon = await monitorArea();
-      const MARGIN = 16;
-      targetW = Math.min(targetW, Math.floor(mon.w - MARGIN * 2));
-      targetH = Math.min(targetH, Math.floor(mon.h - MARGIN * 2));
-
-      let newX = px;
-      let newY = py;
-
-      if (newX + targetW > mon.x + mon.w - MARGIN) {
-        newX = mon.x + mon.w - MARGIN - targetW;
-      }
-      if (newX < mon.x + MARGIN) {
-        newX = mon.x + MARGIN;
-      }
-      if (newY + targetH > mon.y + mon.h - MARGIN) {
-        newY = mon.y + mon.h - MARGIN - targetH;
-      }
-      if (newY < mon.y + MARGIN) {
-        newY = mon.y + MARGIN;
-      }
-
-      px = newX;
-      py = newY;
+      // The grid is capped to the screen with the arrangement's own edge clearance, not
+      // a `16` typed here: the open panel is a box on the screen like any other, and
+      // `clampTo` is what owns the room it keeps from the border.
+      targetW = Math.min(targetW, Math.floor(mon.w - GRID.edge * 2));
+      targetH = Math.min(targetH, Math.floor(mon.h - GRID.edge * 2));
+      // The open grid goes where it has to, clamped like any other box — a second
+      // monitor's origin included, which a bare `16` could not have known about.
+      const open = clampTo(mon, { x: px, y: py, w: targetW, h: targetH });
+      px = open.x;
+      py = open.y;
       // drawing only: the open grid's place is scaffolding, not the folder's own place —
       // collapsing restores the place the record kept
       own()?.draw(px, py);
@@ -138,11 +126,12 @@ export function mountFolder(root: HTMLElement, id: string): void {
 
     try {
       const mon = await monitorArea();
-      const MARGIN = 16;
-      if (px + BODY.w > mon.x + mon.w - MARGIN) px = mon.x + mon.w - MARGIN - BODY.w;
-      if (px < mon.x + MARGIN) px = mon.x + MARGIN;
-      if (py + BODY.h > mon.y + mon.h - MARGIN) py = mon.y + mon.h - MARGIN - BODY.h;
-      if (py < mon.y + MARGIN) py = mon.y + MARGIN;
+      // Collapsing back leaves the tile on the screen, and it keeps the grid's edge
+      // clearance rather than going flush — which is the one place this file and
+      // `appicon.ts` deliberately disagree about a clamp. Same rule, own margin.
+      const closed = clampTo(mon, { x: px, y: py, w: BODY.w, h: BODY.h }, GRID.edge);
+      px = closed.x;
+      py = closed.y;
 
       persist();
       await setWindowSize(BODY.w, BODY.h);
@@ -324,8 +313,18 @@ export function mountFolder(root: HTMLElement, id: string): void {
         if (isOverlay) {
           const monW = window.innerWidth || 1920;
           const monH = window.innerHeight || 1080;
-          nx = Math.max(16, Math.min(monW - BODY.w - 16, nx));
-          ny = Math.max(16, Math.min(monH - BODY.h - 16, ny));
+          // The dragged-out item lands in *this window's* space, so the arrangement's
+          // screen rectangle is not what it is clamped against: this overlay covers one
+          // screen and its own (0, 0) is that screen's corner. The rule is still
+          // `clampTo`'s, with the tile's clearance rather than the flush one a dragged
+          // icon gets — an item being dragged out is not being nudged to the edge.
+          const at = clampTo(
+            { x: 0, y: 0, w: monW, h: monH },
+            { x: nx, y: ny, w: BODY.w, h: BODY.h },
+            GRID.edge,
+          );
+          nx = at.x;
+          ny = at.y;
         }
         const index = items.indexOf(it);
         if (index >= 0) {

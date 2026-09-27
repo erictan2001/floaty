@@ -889,7 +889,11 @@ export function applyFloatieAnimation(
   // motion in the one mode nobody had chosen.
   wrap.style.setProperty("--bob-amp", `${height}px`);
   wrap.style.setProperty("--bob-cycle", `${period}s`);
-  const ripple = mode === "wave" && at ? rippleIndex(at, window.innerWidth || 1920) : 0;
+  // The wave is the icon's own screen, and `monitorAt` is the answer this module already
+  // gives to everything else that asks where a floatie is: the ripple counts cells from
+  // that screen's corner, so a monitor that starts at x 1440 reads as the same desktop
+  // rather than as one that is a whole screen of columns into the wave.
+  const ripple = mode === "wave" && at ? rippleIndex(at, monitorAt(at.x)) : 0;
   wrap.style.setProperty("--bob-delay", `${((-ripple * spread) / 100) * period}s`);
 
   // The bob's step counts live in style.css as literal `steps(n)`: Chromium

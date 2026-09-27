@@ -262,7 +262,7 @@ pub fn run() {
                 s.set_next(max_n);
             });
             if reclassified > 0 || icons_moved > 0 {
-                persist(&handle);
+                persist();
             }
 
             // Drop icon files no record mentions any more (a removed widget, or
@@ -1445,7 +1445,7 @@ mod tests {
         let mut moved = store.get("app-1").unwrap().clone();
         moved.x = 999;
         store.put(moved);
-        assert!(step_changes_anything(&store, &step(same(&store), vec![])) == false);
+        assert!(!step_changes_anything(&store, &step(same(&store), vec![])));
         let before = step(
             vec![undo::Restore {
                 id: "app-1".to_string(),

@@ -20,7 +20,7 @@ import {
   type WidgetRecord,
 } from "./widgets/lib";
 import { floatie } from "./widgets/floatie";
-import { freeSpot, plan, type PlacementPlan } from "./widgets/placement";
+import { freeSpot, hasPlace, plan, type PlacementPlan } from "./widgets/placement";
 import {
   clearWidgetScope,
   loadPlugins,
@@ -700,8 +700,14 @@ function mountDesktop(root: HTMLElement): void {
       // Only a record the backend has never placed is tidied: a widget with a saved
       // position — one the user dragged, or one a widget arranged — keeps it, even off
       // the edge of the screen.
-      const hasPos = rec.x > 10 || rec.y > 10;
-      if (rec.data["pinned"] !== true && !hasPos) {
+      //
+      // Two flags here are called "pinned" and they are not the same fact. `isPinned`
+      // reads `on_top` and asks which *layer* draws the floatie. `data["pinned"]` is
+      // appicon's own flag: it says the icon has come to rest, so the physics leaves it
+      // where it is. Gating on the second one is what let a widget the user pinned to the
+      // top layer be nudged as if it had just arrived, and the two being one word apart is
+      // the whole reason for that.
+      if (!isPinned(rec) && !hasPlace(rec)) {
         const { w, h } = pluginSize(rec);
         const safe = freeSpot({
           id: rec.id,

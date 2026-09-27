@@ -110,16 +110,38 @@ export function screenAt(screens: Area[], x: number): Area | undefined {
   return screens.find((m) => x >= m.x && x < m.x + m.w);
 }
 
-/** Keep a box inside a screen, `edge` px clear of the border. */
-export function clampTo(area: Area, box: Box): { x: number; y: number } {
-  const minX = area.x + GRID.edge;
-  const minY = area.y + GRID.edge;
-  const maxX = Math.max(minX, area.x + area.w - box.w - GRID.edge);
-  const maxY = Math.max(minY, area.y + area.h - box.h - GRID.edge);
+/**
+ * Keep a box inside a screen, `margin` px clear of the border.
+ *
+ * The default is the arrangement's own `GRID.edge`, which is what a placed floatie
+ * wants. The margin is a parameter because the two call sites disagree on purpose: a
+ * tile the user drags may sit hard against the border, and passes 0 (see `appicon.ts`),
+ * while a folder — which draws a panel and not a tile — keeps the grid's clearance.
+ * Both are the same rule with their own margin, not two rules that happened to match.
+ */
+export function clampTo(area: Area, box: Box, margin = GRID.edge): { x: number; y: number } {
+  const minX = area.x + margin;
+  const minY = area.y + margin;
+  const maxX = Math.max(minX, area.x + area.w - box.w - margin);
+  const maxY = Math.max(minY, area.y + area.h - box.h - margin);
   return {
     x: Math.max(minX, Math.min(maxX, box.x)),
     y: Math.max(minY, Math.min(maxY, box.y)),
   };
+}
+
+/**
+ * Does this record already have a place of its own?
+ *
+ * A fresh widget the backend writes starts at (0, 0), and (0, 0) is a place nobody
+ * chose. The test is "past the origin by more than a hair" rather than "exactly zero",
+ * because a widget the user dragged a few px from the corner has been placed: reading
+ * that as unplaced is what tidied a hand-dragged position off the desktop and saved the
+ * grid cell over it. Ten px is the hair, and the two pages that ask — a layout pass and
+ * a widget arriving — used to ask it separately and could drift apart.
+ */
+export function hasPlace(rec: { x: number; y: number }): boolean {
+  return rec.x > 10 || rec.y > 10;
 }
 
 /** One floatie to place, and what is already on the desktop. */
@@ -233,12 +255,17 @@ function gridAround(
  * (`num % 6` of `app-17`) scattered the phases randomly across the screen, so even a stagger
  * that applied would not have read as a wave.
  *
- * The cell is the grid's, so a wave lines up with the columns the layout actually uses.
+ * The cell is the grid's, so a wave lines up with the columns the layout actually uses, and
+ * the cell is counted from the *screen* rather than from zero: a second screen's overlay is
+ * handed that screen's rectangle, and a point 24px into it is the same first cell the first
+ * screen's 24px point is. Counting from the origin alone put every icon on the second
+ * monitor a whole screen's worth of columns late in the wave, which is a delay of seconds on
+ * a desktop sized like a wave.
  */
-export function rippleIndex(at: { x: number; y: number }, width: number): number {
-  const cols = Math.max(1, Math.ceil(width / GRID.w));
-  const col = Math.max(0, Math.min(cols - 1, Math.round(at.x / GRID.w)));
-  return Math.max(0, Math.round(at.y / GRID.h)) * cols + col;
+export function rippleIndex(at: { x: number; y: number }, area: Area): number {
+  const cols = Math.max(1, Math.ceil(area.w / GRID.w));
+  const col = Math.max(0, Math.min(cols - 1, Math.round((at.x - area.x) / GRID.w)));
+  return Math.max(0, Math.round((at.y - area.y) / GRID.h)) * cols + col;
 }
 
 /** What the layout decided: where records go, and which of them were arranged on purpose. */
@@ -299,10 +326,10 @@ export function plan(
       continue;
     }
 
-    // A saved position is the truth. Testing the screen's bounds first was how a widget
-    // dragged 3px past the edge "lost" its position: it failed the bounds test, was tidied
-    // onto the grid, and the tidy-up was saved over what the user had chosen.
-    if (rec.x > 10 || rec.y > 10) {
+    // A saved position is the truth. The test is deliberately not a screen-bounds test:
+    // that is how a widget dragged 3px past the edge "lost" its position, failed the test,
+    // was tidied onto the grid, and the tidy-up was saved over what the user had chosen.
+    if (hasPlace(rec)) {
       placed.push({ id: rec.id, x: rec.x, y: rec.y, w, h });
       continue;
     }
