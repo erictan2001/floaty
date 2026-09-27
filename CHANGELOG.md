@@ -7,6 +7,8 @@ Notable changes to Floaty, newest first. The format follows
 The plugin API version is a different number with a policy of its own — see
 [Plugins](docs/PLUGINS.md#the-plugin-api-version).
 
+## 0.2.2 - 2026-09-27
+
 ## 0.2.1 - 2026-09-24
 
 ### Added
