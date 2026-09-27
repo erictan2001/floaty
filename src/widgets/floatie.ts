@@ -252,18 +252,21 @@ export class Floatie {
    */
   place(x: number, y: number, opts?: { transient?: boolean; scale?: number }): void {
     this.transient = opts?.transient === true;
+    // Only what is drawn travels down: `transient` has been read above, and passing it on
+    // would put a flag back in `draw`'s options that nothing there looks at.
+    const drawn = { scale: opts?.scale };
     if (this.transient) {
       // A stretched slot is scaffolding, not the widget's place: a plugin has covered the
       // desktop with something that catches the mouse (a drawing surface, a page of save
       // slots), and the place it covers is not where the widget lives. Drawn, not recorded
       // — and `watch` must not adopt it either, which is the hazard the old
       // `reservingSlots` set existed to prevent.
-      this.draw(x, y, opts);
+      this.draw(x, y, drawn);
       return;
     }
     this.rec.x = Math.round(x);
     this.rec.y = Math.round(y);
-    this.draw(this.rec.x, this.rec.y, opts);
+    this.draw(this.rec.x, this.rec.y, drawn);
   }
 
   /**
@@ -273,8 +276,13 @@ export class Floatie {
    * *is* between two frames is not a fact worth persisting — the record gets the place it
    * comes to rest at. It is also the one path that must not round, because a body moving
    * less than a pixel a frame would stall if every frame's position were snapped.
+   *
+   * The options are what is drawn *with*, and nothing more: whether the place is scaffolding
+   * rather than the widget's own is `place`'s question, and it answers it before it gets
+   * here — the two flags once shared this signature, and carrying a `transient` that this
+   * function never read is how the wrong one would eventually be consulted.
    */
-  draw(x: number, y: number, opts?: { transient?: boolean; scale?: number }): void {
+  draw(x: number, y: number, opts?: { scale?: number }): void {
     // A slot is only moved while the floatie is on this window's screen. Past the edge the
     // other window draws it, and moving this one's transform to a place this window does
     // not cover would draw it in the band between the screens until the handover lands.

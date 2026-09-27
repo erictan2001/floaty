@@ -42,11 +42,6 @@ const { check, skip, finish } = probe("stranded");
 
 const app = await attach({ port }).catch((error) => skip(error.message));
 
-/** Where a record is stored, as [x, y] — or null once the store no longer holds it. */
-const record = async (which = id) => {
-  const rec = (await app.list()).find((r) => r.id === which);
-  return rec ? [rec.x, rec.y] : null;
-};
 /** How deep the undo stack is right now. */
 const depth = async () => (await app.invoke("floaty_undo_state"))?.depth ?? null;
 /** The size of a slot as the page has it drawn — the whole body, not the title bar. */
@@ -97,25 +92,25 @@ if (!nowhere) nowhere = [Number(process.argv[4] ?? 120), -20];
 console.log(`stranded: dropping ${id} at ${nowhere}, which is on no screen: ${!onAnyScreen(...nowhere)}`);
 if (onAnyScreen(...nowhere)) skip("the chosen point is on a screen — nothing to check");
 
-const before = await record();
+const before = await app.placeOf(id);
 const depthBefore = await depth();
 console.log(`${id} before: ${before} (undo depth ${depthBefore})`);
 
 // The page's release, command for command.
 const placed = await release(id, nowhere[0], nowhere[1]);
 check(!placed?.error, `the page's own release placed the widget in the band (${placed?.error ?? "placed"})`);
-const strandedAt = await record();
+const strandedAt = await app.placeOf(id);
 await app.tryInvoke("floaty_gesture_end");
 // Wait for the re-home, not for a guess at how long it takes. A timeout is not the end of the
 // probe: the position it gives up on is read anyway and the checks below report it, so a
 // broken app fails here as a broken app.
 await app
   .until("the release to bring the widget back onto a screen", async () => {
-    const at = await record();
+    const at = await app.placeOf(id);
     return at && onAnyScreen(...at) ? at : null;
   })
   .catch(() => null);
-const after = await record();
+const after = await app.placeOf(id);
 console.log(`  dragged to ${strandedAt} (on a screen: ${strandedAt && onAnyScreen(...strandedAt)}), released`);
 
 // The app says so itself, in its own words: the re-home fired for this widget. A "same place
@@ -142,9 +137,9 @@ console.log(`  body ${body?.[0]}x${body?.[1]}: wholly on one screen: ${body && i
 // stack exactly as it found it — a check that changes the desktop it is checking is no good
 // to anyone running it twice.
 // A person using this desktop has their own steps on the same stack (Ctrl+Alt+Z, a drag of
-// their own), and one of those can land between these calls. Losing the round trip is a note,
-// not a failure: what the fix promises is where the widget ends up, and that is checked
-// whether or not the stack stayed still.
+// their own), and one of those can land between these calls, which is why the depth is a
+// note rather than a check. A round trip that did not run is not a note: the check below
+// asks for it, so a broken undo cannot pass by leaving nothing to assert.
 /**
  * Where a record is once a move has landed: wait for it to differ from where it was, and read
  * it at the deadline if it never does. A step that changes nothing is a real answer, so a
@@ -153,11 +148,11 @@ console.log(`  body ${body?.[0]}x${body?.[1]}: wholly on one screen: ${body && i
 const afterStep = (what, which = id, from = null) =>
   app
     .until(`${what} to land`, async () => {
-      const at = await record(which);
+      const at = await app.placeOf(which);
       if (!at) return null;
       return !from || at[0] !== from[0] || at[1] !== from[1] ? at : null;
     })
-    .catch(() => record(which));
+    .catch(() => app.placeOf(which));
 let undone = null;
 let redone = null;
 let settled = null;
@@ -198,8 +193,11 @@ console.log(`${id} undo -> ${undone}, redo -> ${redone}, undo again -> ${settled
       console.log(`  pointer pass: nothing draws ${barPanel}`);
     } else {
       const nth = barDrawn[0];
-      // `App.mouse` always dispatches to the first overlay window, and this panel is not
-      // always on the first screen, so the events are sent to the page that has the slot.
+      // Not `App.mouse`: that one derives `buttons` and `clickCount` from the event type,
+      // and this pass needs a press–move–release the page reads as one gesture, with the
+      // button state spelled out for every event. What `App.mouse` has that this borrows is
+      // the page — the events go to the window that has the slot, which is not always the
+      // first one.
       const mouse = (type, x, y, buttons) =>
         app.page(nth).send("Input.dispatchMouseEvent", {
           type,
@@ -209,7 +207,7 @@ console.log(`${id} undo -> ${undone}, redo -> ${redone}, undo again -> ${settled
           buttons,
           clickCount: 1,
         });
-      const start = await record(barPanel);
+      const start = await app.placeOf(barPanel);
       const bar = await app.grabPoint(barPanel, nth);
       if (!bar) {
         console.log(`  pointer pass: ${barPanel} has no bar to grab`);
@@ -304,6 +302,13 @@ check(drawn > 0, `something is drawing ${id} after the release (${drawn} window(
 if (steps !== 1) {
   console.log(`  note: the undo stack moved ${steps} step(s) across the release (other drags count too)`);
 }
+// That the round trip ran at all is a check of its own. The three below all read "no value,
+// so nothing to say", which on a run where `floaty_undo` threw is not a pass but a probe
+// that asked nothing: an app whose undo stack is gone would report a clean run.
+check(
+  undone !== null && redone !== null && settled !== null,
+  `the undo/redo round trip ran (undo ${undone}, redo ${redone}, undo again ${settled})`,
+);
 check(
   !undone || JSON.stringify(undone) === JSON.stringify(before),
   `undo put ${id} back where the drag began (${before} -> ${undone})`,

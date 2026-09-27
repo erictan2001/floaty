@@ -494,7 +494,7 @@ pub(crate) fn checkpoint_with_origin(
         ids.iter()
             .map(|id| undo::Restore {
                 id: (*id).to_string(),
-                record: s.get(*id).map(|rec| {
+                record: s.get(id).map(|rec| {
                     let mut value = serde_json::to_value(rec).unwrap_or(serde_json::Value::Null);
                     // only the record the drag moved: the others keep their live position
                     if let (Some((dragged, x, y)), Some(map)) = (origin, value.as_object_mut()) {

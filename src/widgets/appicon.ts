@@ -21,7 +21,7 @@ import {
   type WidgetRecord,
 } from "./lib";
 import { floatie } from "./floatie";
-import { BODY } from "./placement";
+import { clampTo, BODY } from "./placement";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 import { isDesktopItem } from "./pluginManifest";
 
@@ -301,10 +301,12 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       constrain: (px, py) => {
         // overlay mode deliberately has no clamp: the desktop is every screen
         if (isOverlayMode()) return { x: px, y: py };
-        return {
-          x: Math.min(Math.max(px, mon.x), mon.x + mon.w - BODY.w),
-          y: Math.min(Math.max(py, mon.y), mon.y + mon.h - BODY.h),
-        };
+        // A tile a user drags may sit hard against the border, so this clamps flush —
+        // margin 0, against `clampTo`'s `GRID.edge` default. The folder's own panel
+        // clamp keeps that clearance instead (see `folder.ts`), and the difference is
+        // deliberate: a tile you can only push 16px away from the edge feels stuck short
+        // of it, and the open grid is a transient panel rather than a tile.
+        return clampTo(mon, { x: px, y: py, w: BODY.w, h: BODY.h }, 0);
       },
       onRelease: async (_ev, moved) => {
         wrap.classList.remove("held");

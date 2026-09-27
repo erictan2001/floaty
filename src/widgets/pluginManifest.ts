@@ -150,8 +150,13 @@ export function pathOf(rec: WidgetRecord): string {
 }
 
 /**
- * The size a record occupies on screen: the record's own w/h when the widget is
- * resizable, otherwise the manifest's default for the kind.
+ * The size a record occupies on screen: the record's own `data.w`/`data.h` when it has
+ * been resized, otherwise the manifest's `default_size` for the kind.
+ *
+ * It reads the *record*, not the manifest's `resizable` flag: that flag says whether the
+ * window carries a size grip the user may pull (`plugins::resizable`, which builds the
+ * window), and nothing here asks it — a record sized by anything other than the grip (a
+ * plugin, a restore) is still the record's own size, whatever the flag says.
  */
 export function pluginSize(rec: WidgetRecord): Size {
   const advertised = entries.get(rec.kind)?.default_size;

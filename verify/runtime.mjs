@@ -17,9 +17,12 @@
  * - **A probe owns its footprint, and the best footprint is none.** `Fixture`
  *   points the whole app at a scratch folder with `FLOATY_DATA_DIR`.
  *
- * Layering: nothing here reaches inside the page. It drives the app the way a
- * person or the app's own windows do — `invoke`, real input events, the app's own
- * log — and reads the app's answers.
+ * Layering: it drives the app the way a person or the app's own windows do —
+ * `invoke`, real input events, the app's own log — and reads the app's answers. It
+ * does reach into the page for two facts the DOM is the only place that holds, both
+ * of them reads and never a call: `drawnBy` asks which window has a slot, and
+ * `grabPoint` asks where that slot is. There is no seam inside the app: every
+ * command goes through the real IPC.
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -314,37 +317,6 @@ export class App {
     return out;
   }
 
-  /**
-   * Wait for a floatie to be drawn — by `nth` when one is named, by any page when it
-   * is not. Every probe's first real act is a slot check, and a slot check that runs
-   * before the first mount fails on an app that is fine; this is that wait.
-   */
-  untilDrawn(id, nth = null) {
-    return this.until(`floatie ${id} to be drawn`, async () => {
-      const pages = await this.drawnBy(id);
-      return (nth === null ? pages.length > 0 : pages.includes(nth)) ? pages : null;
-    });
-  }
-
-  /**
-   * Which screen this page is on, from the page's own window position — the one
-   * fact that pairs a page with a monitor, and the same fact a drag has to trust
-   * (`screenX`/`screenY`, not the client coordinates of an event).
-   */
-  async screenOfPage(nth = 0) {
-    const at = await this.page(nth).evaluate("return { x: window.screenX, y: window.screenY }");
-    const screens = await this.screens();
-    return (
-      screens.find(
-        (s) =>
-          at.x >= s.logical.x &&
-          at.x < s.logical.x + s.logical.w &&
-          at.y >= s.logical.y &&
-          at.y < s.logical.y + s.logical.h,
-      )?.name ?? null
-    );
-  }
-
   /** Which screen a record's stored place is on, by the app's own rectangles. */
   async screenOf(record) {
     const screens = await this.screens();
@@ -487,17 +459,6 @@ export class Fixture {
     return { FLOATY_DATA_DIR: this.data };
   }
 
-  /** What the app should have made of the root: one record per file and folder. */
-  get expected() {
-    return [...this.files, ...this.dirs].length;
-  }
-
-  /** The app's log for this world. */
-  get log() {
-    const file = path.join(this.data, "floaty.log");
-    return fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n") : [];
-  }
-
   /** A path inside the root, for a probe's own throwaway file. */
   inRoot(name) {
     return path.join(this.root, name);
@@ -598,7 +559,7 @@ export async function launch({ fixture, cwd, port = APP_PORT, timeout = 240, log
         return await attach({ port, screens: 1, timeout: 5 });
       } catch (error) {
         if (Date.now() > deadline) {
-          await stop(child);
+          await stop(child, port);
           throw new Error(`verify: the app never came up — ${error.message}\n${output.slice(-2000)}`);
         }
         await sleep(2000);
@@ -611,7 +572,7 @@ export async function launch({ fixture, cwd, port = APP_PORT, timeout = 240, log
     // that stops the app and nothing else sits there after its last line — looking
     // exactly like a hung app, which is the worst way for a probe to fail.
     await app.close();
-    await stop(child);
+    await stop(child, port);
     try {
       fs.rmSync(configPath, { force: true });
     } catch {
@@ -623,7 +584,7 @@ export async function launch({ fixture, cwd, port = APP_PORT, timeout = 240, log
 }
 
 /** Stop a launched app: the tree, and the WebView2 that can outlive it. */
-async function stop(child) {
+async function stop(child, port) {
   if (!child || child.killed) return;
   const pid = child.pid;
   // The tree first, while the parent is still alive to be walked: `taskkill /T`
@@ -640,7 +601,15 @@ async function stop(child) {
   } catch {
     /* already gone */
   }
-  // The port can answer for a while after the process is gone; give it a moment
-  // rather than letting the next probe attach to a corpse.
-  await sleep(1500);
+  // The wait here is not a guess at how long the process takes to go — it is for the
+  // port. A WebView2 can keep answering after the app that owned it is dead, and a probe
+  // that attaches to that answers every call while reporting on a world it never made, so
+  // poll for the port going quiet and stop as soon as it does. The deadline only exists
+  // to give up: a WebView2 that never lets go costs the next probe a corpse it has to
+  // report, which is its own problem and not worth a stopwatch here.
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!(await overlays(port)).length) break;
+    await sleep(100);
+  }
 }

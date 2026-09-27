@@ -1,7 +1,16 @@
-//! `plugins` — moved out of lib.rs verbatim.
+//! The plugins folder as floaty sees it: the commands, the trust model, and the
+//! install path.
 //!
-//! Visibility is `pub(crate)` because the rest of the crate calls in across the module
-//! boundary now; nothing here changed shape on the way out.
+//! Two things live here that did not before, and both are about *whose code runs*:
+//! the manifest listing is parameterised by trust (it takes the approval as an
+//! argument rather than assuming one), and approving is `remember_approval` —
+//! recording the fingerprint of the files the user read, which the Plugins tab,
+//! an install and the migration for pre-approval plugins all go through. The
+//! install path was rewritten around an archive report, so what is offered and
+//! what lands are the same code.
+//!
+//! Visibility is `pub(crate)` because the rest of the crate calls in across the
+//! module boundary.
 
 use crate::*;
 use plugins::PluginInfo;
@@ -37,7 +46,12 @@ pub(crate) fn plugin_listing(app: &AppHandle) -> Vec<PluginInfo> {
     let settings = load_settings(app);
     let dir = plugins_dir(app);
     plugins::manifest(&settings.disabled, |id| {
-        plugin_approved(&settings, &dir.join(id), id)
+        // The name rule, again, on the way to `dir.join(id)`: a manifest's id has
+        // already been through the grammar, so nothing unapproved is being read
+        // today — but the answer to "is this approved" is a *path*, and a path
+        // assembled from a name is only as safe as the check above it.
+        plugins::is_plugin_folder_name(id)
+            && plugin_approved(&settings, &dir.join(id), id)
     })
 }
 
@@ -131,8 +145,18 @@ fn set_approval(app: &AppHandle, id: &str, trusted: bool) -> Result<(), String> 
 ///
 /// Withdrawing only forgets the fingerprint: the plugin's widgets stop mounting, and
 /// nothing here touches the desk — approving again brings them back.
+///
+/// `id` arrives over IPC, and the line below joins it onto the plugins directory, so it
+/// is checked before anything reads or writes through that path: `..` or a separator
+/// would turn "approve this plugin" into a request about a folder somewhere else on the
+/// disk. The rule is `plugins::is_plugin_folder_name`, the same one `uninstall` and the
+/// installer's own write answer — deliberately weaker than the manifest id grammar,
+/// because a folder whose manifest was broken by hand is still a folder to remove.
 #[tauri::command]
 pub(crate) fn floaty_plugin_trust(id: String, trusted: bool, app: AppHandle) -> Result<(), String> {
+    if !plugins::is_plugin_folder_name(&id) {
+        return Err(format!("'{id}' is not a plugin id"));
+    }
     if plugins::find(&id).is_some() {
         return Err(format!("{id} is one of floaty's own widgets"));
     }
@@ -226,11 +250,6 @@ pub(crate) async fn floaty_install_plugin(
     // other route is unapproved and stays that way until it is approved in the
     // Plugins tab.
     {
-        // Installing from an archive *is* the approval: the dialog showed the user what
-        // is in it, who wrote it, what it replaces and which version of the plugin
-        // contract it wants. A folder that appears in the plugins directory by some
-        // other route is unapproved and stays that way until it is approved in the
-        // Plugins tab.
         let mut settings = load_settings(&app);
         let recorded =
             remember_approval(&mut settings, &plugins_dir(&app).join(&report.id), &report.id);

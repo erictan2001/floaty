@@ -1,7 +1,16 @@
-//! `putting_dragged_items_on_disk` — moved out of lib.rs verbatim.
+//! Putting the desktop's items on disk in the folder they mirror: the root scan,
+//! the reconcile, and the record counter that keeps ids from repeating.
 //!
-//! Visibility is `pub(crate)` because the rest of the crate calls in across the module
-//! boundary now; nothing here changed shape on the way out.
+//! Three jobs that used to be scattered. **The root scan** is what the pointed
+//! directory actually holds, read once per sync. **The reconcile** is the mirror
+//! proper — add what is new, refresh what moved, and take off the desktop what
+//! is no longer there, which is the half that makes it a mirror rather than an
+//! importer. **The counter** is why `sync_root` may number a new record itself:
+//! it reads the store's counter and moves it when it is done, instead of the
+//! watcher and the drag path each inventing ids.
+//!
+//! Visibility is `pub(crate)` because the rest of the crate calls in across the
+//! module boundary.
 
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -434,26 +443,40 @@ pub(crate) fn floaty_dropped_inner(
     let is_overlay = app.get_webview_window("desktop-overlay").is_some();
     let mut hit: Option<(String, String)> = None;
     for (oid, kind) in cands {
-        let (hx, hy, ww, hh) = if is_overlay {
-            let Some((hx, hy, ww, hh)) = store::with(&app, |s| {
+        // The slop belongs to `exchange::SLOP`, and the rule to `exchange::hits`:
+        // this is the same "did I mean to drop on that" the paste path and the merge
+        // preview ask, so the 12px is stated once and the rects below cannot drift
+        // from it.
+        let tile = if is_overlay {
+            let Some(tile) = store::with(&app, |s| {
                 s.get(&oid).map(|r| {
                     let (w, h) = plugins::size(&r.kind, &r.data);
-                    (r.x - 12, r.y - 12, w as i32 + 24, h as i32 + 24)
+                    exchange::Hit {
+                        x: r.x as f64,
+                        y: r.y as f64,
+                        w,
+                        h,
+                    }
                 })
             }) else {
                 continue;
             };
-            (hx, hy, ww, hh)
+            tile
         } else if let Some(w) = app.get_webview_window(&widget_label(&oid)) {
             if let (Ok(p), Ok(s)) = (w.outer_position(), w.inner_size()) {
-                (p.x - 12, p.y - 12, s.width as i32 + 24, s.height as i32 + 24)
+                exchange::Hit {
+                    x: p.x as f64,
+                    y: p.y as f64,
+                    w: s.width as f64,
+                    h: s.height as f64,
+                }
             } else {
                 continue;
             }
         } else {
             continue;
         };
-        if cx >= hx && cx < hx + ww && cy >= hy && cy < hy + hh {
+        if exchange::hits(&tile, cx as f64, cy as f64) {
             hit = Some((oid, kind));
             break;
         }

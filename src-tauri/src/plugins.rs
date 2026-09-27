@@ -694,7 +694,11 @@ pub fn install_from(dir: &std::path::Path) -> (Vec<InstalledPlugin>, Vec<String>
 
 /// One installed plugin as a log line names it: `countdown v1.2.0`, or just the id
 /// when its manifest declared no version.
-pub fn label(plugin: &InstalledPlugin) -> String {
+///
+/// Private to this module because `labels` is the only form anyone asks for: a
+/// single name has one caller, and a caller that wanted one should not have to
+/// unwrap a list to get it.
+fn label(plugin: &InstalledPlugin) -> String {
     if plugin.version.is_empty() {
         plugin.id.clone()
     } else {
@@ -839,7 +843,7 @@ mod tests {
                 // gets its path once it is created or grouped
                 let value = data.get(key).and_then(|v| v.as_str());
                 assert!(
-                    value.map_or(true, |v| v.is_empty()),
+                    value.is_none_or(|v| v.is_empty()),
                     "{} starts without a path",
                     p.id
                 );
