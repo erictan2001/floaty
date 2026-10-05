@@ -1,67 +1,94 @@
 name: nightly
 
-# Everything the pull-request tier does not run, once a night.
+# Everything the pull-request tier does not run, once a night — and only for the newest
+# commit on the branch, and only once for it.
 #
 # `ci.yml` is the fast gate, and it has to stay fast: a one-line change must come back in a
 # few minutes, so it runs the plugin/type guards, the frontend build, `cargo test --lib` and
 # the two page probes that need nothing but the dev server (`verify:panes`, `verify:palette`).
 # This workflow is where the slow half lives — the whole test suite rather than the library
-# tests, the probes that talk to a *running* app, and a real NSIS installer build.
+# tests, every probe that talks to a *running* app, a real NSIS installer build, and the
+# updater's own guard over what that build produced.
 #
 # It publishes nothing. The release workflow owns releases; an installer built here is built,
 # measured, and thrown away with the runner.
 #
+# A night is skipped entirely when the tip of the branch has already had one — see the `fresh`
+# job. The rule is one night per commit: the newest code is what gets tested, once, and a
+# commit is never tested twice.
+#
 # ---------------------------------------------------------------------------------------
-# The app probes: what each one needs, and why most of them cannot run on a hosted runner
+# What runs here, and why most of it cannot run on a hosted runner
 # ---------------------------------------------------------------------------------------
 #
-# Six probes in `verify/` drive the *running* app over its debug port (9222) instead of a page
-# the probe started itself. They share one contract — exit 0 = the app is well, exit 1 = the app
-# is wrong, exit 2 = the probe could not run — and each one explains itself on the way out with
-# exit 2. What each of them actually needs:
+# **Every probe in `verify/`.** There are nine that are checks (the other four files in the
+# folder are the shared CDP client, the runtime, the `app-ready` gate, and this repo's own
+# README). Three need only a dev server and a headless Chrome of their own; six drive the
+# *running* app over its debug port (9222).
 #
-#   verify:app        (verify/app.mjs)        the running app on port 9222 — it reads the real
-#                                             store through the real IPC. Exits 2 when nothing
-#                                             answers on the port.
-#   verify:drag       (verify/drag.mjs)       the app AND two overlays, one per screen: a drag
-#                                             across a screen boundary is the entire point (the
-#                                             bug it exists for only exists on two screens at
-#                                             different scales). Exits 2 on one screen.
-#   verify:presence   (verify/presence.mjs)   the app AND two desktop layers, and it opens real
-#                                             fullscreen windows in front of them. Refuses
-#                                             (exit 2) when a fullscreen app is already in front
-#                                             or someone is using the machine.
-#   verify:redo       (verify/redo.mjs)       the app, a populated desktop (a file floatie to
-#                                             read the desktop root from) and real disk: it writes
-#                                             two files, merges them, undoes, redoes, and puts
-#                                             everything back.
-#   verify:stranded   (verify/stranded.mjs)   the app and a panel floatie (sysmon, clock, note or
-#                                             visualizer) to strand and bring back.
-#   verify:panel-drag (verify/panel-drag.mjs) the app and a panel floatie to drag.
+#   verify:panes       (verify/panes.mjs)       every settings pane, IPC stubbed, own Chrome.
+#                                                 Also in ci.yml; here as well because a week
+#                                                 of merges is what breaks a pane.
+#   verify:palette     (verify/palette.mjs)     the launcher palette, search stubbed, driven
+#                                                 from the keyboard. Also in ci.yml, same why.
+#   verify:trail-page  (verify/trail-page.mjs)  the trail's save page and drawing surface: a
+#                                                 panel that borrowed the desktop has to give it
+#                                                 back, in the record as well as on screen.
+#                                                 Starts its own dev server, runs nowhere else.
+#
+#   verify:app         (verify/app.mjs)         the running app on 9222 — the real store
+#                                                 through the real IPC. Exit 2 when nothing
+#                                                 answers on the port.
+#   verify:arrangement (verify/arrangement.mjs) the app, plus the display-change message
+#                                                 Windows sends: the windows and pages refit at
+#                                                 once, and the desktop is not rearranged for a
+#                                                 reported shape until that shape has stopped
+#                                                 changing.
+#   verify:drag        (verify/drag.mjs)        the app AND two overlays, one per screen: a drag
+#                                                 across a screen boundary is the entire point (the
+#                                                 bug it exists for only exists on two screens at
+#                                                 different scales). Exit 2 on one screen.
+#   verify:presence    (verify/presence.mjs)    the app AND two desktop layers, and it opens real
+#                                                 fullscreen windows in front of them. Refuses
+#                                                 (exit 2) when a fullscreen app is already in front
+#                                                 or someone is using the machine.
+#   verify:redo        (verify/redo.mjs)        the app, a populated desktop (a file floatie to
+#                                                 read the desktop root from) and real disk: it
+#                                                 writes two files, merges them, undoes, redoes, and
+#                                                 puts everything back.
+#   verify:stranded    (verify/stranded.mjs)    the app and a panel floatie (sysmon, clock, note or
+#                                                 visualizer) to strand and bring back.
+#   verify:panel-drag  (verify/panel-drag.mjs)  the app and a panel floatie to drag.
 #
 # A hosted `windows-latest` runner has no desktop to put an app on: no shell, no second screen,
 # an empty store, no floaties anywhere — which is exactly why `ci.yml` keeps `verify:app` out of
-# the pull-request tier. So on a scheduled run there is nothing for these six to talk to.
+# the pull-request tier. So on a scheduled run there is nothing for these seven to talk to.
 #
-# One trap decides how they are run here. Four of the six (`presence`, `redo`, `stranded`,
-# `panel-drag`) open the debug port at the top of the file, before they can decide anything, so
-# with nothing on that port they die on an unhandled rejection and exit **1** — the code that
-# otherwise means "the app is wrong". That is not a verdict on the app, it is the absence of one,
-# so this workflow gates on `verify/app-ready.mjs` first (it wants a page that *answers*, not
-# just an open port: a killed app leaves a WebView2 holding the port) and only reads exit 1 as a
-# failure when an app was actually there. Everything else is recorded as a skip with the probe's
+# One trap decides how they are run here. Six of the seven (`presence`, `redo`, `stranded`,
+# `panel-drag`, `arrangement`, and `drag` where it needs two screens) open the debug port at the
+# top of the file, before they can decide
+# anything, so with nothing on that port they die on an unhandled rejection and exit **1** — the
+# code that otherwise means "the app is wrong". That is not a verdict on the app, it is the absence
+# of one, so this workflow gates on `verify/app-ready.mjs` first (it wants a page that *answers*,
+# not just an open port: a killed app leaves a WebView2 holding the port) and only reads exit 1 as
+# a failure when an app was actually there. Everything else is recorded as a skip with the probe's
 # own words, and the whole log of each run is in the step.
 #
-# To run the six for real, dispatch this workflow with `start_app: true` from a runner that has
+# To run the seven for real, dispatch this workflow with `start_app: true` from a runner that has
 # a desktop: the app is then started first — `npm run tauri dev` with
 # `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, the same incantation
-# verify/README.md gives for a local run — and from then on exit 1 fails the night.
+# verify/README.md gives for a local run — and from then on exit 1 fails the night. The three
+# page probes need no `start_app`: they bring their own browser and their own server.
 #
 # Two files in `verify/` are deliberately not run here. `verify/app-ready.mjs` is not a probe: it
 # waits for the app's pages to be live rather than merely listed, and it is the gate above.
 # `verify/cdp.mjs` is the shared CDP client every probe is built on. Neither is a package.json
-# script. `verify:panes` and `verify:palette` are not repeated either — they need only the dev
-# server, and they already run on every pull request.
+# script.
+#
+# `verify:updater` is not a `verify/` file and is not driven through `run_probe`: it wants the
+# tag, not a port, and it wants the bundle — so it runs in the installer job, over what that job
+# just built and threw away. It is the same guard release.yml runs before it publishes, and the
+# only place between releases where the signature over a bundle is verified.
 
 on:
   schedule:
@@ -81,11 +108,105 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One night for the newest commit on the branch — and no commit twice.
+  #
+  # "Only the latest commit": a night is a run *against* one commit, and that commit is the
+  # tip of the branch, which is what `github.sha` is on a scheduled run. A night that arrived
+  # with five unpushed-to-night commits behind it does not work through them one by one; it
+  # runs once, on the newest, and the older ones are the same code plus some. So the rule the
+  # gate enforces is about *this* commit: has the tip already had a night?
+  #
+  # The record of what has already run is the list of the workflow's own runs, which is a list
+  # of commits: every scheduled run carries its `head_sha`, so the commits that have been
+  # through the night are exactly the `head_sha`s of the runs, and "have we done this one" is
+  # one membership question over a page of them. Nothing is written anywhere — a repository
+  # that keeps its own ledger has to keep it in step by hand, and this does not.
+  #
+  # It runs on `ubuntu-latest` because the answer needs no build: git and one API call, while
+  # every step of `checks` and `installer` needs the Windows toolchain this app is built with.
+  fresh:
+    name: has the newest commit had its night yet?
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      fresh: ${{ steps.compare.outputs.fresh }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The whole branch, not this one commit: "is this the tip" and "what is in the
+          # history" are questions about history, and `fetch-depth: 0` answers them. The ref
+          # is left at the default (the dispatched commit) and only used as the object store.
+          fetch-depth: 0
+
+      - id: compare
+        name: has this commit run already?
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW: nightly.yml
+          REPO: ${{ github.repository }}
+          # The commit `checks` and `installer` will check out.
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          echo "  this night is for ${SHA:0:9}"
+
+          # A member of the run list, or empty. `gh` does the extraction (it carries its own
+          # jq) so this step needs nothing but git and the tool it is already using. One value
+          # per line, unquoted: `@csv` would wrap each in quotes and force the comparison
+          # below to know about them, and one commit per line is what `grep -x` wants anyway.
+          #
+          # One page of runs: enough for any plausible gap between nights, and if it is ever
+          # not, this fails *open* — an unknown commit is run again, never skipped.
+          seen=$(gh api -X GET "repos/${REPO}/actions/workflows/${WORKFLOW}/runs" \
+                   -f event=schedule -F per_page=100 \
+                   --jq '.workflow_runs[].head_sha' \
+                   2>/dev/null || true)
+          if [ -z "$seen" ]; then
+            echo "::notice::could not read this workflow's run list, so nothing is known to have run — checking tonight"
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Whole-line, fixed-string: a commit is either in the list or it is not, and a
+          # shorter sha must never match a longer one that starts with it. The three cases a
+          # membership test has to get right:
+          #   in the list        -> this commit has had its night
+          #   not in the list    -> new, run it
+          #   not on the branch -> the branch was rewritten under us; there is no history
+          #                         here to reason about, so run it
+          if printf '%s\n' "$seen" | grep -qxF "$SHA"; then
+            echo "::notice::${SHA:0:9} is the tip and has already had a night — skipping tonight"
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+            echo "::notice::${SHA:0:9} is not in this clone (history rewritten?) — checking tonight"
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # How many commits are behind the tip, for the log only. They are not worked through
+          # one by one and each does not need its own night: this is the newest code, and the
+          # oldest of them is the same code with less of it.
+          behind=$(git rev-list --count "${SHA}..HEAD" 2> /dev/null || echo 0)
+          echo "  ${behind} commit(s) behind the tip, all covered by this one run"
+          echo "fresh=true" >> "$GITHUB_OUTPUT"
+
   # The headless half of "everything the pull-request tier does not": the whole test suite, and
-  # the six app probes, invoked and reported honestly.
+  # the app probes, invoked and reported honestly.
   checks:
     # Windows only, matching the app: the shell verbs, the Recycle Bin, WASAPI loopback and the
     # desktop-layer window policy are all Win32.
+    needs: fresh
+    # `!= 'false'` and not `== 'true'`: a *skipped* `fresh` (the gate does not run on a manual
+    # dispatch) leaves the output empty rather than 'false', and an empty must not read as an
+    # already-run commit — that would silently make `workflow_dispatch` do nothing at all.
+    if: needs.fresh.outputs.fresh != 'false'
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -147,8 +268,38 @@ jobs:
           node verify/app-ready.mjs --port 9222 --timeout 600 \
             || echo "::warning::the app did not come up on 9222 — the probes below will say so themselves"
 
+      # The three page probes: everything in `verify/` that needs only a dev server and
+      # its own headless Chrome. `verify:trail-page` starts its own server, so the two that
+      # do not share one here. `ci.yml` already runs `panes` and `palette` on every pull
+      # request; they are here as well because this is the tier that finds what a week of
+      # merges did to them, and `trail-page` runs nowhere else.
+      #
+      # One step for the pair: a background dev server does not survive into the next step, and
+      # a probe that cannot reach the server has failed for a reason that has nothing to do
+      # with the app.
+      - name: page probes (dev server + headless Chrome)
+        shell: bash
+        run: |
+          npm run dev -- --port 1420 --strictPort > dev-server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:1420 > /dev/null; then
+              echo "dev server up on 1420"
+              break
+            fi
+            sleep 1
+          done
+          npm run verify:panes -- http://localhost:1420
+          npm run verify:palette -- http://localhost:1420
+          # Starts its own dev server on a free port, so it is independent of the one above.
+          npm run verify:trail-page
+
+      - name: what the dev server said, if a page probe failed
+        if: failure()
+        shell: bash
+        run: tail -50 dev-server.log 2>/dev/null || true
+
       # One step, because a background process does not survive into the next one, and because
-      # the six verdicts belong together in one summary.
+      # the verdicts belong together in one summary.
       - name: the probes that need the running app
         shell: bash
         run: |
@@ -157,7 +308,7 @@ jobs:
 
           # The gate, before any probe is read. `app-ready` exits 2 when there is no live page on
           # the port, which is the difference between "there is no app" and "the app is wrong" —
-          # four of the six exit 1 when they cannot open the port at all (see the note at the top
+          # of the seven exit 1 when they cannot open the port at all (see the note at the top
           # of this file), and that must not be mistaken for a failed check.
           app_up=0
           if node verify/app-ready.mjs --port 9222 --want 1 --timeout 30; then
@@ -200,12 +351,13 @@ jobs:
             echo "::endgroup::"
           }
 
-          run_probe verify:app        "the running app on port 9222"
-          run_probe verify:drag       "the running app and two screens"
-          run_probe verify:presence   "the running app, two screens and a free desktop"
-          run_probe verify:redo       "the running app and a file floatie to merge"
-          run_probe verify:stranded   "the running app and a panel floatie to strand"
-          run_probe verify:panel-drag "the running app and a panel floatie to drag"
+          run_probe verify:app         "the running app on port 9222"
+          run_probe verify:arrangement "the running app on port 9222"
+          run_probe verify:drag        "the running app and two screens"
+          run_probe verify:presence    "the running app, two screens and a free desktop"
+          run_probe verify:redo        "the running app and a file floatie to merge"
+          run_probe verify:stranded    "the running app and a panel floatie to strand"
+          run_probe verify:panel-drag  "the running app and a panel floatie to drag"
 
           echo "probes: $pass passed, $skip skipped, $fail failed (app on port 9222: $([ "$app_up" = 1 ] && echo yes || echo no))" >> "$GITHUB_STEP_SUMMARY"
 
@@ -214,7 +366,7 @@ jobs:
             exit 1
           fi
           if [ "$app_up" = 0 ]; then
-            echo "no app on the debug port, so none of the six could be probed. That is expected"
+            echo "no app on the debug port, so none of the seven could be probed. That is expected"
             echo "here — a hosted runner has no desktop to put an app on, the same reason ci.yml"
             echo "keeps verify:app out of the pull-request tier. Dispatch this workflow with"
             echo "start_app: true from a runner that has a desktop to run them for real."
@@ -229,6 +381,8 @@ jobs:
   # that the NSIS path still works between releases, not a publication. Nothing is uploaded and
   # no release is created.
   installer:
+    needs: fresh
+    if: needs.fresh.outputs.fresh != 'false'
     runs-on: windows-latest
     timeout-minutes: 90
 
@@ -299,3 +453,35 @@ jobs:
             exit 1
           fi
           echo "$found NSIS artifact(s), every one non-empty"
+
+      # The same guard the release runs on the bundle it is about to publish, against the
+      # bundle this job threw away: the config is publishable, the updater archive is signed
+      # by the key the running copy checks, and the `.sig` verifies over the artifact's own
+      # bytes. A build that produces a non-empty file is not the same claim as one whose
+      # signature is good, and this is the only place between releases that the second is
+      # ever checked.
+      #
+      # No `--repo`: the guard would go looking for a release under a tag that does not
+      # exist yet, and "no release for v0.2.2" is not a verdict on the artifacts it was given.
+      # It checks the config and the artifacts, which is all this job can honestly claim.
+      - name: the bundle is one the updater could actually verify
+        shell: bash
+        env:
+          TAG: v$(node -p "require('./src-tauri/tauri.conf.json').version")
+        run: |
+          # Commas, because that is what the guard splits its `--artifacts` on: a newline-
+          # separated list reaches it as one long path and every check then then fail on an
+          # artifact that does not exist.
+          #
+          # Filtered to this version's own bundles. A stale `Floaty_0.1.0_x64-setup.exe` left
+          # in `target/` by an earlier build would otherwise be checked against a version it is
+          # not, and the guard's answer would be about a bundle nobody is going to ship. Both
+          # halves of the filter are needed: the version for the installer and the archive,
+          # and `*.sig` on its own because the signature is named for the artifact beside it
+          # rather than for the version.
+          artifacts=$(find src-tauri/target -type f -path '*bundle/nsis/*' \
+                        \( -name "*_$(echo "$TAG" | tr -d v)*.exe" \
+                         -o -name "*_$(echo "$TAG" | tr -d v)*.nsis.zip" \
+                         -o -name '*.sig' \) | sort | paste -sd, -)
+          echo "artifacts: $artifacts"
+          node scripts/verify-updater-feed.mjs --tag "$TAG" --artifacts "$artifacts"
