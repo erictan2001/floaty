@@ -42,6 +42,15 @@ given again. Built-ins are Floaty's own code and need none. (Code: `plugin_trust
 **overlay** - the transparent, full-screen, always-at-the-bottom window per monitor that
 draws every floatie. One per screen; not the desktop itself.
 
+**arrangement** - the desktop as one value: the rectangle its floaties' places are chosen in,
+`0,0 1440x960`. A display reports one whenever it changes, and reports shapes it does not stay
+in, so an arrangement is acted on only once it has stood still. (Code: `screens::arrangement`,
+`ARRANGEMENT_SETTLE_MS`.)
+
+**displaced** - a place that had to be given up because the arrangement changed, kept on the
+record so the arrangement it was chosen for can have it back. Honoured only while the floatie
+still stands where that move left it. (Code: `screens::Displaced`, `Displaced::returns`.)
+
 **session** - one floatie's place, its size, and the press that is moving it: the one owner,
 made on demand for a record and reached with `floatie(rec)`. The record is the position and
 a slot is a view of it, so a page that draws a floatie and the backend that stores it are

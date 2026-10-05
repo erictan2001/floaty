@@ -18,8 +18,46 @@ testing.
 | --- | --- | --- |
 | `npm run verify:panes` | renders all six settings panes from the dev server with the Tauri IPC stubbed, one Chrome per run, and fails on an exception, a console error, a pane that drew nothing, or a row wider than the window | `npm run dev` |
 | `npm run verify:app` | checks the *running* app over its debug port: mounted slots vs records, icons that failed to load, whether the page believes it is visible, console errors | see below |
+| `npm run verify:arrangement` | sends the display-change message Windows sends, to every window, and reads the log back: the windows and pages must refit at once, and the *desktop* must not be rearranged for the reported shape until that shape has stopped changing | the running app |
 | `npm run verify:palette` | renders the launcher palette with its search stubbed, types into it, and asserts the keys do what they say | `npm run dev` |
 | `npm run verify:drag` | drags a real floatie from one screen to the other with real input events, then checks it arrived, landed where the pointer held it, is drawn by exactly one window, and that no file was merged on the way | see below, two screens |
+| `npm run verify:trail-page` | loads the real trail module into the real overlay with the IPC stubbed, then opens the save page and the drawing surface, escapes each, and checks the panel came back to its own size and place — and that no save along the way recorded the screen's size as the panel's | nothing; it starts its own vite |
+
+## A page probe, and what it is for
+
+`verify:trail-page` is the shape of the others that do not need the real desktop: the
+overlay page is loaded from the dev server with the IPC stubbed, in a headless Chrome of
+its own, so nothing is written to the user's store, data folder or log. **The stub is the
+world** — it holds exactly one record, the panel under test — which is the whole point
+for a probe about one widget's size: a desktop full of icons only makes the numbers harder
+to read.
+
+It exists because of a bug a unit test cannot see. `api.setPos` could say *this stretch is
+scaffolding, do not record it*; `api.setSize` could not, and since the session refactor a
+`setSize` on your own widget writes `data.w/h` — so a plugin covering the desktop
+overwrote its panel's size in the record, and the restore then read the screen's size back
+out of it. The report was "load, then esc, and it will not resize back".
+
+Three things make it worth having:
+
+- **It drives the real module and the real overlay.** Not a reimplementation: the page
+  imports `examples/plugins/trail/index.js` the way the app does, and `Floatie.size` is
+  the code under test. A stubbed `api.setSize` would pass with the bug in place — which is
+  exactly how this was live for so long.
+- **Both gestures, and the save.** The save page and the drawing surface stretch the slot
+  two different ways, and fixing one is the easy mistake. Neither one *saves*, so the
+  drawn size recovers on its own and a probe that only looks at the slot reports a
+  self-healing glitch; the record is what stays wrong, and it becomes permanent the moment
+  anything saves it while the slot is still stretched. The probe forgets a saved slot
+  inside the open page to make that save happen — pre-fix that is where **1280x800** lands
+  in the store.
+- **A failing run reads the same as a passing one.** `settle()` hands back what the page
+  actually looks like when a predicate never comes true, so the report says
+  `1280x800 at 40,40` rather than "nothing" — the number is the diagnosis.
+
+Its dev server is started with `--force` on a free port: Vite caches modules outside
+`src/`, and the trail's module is served from the project root, so an edit that keeps
+coming back as the previous version reads exactly like a fix that did nothing.
 
 ## Checking the running app
 

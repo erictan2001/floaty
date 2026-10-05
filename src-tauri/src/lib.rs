@@ -192,6 +192,9 @@ pub fn run() {
             watch_display_by_callback(&handle);
             start_pump_watchdog();
             start_top_layer_watchdog();
+            // A display change rearranges the desktop, but not until the shape it reported
+            // has stopped changing: this is what does the rearranging, a few seconds later.
+            start_arrangement_watch();
             // Get out of the way of a fullscreen app, and go quiet when nobody is here.
             set_presence_rules(rules_from(&load_settings(&handle)));
             start_presence_watch(handle.clone());

@@ -156,6 +156,83 @@ pub fn confine(
     Some(clamp_into(screens[index].logical, x, y, w, h, margin))
 }
 
+/// The arrangement, as one value: the rectangle its places were chosen in.
+///
+/// The desktop's identity *is* its shape — `"0,0 1440x960"` — because that is the space a
+/// record's x/y live in. A display reporting a different shape is a different arrangement,
+/// and a place is only a place *for* one of them.
+pub fn arrangement(rect: Rect) -> String {
+    format!("{},{} {}x{}", rect.x, rect.y, rect.w, rect.h)
+}
+
+/// The record-data key a given-up place is kept under.
+pub const DISPLACED: &str = "displaced";
+
+/// A place that had to be given up when the arrangement changed: where it was, and the
+/// arrangement it was given up *for*.
+///
+/// A floatie's place is pinned — nothing but a re-home moves it — so a display change used
+/// to be one-way: the desktop was rearranged to fit whatever the platform reported, and
+/// nothing was left to say where anything had been. Measured on this machine, from the log:
+/// the display was reported as `0,0 960x1440` at 14:01:39 and as `0,0 1440x960` again at
+/// 14:01:42; nineteen floaties were moved for the first shape and stayed in the pile the
+/// second one clamped them into. That is the "the layout is messed up after I turn the
+/// machine off and on" report.
+///
+/// So the place is written down as it is taken away, and this is when it may be given back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Displaced {
+    /// The arrangement the place was given up for.
+    pub arrangement: String,
+    /// The place it had, which is the place it belongs to.
+    pub x: i32,
+    pub y: i32,
+    /// The place it was moved to. The memory is only honoured while the floatie still
+    /// stands there: one the user has moved since has a place of its own again — which is
+    /// also what stops a spent memory needing to be cleared by every other writer.
+    pub to_x: i32,
+    pub to_y: i32,
+}
+
+impl Displaced {
+    /// Read one out of a record's data, if the floatie has a place waiting for it.
+    pub fn from_data(data: &serde_json::Value) -> Option<Displaced> {
+        let d = data.get(DISPLACED)?;
+        Some(Displaced {
+            arrangement: d.get("arrangement")?.as_str()?.to_string(),
+            x: d.get("x")?.as_i64()? as i32,
+            y: d.get("y")?.as_i64()? as i32,
+            to_x: d.get("to_x")?.as_i64()? as i32,
+            to_y: d.get("to_y")?.as_i64()? as i32,
+        })
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "arrangement": self.arrangement,
+            "x": self.x,
+            "y": self.y,
+            "to_x": self.to_x,
+            "to_y": self.to_y,
+        })
+    }
+
+    /// May this place come back?
+    ///
+    /// Three things have to hold, and each is a way it must *not*: the arrangement it was
+    /// given up for is not the one here now (otherwise nothing has changed and the floatie
+    /// is where it was put), the floatie still stands where the re-home left it (a move of
+    /// the user's own since then is the newer truth), and the place it had is wholly on a
+    /// screen that exists (the same invariant the re-home restores — restoring a place that
+    /// hangs over an edge would put the bug back).
+    pub fn returns(&self, here: &str, screens: &[Screen], x: i32, y: i32, w: f64, h: f64) -> bool {
+        self.arrangement != here
+            && self.to_x == x
+            && self.to_y == y
+            && within_one_screen(screens, self.x as f64, self.y as f64, w, h)
+    }
+}
+
 /// Is the widget's whole rectangle on one screen? The invariant `confine` restores.
 pub fn within_one_screen(screens: &[Screen], x: f64, y: f64, w: f64, h: f64) -> bool {
     screens.iter().any(|s| {
