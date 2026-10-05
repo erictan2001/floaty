@@ -292,10 +292,22 @@ export class Floatie {
     this.onPlace?.(x, y);
   }
 
-  /** How big it is: size lives in the record's data, and in the slot or the window. */
-  size(w: number, h: number, scale?: number): void {
-    this.rec.data["w"] = Math.round(w);
-    this.rec.data["h"] = Math.round(h);
+  /**
+   * How big it is: size lives in the record's data, and in the slot or the window.
+   *
+   * `transient` means the same thing here as it does in `place`: the size is
+   * scaffolding — a panel stretched over the desktop to catch the mouse — and not
+   * the widget's own size, so it is drawn and not recorded. Without it, stretching
+   * the slot overwrote the size in the record, and the widget that put it back then
+   * restored the size it read there: the monitor's. A plugin that saves its own
+   * record afterwards made that permanent, so the widget came back full-desktop.
+   * A restore is an ordinary `size()` — the widget really is that big again.
+   */
+  size(w: number, h: number, scale?: number, opts?: { transient?: boolean }): void {
+    if (opts?.transient !== true) {
+      this.rec.data["w"] = Math.round(w);
+      this.rec.data["h"] = Math.round(h);
+    }
     setWidgetSize(this.rec.id, w, h, scale ?? this.scale);
   }
 

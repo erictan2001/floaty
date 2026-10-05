@@ -44,10 +44,18 @@ The file is long because the problem is. The parts worth stealing:
 - **A mode is how a plugin gets the mouse.** Floaty makes the desktop
   click-through outside a widget's own rectangle, so "draw on the desktop" means
   the panel first *becomes* the monitor area: its slot is stretched with
-  `api.setPos(..., {transient: true})`, the canvas is hung off `document.body` so
-  nothing clips it, and the panel hides itself until the mode closes. The
-  `transient` flag matters — a plain move is the widget's own place, and the
-  position watcher would save the scaffolding over it.
+  `api.setPos(..., {transient: true})` **and `api.setSize(..., {transient: true})`**,
+  the canvas is hung off `document.body` so nothing clips it, and the panel hides
+  itself until the mode closes. The `transient` flag matters on *both* calls — a
+  plain move or resize is the widget's own place and size, and both are written to
+  its record. Get it wrong on the resize and the record says the panel is the size
+  of the screen, and the restore below then hands the panel the whole desktop.
+- **A restore comes from a snapshot, not from the record.** Both `openPage` and
+  `openMode` re-read the record (the user may have dragged the panel since mount),
+  then keep the panel's own place and size in a local `pageAt`/`panelAt` and put
+  *that* back on the way out. Reading the destination back out of the record you
+  are restoring from restores the stretch you just undid — and any plugin action
+  that saves in between (renaming a slot, forgetting one) then makes it permanent.
 - **Moving another floatie** is two calls and a refresh: `floaty_list` to read the
   desktop, `api.setPos` + `api.record.save` for each item, then `floaty_refresh`
   so the widgets already on screen re-read their records instead of carrying on
@@ -63,4 +71,9 @@ The file is long because the problem is. The parts worth stealing:
   straight away.
 
 [`docs/PLUGINS.md`](../../../docs/PLUGINS.md#reference-plugins) has the reasoning
-behind each of those, including the four ways the arrangement was wrong first.
+behind each of those, including the four ways the arrangement was wrong first and
+the two ways this panel could fail to give the desktop back.
+
+`npm run verify:trail-page` drives this module in a real overlay and checks both
+gestures give the panel back — the drawn size, its place, and that no save along
+the way recorded the screen's size as the panel's.

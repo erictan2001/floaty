@@ -200,7 +200,7 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.record.save(rec)` | Persist it. `data` is yours. |
 | `api.enableDrag(el, rec, opts?)` | Make `el` drag the widget around (whole surface, or a title bar) **and keep the position saved**. A press only becomes a drag after ~4px of travel, so clicks still reach your own handlers, and buttons/inputs/the resize grip keep working. |
 | `api.setPos(id, x, y, {transient})` | Move the widget (keeps the desktop's hit rects in step). The widget's own position is written to its record, so a later `record.save` is not needed to make it stick; another floatie's id is the low-level move instead, and that one *does* need the save. `transient: true` says the move is scaffolding — see below. |
-| `api.setSize(id, w, h)` | Resize the widget's slot. The widget's own size is written to its record; another floatie's is the low-level resize. |
+| `api.setSize(id, w, h, {transient})` | Resize the widget's slot. The widget's own size is written to its record; another floatie's is the low-level resize. `transient: true` for a stretch to catch the mouse — see below. |
 | `api.addPinMenu(wrap, getRec, opts?)` | The standard right-click menu for this widget. `opts.rows(api)` adds the plugin's own rows above the standard ones — `row`, `run`, `divider`, `note`, `close`, and `swap` to draw a list in place of the commands (how the live2d model picker works). |
 | `api.addResizeHandle(wrap, rec, minW, minH)` | Bottom-right grip that resizes and saves the record. |
 | `api.removeSelf(rec)` | Remove the widget, asking first when the user enabled confirmation. |
@@ -366,18 +366,22 @@ above its name, so a slot is recognised rather than guessed at. A slot saved bef
 thumbnails existed shows a hatched blank in its place.
 
 Nothing that stretches the widget's slot over the monitor to catch the mouse — a drawing
-mode, and the page too — may do it with a plain `api.setPos`: a stretch is scaffolding, not
-the widget's place, and a plain `setPos` stores the position in the widget's record. It
-would store `(0,0)`, the top-left corner of the slot it was measuring, over the place the
-user put the panel — and the plugin's own next `record.save` would make that permanent.
-Pass `{transient: true}` for the stretch: it moves the slot and leaves the record alone. The
-plain `setPos` that puts the panel back is what stores the place again.
+mode, and the page too — may do it with a plain `api.setPos` or `api.setSize`: a stretch is
+scaffolding, not the widget's place or its size, and the plain calls store both in the
+widget's record. A plain `setPos` would store `(0,0)`, the top-left corner of the slot it
+was measuring, over the place the user put the panel; a plain `setSize` would store the
+monitor's width and height as the widget's own, and the next restore — or the next
+`record.save` — would make a full-desktop panel permanent. Pass `{transient: true}` for the
+stretch on both calls: it moves and resizes the slot and leaves the record alone. The plain
+`setPos` and `setSize` that put the panel back are what store the place and size again.
 
 Anything that stretches the widget's slot over the monitor to catch the mouse — a drawing
 mode, and the page too — must **re-read the widget's own record first**, or closing it puts
 the panel back where it was when the plugin mounted instead of where the user left it. The
 page re-reads before it reserves the slot; a page that moves the widget is a page that
-should not have.
+should not have. It must also **snapshot the panel's own place and size at that moment**
+and restore *that*: the record is the record you are restoring from, so reading the
+destination back out of it is restoring the stretch you just undid.
 
 The surface shows the previous drawing while it is idle, in **both** modes, and drops it
 the moment a new stroke starts — what is on the surface is what is being decided now. In
@@ -459,12 +463,13 @@ through `api`):
   `onSettings`, `refreshSettings`, `watchSettings`, `watchPluginEnabled`. Follow a
   setting with `onSettings(cb)`, never with your own settings listener.
 - **Position and size** — `floatie(rec)` in `src/widgets/floatie.ts` owns a floatie's place,
-  its size and the gesture that moves it: `place(x, y, { transient })`, `size(w, h)`,
-  `position()`, `commit()` and `watch()`. The record is the position and a slot is a view of
-  it, so nothing reads a position back out of a slot. `setWidgetPos`, `setWidgetSize` and
-  `logicalPos` in `lib.ts` are the low-level primitives that session uses — call them only
-  for a floatie this page holds no record for. `monitorArea`, `overlaySlots`,
-  `isOverlayMode`, `isTopLayer` and `enforceDesktopLayer` are still here.
+  its size and the gesture that moves it: `place(x, y, { transient })`,
+  `size(w, h, scale?, { transient })`, `position()`, `commit()` and `watch()`. The record is
+  the position and a slot is a view of it, so nothing reads a position back out of a slot.
+  `setWidgetPos`, `setWidgetSize` and `logicalPos` in `lib.ts` are the low-level primitives
+  that session uses — call them only for a floatie this page holds no record for.
+  `monitorArea`, `overlaySlots`, `isOverlayMode`, `isTopLayer` and `enforceDesktopLayer` are
+  still here.
 - **Interaction** — `floatie(rec).attachDrag(el, opts)` and
   `floatie(rec).resizeHandle(el, minW, minH)` in `floatie.ts`; `addPinMenu`, `removeSelf`,
   `confirmRemoveDialog`, `describeForConfirm`, `makeBar`, and `notifyDragging` +

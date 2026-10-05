@@ -80,8 +80,14 @@ export interface WidgetApi {
    * page, so it is the low-level move (and `record.save` writes the position).
    */
   setPos: (id: string, x: number, y: number, opts?: { transient?: boolean }) => void;
-  /** Resize the widget slot — the widget's own through its session, another's directly. */
-  setSize: (id: string, w: number, h: number) => void;
+  /**
+   * Resize the widget slot — the widget's own through its session, another's directly.
+   * Pass `{transient: true}` when the slot is only being stretched to catch the
+   * mouse — a drawing surface, a page of slots — so the size is drawn and not
+   * written to the record; a plain `setSize` is a restore and is what stores the
+   * widget's real size again.
+   */
+  setSize: (id: string, w: number, h: number, opts?: { transient?: boolean }) => void;
   /** Right-click menu with the standard floaty rows for this widget. Pass
    *  `options.rows` to add the plugin's own rows (see `PinMenuApi`). */
   addPinMenu: (
@@ -339,10 +345,10 @@ export const widgetApi: WidgetApi = {
     // copy the moment the real one is mounted.
     floaty.setWidgetPos(id, x, y, 1);
   },
-  setSize: (id, w, h) => {
+  setSize: (id, w, h, opts) => {
     const own = sessionFor(id);
     if (own) {
-      own.size(w, h);
+      own.size(w, h, undefined, { transient: opts?.transient });
       return;
     }
     // another floatie's, for the same reason as `setPos`

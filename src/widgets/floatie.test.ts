@@ -256,6 +256,25 @@ describe("the session", () => {
     expect(s.element.style.width).toBe("320px");
   });
 
+  it("draws a stretched size without recording it as the widget's size", () => {
+    // A slot covered over the desktop to catch the mouse is bigger than the widget, and
+    // the widget is not bigger. Recording it left the record saying the widget is the
+    // size of the monitor, and every restore that read it back made that permanent —
+    // the panel came back full-screen and stayed that way. `place` has had this since
+    // the first version; `size` did not, so a plugin had to remember two different
+    // rules for the same gesture.
+    const record = rec("a");
+    const s = slot("a");
+    overlaySlots.set("a", s);
+    floatie(record).size(320, 240);
+    floatie(record).size(2560, 1440, undefined, { transient: true });
+    expect([record.data["w"], record.data["h"]]).toEqual([320, 240]);
+    expect([s.w, s.h]).toEqual([2560, 1440]);
+    // and the restore is an ordinary size, which stores the widget's own size again
+    floatie(record).size(320, 240);
+    expect([s.w, s.h]).toEqual([320, 240]);
+  });
+
   it("writes the newest copy of the record, not the one it was made with", () => {
     // A folder re-reads its record on every change elsewhere; a session left holding the
     // first copy would write a position nothing reads.

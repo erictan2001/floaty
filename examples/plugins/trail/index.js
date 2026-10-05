@@ -358,6 +358,16 @@ export default {
     let pageEl;
     let pageOpen = false;
     let page = 1;
+    /**
+     * Where the panel lives and how big it is, taken when the page opened.
+     *
+     * A restore must not read its destination out of the record it is restoring
+     * *from*: the record is a copy the widget read when it mounted, and the stretch
+     * over the desktop is not the panel's size — anything saved while the page is
+     * open would hand the panel the whole screen. This is the same snapshot
+     * `openMode` takes for the drawing surface, and the same reason.
+     */
+    let pageAt = null;
 
     const pageCount = () => Math.max(1, Math.ceil(saves().length / PAGE));
 
@@ -374,8 +384,20 @@ export default {
       if (pageEl) pageEl.remove();
       pageEl = undefined;
       panel.style.display = "";
-      api.setSize(id, rec.data.w || PANEL.w, rec.data.h || PANEL.h);
-      api.setPos(id, rec.x, rec.y);
+      // the panel is a panel again, at the size and place it had before the page opened
+      if (pageAt) {
+        api.setSize(id, pageAt.w, pageAt.h);
+        api.setPos(id, pageAt.x, pageAt.y);
+        // and write that down, for the reason `finish` gives
+        rec.x = pageAt.x;
+        rec.y = pageAt.y;
+        rec.data.w = pageAt.w;
+        rec.data.h = pageAt.h;
+        pageAt = null;
+      } else {
+        api.setSize(id, rec.data.w || PANEL.w, rec.data.h || PANEL.h);
+        api.setPos(id, rec.x, rec.y);
+      }
     };
 
     const onPageKey = (e) => {
@@ -528,9 +550,15 @@ export default {
         rec.y = fresh.y;
         rec.data = fresh.data || rec.data;
       }
+      // the panel's own place and size, taken before the stretch — this is what closing
+      // restores, never the record as it stands while the page is open
+      pageAt = { x: rec.x, y: rec.y, w: rec.data.w || PANEL.w, h: rec.data.h || PANEL.h };
       // transient: the slot is stretched to catch the mouse, not moved by the user
       api.setPos(id, area.x, area.y, { transient: true });
-      api.setSize(id, area.w, area.h);
+      // transient for the same reason: the slot is stretched to cover the desktop, and
+      // that is not the panel's size. Without it the record's w/h become the monitor's,
+      // and every restore that reads them back hands the panel the whole screen.
+      api.setSize(id, area.w, area.h, { transient: true });
       panel.style.display = "none";
       pageEl = document.createElement("div");
       pageEl.className = "tr-page";
@@ -696,7 +724,9 @@ export default {
       if (!silent) {
         // transient: the slot is stretched to catch the mouse, not moved by the user
         api.setPos(id, area.x, area.y, { transient: true });
-        api.setSize(id, area.w, area.h);
+        // and transient for the same reason: this is the panel stretched over the
+        // desktop, so the slot's size here is not the panel's size
+        api.setSize(id, area.w, area.h, { transient: true });
         // The surface is its own thing. The panel — header, hint, buttons — goes away for
         // as long as a mode is open, so what you are looking at is a drawing surface and
         // not this widget stretched over the desktop. The slot itself stays (it is what
