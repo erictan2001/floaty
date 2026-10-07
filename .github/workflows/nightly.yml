@@ -21,9 +21,9 @@ name: nightly
 # What runs here, and why most of it cannot run on a hosted runner
 # ---------------------------------------------------------------------------------------
 #
-# **Every probe in `verify/`.** There are nine that are checks (the other four files in the
+# **Every probe in `verify/`.** There are ten that are checks (the other four files in the
 # folder are the shared CDP client, the runtime, the `app-ready` gate, and this repo's own
-# README). Three need only a dev server and a headless Chrome of their own; six drive the
+# README). Three need only a dev server and a headless Chrome of their own; seven drive the
 # *running* app over its debug port (9222).
 #
 #   verify:panes       (verify/panes.mjs)       every settings pane, IPC stubbed, own Chrome.
@@ -44,6 +44,10 @@ name: nightly
 #                                                 once, and the desktop is not rearranged for a
 #                                                 reported shape until that shape has stopped
 #                                                 changing.
+#   verify:image-thumbnail (verify/image-thumbnail.mjs) four generated images added as real
+#                                                 floaties, then each record's icon read back:
+#                                                 its own picture, not the generic glyph.
+#                                                 Deletes the records on the way out.
 #   verify:drag        (verify/drag.mjs)        the app AND two overlays, one per screen: a drag
 #                                                 across a screen boundary is the entire point (the
 #                                                 bug it exists for only exists on two screens at
@@ -62,9 +66,9 @@ name: nightly
 #
 # A hosted `windows-latest` runner has no desktop to put an app on: no shell, no second screen,
 # an empty store, no floaties anywhere — which is exactly why `ci.yml` keeps `verify:app` out of
-# the pull-request tier. So on a scheduled run there is nothing for these seven to talk to.
+# the pull-request tier. So on a scheduled run there is nothing for these eight to talk to.
 #
-# One trap decides how they are run here. Six of the seven (`presence`, `redo`, `stranded`,
+# One trap decides how they are run here. Six of the eight (`presence`, `redo`, `stranded`,
 # `panel-drag`, `arrangement`, and `drag` where it needs two screens) open the debug port at the
 # top of the file, before they can decide
 # anything, so with nothing on that port they die on an unhandled rejection and exit **1** — the
@@ -74,7 +78,7 @@ name: nightly
 # a failure when an app was actually there. Everything else is recorded as a skip with the probe's
 # own words, and the whole log of each run is in the step.
 #
-# To run the seven for real, dispatch this workflow with `start_app: true` from a runner that has
+# To run the eight for real, dispatch this workflow with `start_app: true` from a runner that has
 # a desktop: the app is then started first — `npm run tauri dev` with
 # `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, the same incantation
 # verify/README.md gives for a local run — and from then on exit 1 fails the night. The three
@@ -308,7 +312,7 @@ jobs:
 
           # The gate, before any probe is read. `app-ready` exits 2 when there is no live page on
           # the port, which is the difference between "there is no app" and "the app is wrong" —
-          # of the seven exit 1 when they cannot open the port at all (see the note at the top
+          # of the eight exit 1 when they cannot open the port at all (see the note at the top
           # of this file), and that must not be mistaken for a failed check.
           app_up=0
           if node verify/app-ready.mjs --port 9222 --want 1 --timeout 30; then
@@ -353,6 +357,7 @@ jobs:
 
           run_probe verify:app         "the running app on port 9222"
           run_probe verify:arrangement "the running app on port 9222"
+          run_probe verify:image-thumbnail "the running app on port 9222"
           run_probe verify:drag        "the running app and two screens"
           run_probe verify:presence    "the running app, two screens and a free desktop"
           run_probe verify:redo        "the running app and a file floatie to merge"
@@ -366,7 +371,7 @@ jobs:
             exit 1
           fi
           if [ "$app_up" = 0 ]; then
-            echo "no app on the debug port, so none of the seven could be probed. That is expected"
+            echo "no app on the debug port, so none of the eight could be probed. That is expected"
             echo "here — a hosted runner has no desktop to put an app on, the same reason ci.yml"
             echo "keeps verify:app out of the pull-request tier. Dispatch this workflow with"
             echo "start_app: true from a runner that has a desktop to run them for real."

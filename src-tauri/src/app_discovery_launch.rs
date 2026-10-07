@@ -324,13 +324,54 @@ public static class IconFetch {
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
     public static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out object ppv);
 
+    // SIIGBF flags. ICONONLY means "the icon, never the thumbnail" - which is exactly
+    // right for pdf/txt/zip/folders, whose registered resource is a 32px bitmap and whose
+    // jumbo glyph only the shell can hand back, and exactly wrong for an image file: for a
+    // jpg/png/gif the "icon" *is* the generic image-type glyph, and the picture itself lives
+    // in the thumbnail. Measured over five real files (jpg, gif, bmp, two pngs), ICONONLY
+    // returned the identical 256x256 19584-byte glyph for all five, while RESIZETOFIT
+    // returned a distinct picture per file at the file's own aspect ratio.
+    const int SIIGBF_RESIZETOFIT     = 0x00;
+    const int SIIGBF_BIGGERSIZEOK    = 0x01;
+    const int SIIGBF_ICONONLY        = 0x04;
+    const int SIIGBF_THUMBNAILONLY   = 0x08;
+    const int SIIGBF_THUMBNAILANDICON = 0x10;
+
+    public static bool IsImageExtension(string path) {
+        string ext = System.IO.Path.GetExtension(path) ?? "";
+        return ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".png", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".gif", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".bmp", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".webp", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".tif", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".tiff", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static IntPtr GetShellImageHandle(string path, int px) {
+        return GetShellImageHandle(path, px, IsImageExtension(path));
+    }
+
+    public static IntPtr GetShellImageHandle(string path, int px, bool imageFile) {
         Guid iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");
         object o;
         SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out o);
         var factory = (IShellItemImageFactory)o;
         IntPtr hbm;
-        factory.GetImage(new SIZE { cx = px, cy = px }, 4, out hbm); // 4 = SIIGBF_ICONONLY
+        // An image asks for both and lets the shell prefer the picture; a thumbnail-only
+        // request fails outright for types that have no thumbnail, so it is the fallback,
+        // not the first try. BIGGERSIZEOK lets a small image come back at its own size
+        // rather than being blown up to the requested square.
+        int flags = imageFile
+            ? (SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK | SIIGBF_THUMBNAILANDICON)
+            : SIIGBF_ICONONLY;
+        factory.GetImage(new SIZE { cx = px, cy = px }, flags, out hbm);
+        if (imageFile && hbm == IntPtr.Zero) {
+            // Some image types (a .webp, a .tif) have no thumbnail provider at all.
+            hbm = IntPtr.Zero;
+            factory.GetImage(new SIZE { cx = px, cy = px }, SIIGBF_THUMBNAILONLY, out hbm);
+        }
         return hbm;
     }
 
@@ -435,6 +476,50 @@ function Get-ShellImageB64($path) {
     finally { if ($ms) { $ms.Dispose() } }
 }
 
+# An image's icon *is* the picture, so decode the file. This is the route that cannot be
+# refused by the platform: the shell's thumbnail handler declines some perfectly ordinary
+# files (measured: a 1100x750 png and a 128x128 png both came back as the 32px type icon
+# even when asked for a thumbnail explicitly), and the answer then fell through to
+# PrivateExtractIcons, which handed back the same 32px glyph every time. GDI+ reads jpg,
+# png, gif, bmp and tiff directly, so the picture never depends on a thumbnail provider.
+# Downscaled to 256 on the long edge, never up: a 32px source stays 32px rather than being
+# blown up into a blurry square. The destination bitmap is allocated as 32bppArgb so an
+# alpha channel survives the save - System.Drawing's Bitmap.FromHbitmap throws it away,
+# which is what turned shell icons into black squares.
+function Get-ImageFileB64($filePath) {
+    if (-not [IconFetch]::IsImageExtension($filePath)) { return $null }
+    if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { return $null }
+    $src = $null; $bmp = $null; $scaled = $null; $out = $null
+    try {
+        # Through memory, not the path: a file being written underneath us then fails the
+        # decode cleanly instead of throwing a sharing violation.
+        $bytes = [System.IO.File]::ReadAllBytes($filePath)
+        $src = New-Object IO.MemoryStream($bytes, $false)
+        $bmp = New-Object System.Drawing.Bitmap($src)
+        $long = [Math]::Max($bmp.Width, $bmp.Height)
+        if ($long -gt 256) {
+            $w = [int][Math]::Max(1, [Math]::Round($bmp.Width * 256.0 / $long))
+            $h = [int][Math]::Max(1, [Math]::Round($bmp.Height * 256.0 / $long))
+            $scaled = New-Object System.Drawing.Bitmap($w, $h)
+            $g = [System.Drawing.Graphics]::FromImage($scaled)
+            try {
+                $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                $g.DrawImage($bmp, (New-Object Drawing.Rectangle(0, 0, $w, $h)))
+            } finally { $g.Dispose() }
+            $bmp.Dispose(); $bmp = $scaled
+        }
+        $out = New-Object IO.MemoryStream
+        $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+        return [Convert]::ToBase64String($out.ToArray())
+    } catch { return $null }
+    finally {
+        if ($bmp) { $bmp.Dispose() }
+        if ($src) { $src.Dispose() }
+        if ($out) { $out.Dispose() }
+    }
+}
+
 # Directories have no file to extract from, so ask the shell for their glyph.
 function Get-DirIconB64($path) {
     $shellImg = Get-ShellImageB64 $path
@@ -502,6 +587,19 @@ function Get-IconB64($filePath) {
             $ms.Dispose(); $bmp.Dispose()
             return $res
         } catch {}
+    }
+
+    # An image has no icon inside it to contest: whatever the shell returns for it *is* the
+    # picture, and it comes back at the file's own aspect ratio rather than in a square
+    # frame. Take it as it is. The ArtSpanPercent contest below is for deciding between two
+    # candidate *icons* for an app or a document type; a photo with a white border legitimately
+    # covers less than 60% of its frame, and rejecting it there would hand a real photograph
+    # back in exchange for the generic image glyph.
+    if ([IconFetch]::IsImageExtension($filePath)) {
+        $img = Get-ImageFileB64 $filePath
+        if (-not [string]::IsNullOrEmpty($img)) { return $img }
+        $img = Get-ShellImageB64 $filePath
+        if (-not [string]::IsNullOrEmpty($img)) { return $img }
     }
 
     # Two routes disagree for some apps. The shell returns the app's real 256px
@@ -874,8 +972,143 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
     }
 }
 
+#[cfg(test)]
+mod image_thumbnail_tests {
+    use super::*;
+    use crate::icons::fingerprint;
+
+    /// An image file must come back as its own picture, not as the shell's generic glyph
+    /// for its file type.
+    ///
+    /// This ran red first. The resolver asked for `SIIGBF_ICONONLY`, which by definition
+    /// returns the icon and never the thumbnail - and for a jpg/png/gif the shell's "icon"
+    /// is the generic image-type glyph, while the picture itself is the thumbnail. Measured
+    /// over five real files, every one of them came back as the identical 256x256
+    /// 19584-byte glyph, so a photo, a screenshot and an animation were all the same
+    /// picture. The symptom read as a caching fault because `icons.rs` keys its store by
+    /// content, so the wrong bytes survived a restart and looked remembered.
+    #[test]
+    fn an_image_resolves_to_its_own_picture() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let candidates = [
+            repo.join("assets/icon.png"),
+            repo.join("screenshots/desktop-screenshot.png"),
+            repo.join("src-tauri/icons/128x128.png"),
+        ];
+        let present: Vec<String> = candidates
+            .iter()
+            .filter(|p| p.is_file())
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        assert!(!present.is_empty(), "no image files in the repo to test against");
+
+        let resolved = resolve_icons_batch_raw(&present, true);
+        assert_eq!(
+            resolved.len(),
+            present.len(),
+            "every image must resolve to something"
+        );
+
+        // Two different images must not come back as the same bytes: that is exactly what
+        // the generic glyph did.
+        let mut seen: Vec<String> = Vec::new();
+        for path in &present {
+            let icon = resolved
+                .get(path)
+                .unwrap_or_else(|| panic!("no icon for {}", path));
+            let bytes = icons::read(icon)
+                .unwrap_or_else(|| panic!("icon for {} is not readable png", path));
+            let (w, h) = icons::pixel_size(icon)
+                .unwrap_or_else(|| panic!("icon for {} has no readable size", path));
+            println!("  {} -> {}x{} {}b {}", path, w, h, bytes.len(), fingerprint(&bytes));
+
+            // The generic glyph is 32x32 whatever the file is. A picture comes back at the
+            // file's own dimensions, downscaled to fit 256 on the long edge and never up.
+            assert!(
+                w > 32 && h > 32,
+                "{} resolved to {w}x{h} — that is the generic 32px type icon, not the picture",
+                path
+            );
+            assert!(
+                w <= 256 && h <= 256,
+                "{} resolved to {w}x{h}, larger than the file could need",
+                path
+            );
+            let fp = fingerprint(&bytes);
+            assert!(
+                !seen.contains(&fp),
+                "{} and an earlier image resolved to identical bytes — the same glyph twice",
+                path
+            );
+            seen.push(fp);
+        }
+    }
+
+
+    /// The flag is the whole fix, and it ships as C# source inside the PowerShell the
+    /// resolver runs — which Rust cannot call, but can read. `include_str!` takes this
+    /// file's own bytes, so the assertions are about the script that actually ships rather
+    /// than a copy that could drift.
+    ///
+    /// Both mistakes are worth guarding: asking *every* file for ICONONLY is this bug, and
+    /// dropping ICONONLY everywhere is the other one — that flag is what beats the 32px
+    /// registered icon for pdf/txt/zip/folders, and losing it re-softens every document
+    /// tile in the app.
+    #[test]
+    fn the_flag_is_chosen_by_file_type() {
+        let source = include_str!("app_discovery_launch.rs");
+
+        assert!(
+            source.contains("SIIGBF_THUMBNAILANDICON"),
+            "the resolver no longer asks for a thumbnail at all"
+        );
+        assert!(
+            source.contains("IsImageExtension"),
+            "the flag is no longer chosen by file type"
+        );
+
+        // The non-image branch must keep ICONONLY, not gain THUMBNAILANDICON.
+        let icon_only = source
+            .lines()
+            .map(str::trim)
+            .find(|l| l.ends_with(": SIIGBF_ICONONLY;"))
+            .unwrap_or_else(|| panic!("no non-image branch asking for ICONONLY"));
+        assert!(
+            !icon_only.contains("THUMBNAIL"),
+            "the non-image branch now asks for a thumbnail: {icon_only:?}"
+        );
+
+        // An image must never be asked for icon-only.
+        let image = source
+            .lines()
+            .map(str::trim)
+            .find(|l| l.ends_with("SIIGBF_THUMBNAILANDICON)"))
+            .unwrap_or_else(|| panic!("no image branch asking for THUMBNAILANDICON"));
+        assert!(
+            !image.contains("ICONONLY"),
+            "the image branch still asks for icon-only: {image:?}"
+        );
+
+        // And the image extensions must cover what a photo actually is on disk.
+        for ext in [
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff",
+        ] {
+            assert!(
+                source.contains(&format!("\"{ext}\"")) || source.contains(ext),
+                "{ext} is not recognised as an image extension"
+            );
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Result<(), String> {
+    // No visibility filter here, and deliberately so: this runs exactly when the folder is
+    // open, which is the only moment its items are on the screen. Everything it is asked for
+    // is something the user is looking at right now.
     let needed: Vec<String> = store::with(&app, |s| -> Result<Vec<String>, String> {
         let rec = s.get(&folder_id).ok_or("folder not found")?;
         let items = folder_items(rec);

@@ -19,6 +19,7 @@ testing.
 | `npm run verify:panes` | renders all six settings panes from the dev server with the Tauri IPC stubbed, one Chrome per run, and fails on an exception, a console error, a pane that drew nothing, or a row wider than the window | `npm run dev` |
 | `npm run verify:app` | checks the *running* app over its debug port: mounted slots vs records, icons that failed to load, whether the page believes it is visible, console errors | see below |
 | `npm run verify:arrangement` | sends the display-change message Windows sends, to every window, and reads the log back: the windows and pages must refit at once, and the *desktop* must not be rearranged for the reported shape until that shape has stopped changing | the running app |
+| `npm run verify:image-thumbnail` | adds four generated images as real floaties through the same path a dropped photo takes, then reads back the icon each record holds: its own picture at its own proportions within 256px, distinct bytes per file — and deletes the records on the way out | the running app |
 | `npm run verify:palette` | renders the launcher palette with its search stubbed, types into it, and asserts the keys do what they say | `npm run dev` |
 | `npm run verify:drag` | drags a real floatie from one screen to the other with real input events, then checks it arrived, landed where the pointer held it, is drawn by exactly one window, and that no file was merged on the way | see below, two screens |
 | `npm run verify:trail-page` | loads the real trail module into the real overlay with the IPC stubbed, then opens the save page and the drawing surface, escapes each, and checks the panel came back to its own size and place — and that no save along the way recorded the screen's size as the panel's | nothing; it starts its own vite |
@@ -184,7 +185,9 @@ fixture store starts empty — a file tile, a folder tile, nothing else — so a
 first act is "find the sysmon panel" finds nothing to look at, and a probe that verifies
 *the gap between two screens* cannot invent the screens. `drag`, `panel-drag` and `stranded`
 still need the machine's own monitors for that reason, and they are also the three that move
-things a person owns. The split is deliberate: a fixture is the default, and the real desktop
+things a person owns. `image-thumbnail` is the fourth that touches the real desktop — it adds
+only floaties it generated itself, and deletes each record on the way out — but it needs no
+second screen for that. The split is deliberate: a fixture is the default, and the real desktop
 is for what a directory cannot fake — two screens at different scales, a foreground fullscreen
 window, the desktop window itself, the Recycle Bin, a global hotkey another app may hold.
 

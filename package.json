@@ -20,6 +20,7 @@
     "verify:redo": "node verify/redo.mjs",
     "verify:stranded": "node verify/stranded.mjs",
     "verify:arrangement": "node verify/arrangement.mjs",
+    "verify:image-thumbnail": "node verify/image-thumbnail.mjs",
     "verify:updater": "node scripts/verify-updater-feed.mjs --artifacts",
     "verify:panel-drag": "node verify/panel-drag.mjs",
     "verify:trail-page": "node verify/trail-page.mjs",

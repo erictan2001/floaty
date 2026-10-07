@@ -246,7 +246,7 @@ pub(crate) fn floaty_confirm_root(root: String, app: AppHandle) -> RootGuard {
 /// Bump when the icon resolver changes what it produces, so already-stored
 /// icons are refreshed once. v2: shell item image + alpha-preserving PNG.
 /// v3: pick the route whose artwork actually fills the frame.
-pub(crate) const ICON_PIPELINE: u32 = 4;
+pub(crate) const ICON_PIPELINE: u32 = 5;
 
 /// The launcher key. Ctrl+Alt+Space is free on a stock Windows, and unlike
 /// Alt+Space (the window menu) or Ctrl+Space (the IME switcher on a CJK install)
