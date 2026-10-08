@@ -182,6 +182,9 @@ pub(crate) fn scan_models_blocking(root: String) -> Vec<Live2dModelEntry> {
 
 #[tauri::command]
 pub(crate) async fn floaty_scan_models(root: String, app: AppHandle) -> Vec<Live2dModelEntry> {
+    if !root.trim().is_empty() {
+        allow_asset_path(&app, &root);
+    }
     let out = tauri::async_runtime::spawn_blocking(move || scan_models_blocking(root))
         .await
         .unwrap_or_default();
@@ -195,6 +198,9 @@ pub(crate) fn floaty_set_widget_model(
     model: String,
     app: AppHandle,
 ) -> Result<(), String> {
+    if !model.trim().is_empty() {
+        allow_asset_path(&app, &model);
+    }
     store::with(&app, |s| -> Result<(), String> {
         // Read first, write second: a widget that is not a live2d one is refused before
         // anything is touched, exactly as when the record was reached through `get_mut`.

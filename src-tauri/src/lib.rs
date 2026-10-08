@@ -233,6 +233,16 @@ pub fn run() {
             }
             // the store we just loaded is known good: pin it as the backup
             refresh_backup(&store_file(&handle), true);
+
+            // Dynamically scope models for any restored Live2D widgets
+            for rec in &saved {
+                if rec.kind == "live2d" {
+                    if let Some(m) = rec.data.get("model").and_then(|v| v.as_str()) {
+                        allow_asset_path(&handle, m);
+                    }
+                }
+            }
+
             let mut reclassified = 0usize;
             store::with(&handle, |s| {
                 let mut max_n: u64 = 0;
@@ -300,6 +310,12 @@ pub fn run() {
             // moved (an update in place, a new build), which a toggle alone cannot
             // do.
             let boot = load_settings(&handle);
+            if !boot.files_root.trim().is_empty() {
+                allow_asset_path(&handle, &boot.files_root);
+            }
+            if !boot.live2d_root.trim().is_empty() {
+                allow_asset_path(&handle, &boot.live2d_root);
+            }
             if !set_start_on_boot(&handle, boot.start_on_boot) {
                 log_line(&handle, "autostart: could not reconcile the startup entry");
             }
@@ -540,6 +556,21 @@ mod tests {
 
     /// A settings file written before `start_on_boot` existed has to keep loading:
     /// the new field defaults to off, and everything the file did say survives.
+    #[test]
+    fn scope_target_for_path_resolves_directories_and_files() {
+        let dir = std::path::Path::new("D:\\Live2DModels");
+        assert_eq!(scope_target_for_path(dir), dir);
+
+        let file = std::path::Path::new("D:\\Live2DModels\\hiyori.model3.json");
+        assert_eq!(
+            scope_target_for_path(file),
+            std::path::Path::new("D:\\Live2DModels")
+        );
+
+        let desktop_dir = std::path::Path::new("D:\\CustomDesktop");
+        assert_eq!(scope_target_for_path(desktop_dir), desktop_dir);
+    }
+
     #[test]
     fn a_merge_undo_only_moves_the_record_that_was_dragged() {
         // the folder the file went into did not move, so the remembered origin is not its

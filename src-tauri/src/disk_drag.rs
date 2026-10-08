@@ -970,6 +970,7 @@ pub(crate) fn sync_root(
     if !base_path.is_dir() {
         return Err(format!("'{}' is not a valid directory", target_root));
     }
+    allow_asset_path(&app, &target_root);
 
     // Auto-enable plugins if disabled
     let s = load_settings(&app);
