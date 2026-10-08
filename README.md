@@ -79,4 +79,4 @@ it does not do yet.
 
 ## License
 
-See [License](docs/DEVELOPING.md#license).
+See [LICENSE](LICENSE).

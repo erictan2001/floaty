@@ -1,0 +1,34 @@
+name: Feature Request
+description: Propose an idea or enhancement for Floaty
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea for Floaty? We appreciate suggestions! Note that core desktop invariants (desktop integrity, no unnecessary network dependencies) are prioritized.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem or limitation?
+      placeholder: I'm always frustrated when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe what you would like Floaty to do.
+      placeholder: A clear description of the desired behavior or widget...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you considered any alternative solutions or workarounds?
+      placeholder: What other approaches did you think of?

@@ -1,0 +1,55 @@
+name: Bug Report
+description: Report a defect, crash, or unexpected behavior in Floaty
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! Please verify you are running the latest version of Floaty before submitting.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what went wrong.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How can maintainers reproduce this behavior?
+      placeholder: |
+        1. Open Floaty on desktop
+        2. Drag file 'test.txt' onto ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics & Log Information
+      description: |
+        In Floaty, go to **Settings → Diagnostics** to copy the log tail and monitor layout information.
+      placeholder: Paste log lines or diagnostics summary here...
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows version, monitor count & scaling, and Floaty version.
+      placeholder: e.g. Windows 11 23H2, Floaty v0.2.3, 2 monitors (100% and 150% scaling)
+    validations:
+      required: true
