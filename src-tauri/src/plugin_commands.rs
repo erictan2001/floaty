@@ -28,7 +28,8 @@ pub(crate) fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
     if let Ok(json) = serde_json::to_string_pretty(&s) {
         write_text_atomic(&settings_file(app), &json);
     }
-    app.emit("floaty-plugins-changed", &plugin_listing(app)).ok();
+    app.emit("floaty-plugins-changed", &plugin_listing(app))
+        .ok();
 }
 
 #[tauri::command]
@@ -50,8 +51,7 @@ pub(crate) fn plugin_listing(app: &AppHandle) -> Vec<PluginInfo> {
         // already been through the grammar, so nothing unapproved is being read
         // today — but the answer to "is this approved" is a *path*, and a path
         // assembled from a name is only as safe as the check above it.
-        plugins::is_plugin_folder_name(id)
-            && plugin_approved(&settings, &dir.join(id), id)
+        plugins::is_plugin_folder_name(id) && plugin_approved(&settings, &dir.join(id), id)
     })
 }
 
@@ -132,7 +132,9 @@ fn set_approval(app: &AppHandle, id: &str, trusted: bool) -> Result<(), String> 
     let mut settings = load_settings(app);
     if trusted {
         if !remember_approval(&mut settings, &plugins_dir(app).join(id), id) {
-            return Err(format!("{id}'s folder could not be read, so it was not approved"));
+            return Err(format!(
+                "{id}'s folder could not be read, so it was not approved"
+            ));
         }
     } else {
         settings.plugin_trust.remove(id);
@@ -179,7 +181,6 @@ pub(crate) fn floaty_plugin_trust(id: String, trusted: bool, app: AppHandle) -> 
     reload_plugin_windows(&app);
     Ok(())
 }
-
 
 /// Where user plugins live: one folder each, `plugin.json` + its module.
 ///
@@ -251,8 +252,11 @@ pub(crate) async fn floaty_install_plugin(
     // Plugins tab.
     {
         let mut settings = load_settings(&app);
-        let recorded =
-            remember_approval(&mut settings, &plugins_dir(&app).join(&report.id), &report.id);
+        let recorded = remember_approval(
+            &mut settings,
+            &plugins_dir(&app).join(&report.id),
+            &report.id,
+        );
         if recorded {
             write_settings(&app, &settings);
             log_line(
@@ -278,7 +282,11 @@ pub(crate) async fn floaty_install_plugin(
         &app,
         &format!(
             "plugins: {} {} v{} from {} ({} files, {} installed [{}]{})",
-            if report.replaced { "replaced" } else { "installed" },
+            if report.replaced {
+                "replaced"
+            } else {
+                "installed"
+            },
             report.id,
             report.version,
             path,
@@ -301,7 +309,10 @@ pub(crate) async fn floaty_install_plugin(
 /// The install confirm is built on this: an archive is described by the same code
 /// that would install it, so what is offered and what lands cannot disagree.
 #[tauri::command]
-pub(crate) async fn floaty_inspect_plugin(path: String, app: AppHandle) -> Result<plugin_install::ArchiveReport, String> {
+pub(crate) async fn floaty_inspect_plugin(
+    path: String,
+    app: AppHandle,
+) -> Result<plugin_install::ArchiveReport, String> {
     let archive = std::path::PathBuf::from(&path);
     let dir = plugins_dir(&app);
     tauri::async_runtime::spawn_blocking(move || plugin_install::inspect_archive(&archive, &dir))
@@ -326,7 +337,9 @@ pub(crate) async fn floaty_uninstall_plugin(
     // widget guard answer first hid it (measured: removing `note` complained about
     // the note floatie instead of about `note` being built in).
     if plugins::find(&id).is_some() {
-        return Err(format!("{id} is one of floaty's own widgets — it cannot be removed"));
+        return Err(format!(
+            "{id} is one of floaty's own widgets — it cannot be removed"
+        ));
     }
 
     let widgets: Vec<String> = store::with(&app, |s| {
@@ -344,11 +357,10 @@ pub(crate) async fn floaty_uninstall_plugin(
 
     let dir = plugins_dir(&app);
     let id_for_work = id.clone();
-    let report = tauri::async_runtime::spawn_blocking(move || {
-        plugin_install::uninstall(&id_for_work, &dir)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    let report =
+        tauri::async_runtime::spawn_blocking(move || plugin_install::uninstall(&id_for_work, &dir))
+            .await
+            .map_err(|e| e.to_string())??;
 
     // The records go the way any removal goes: out of the store, tombstoned so a
     // dying window cannot put them back, and hidden.
@@ -437,7 +449,11 @@ pub(crate) fn floaty_set_plugin_enabled(id: String, enabled: bool, app: AppHandl
 }
 
 #[tauri::command]
-pub(crate) fn floaty_add_launcher(name: String, path: String, app: AppHandle) -> Result<WidgetRecord, String> {
+pub(crate) fn floaty_add_launcher(
+    name: String,
+    path: String,
+    app: AppHandle,
+) -> Result<WidgetRecord, String> {
     if path.trim().is_empty() {
         return Err("empty path".into());
     }
@@ -447,5 +463,10 @@ pub(crate) fn floaty_add_launcher(name: String, path: String, app: AppHandle) ->
     let (name, path) = app_into_root(&app, &name, &path);
     let data = serde_json::json!({ "name": name, "target": path.clone() });
     // spawn near the top so it falls with gravity on arrival
-    create_record_with(&app, kind_for_path(std::path::Path::new(&path), false), data, Some((200, 40)))
+    create_record_with(
+        &app,
+        kind_for_path(std::path::Path::new(&path), false),
+        data,
+        Some((200, 40)),
+    )
 }

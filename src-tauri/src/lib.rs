@@ -27,14 +27,14 @@ pub(crate) use logging::*;
 mod store;
 pub(crate) use store::*;
 
-mod global_floating_settings;
-pub(crate) use global_floating_settings::*;
+mod settings_sync;
+pub(crate) use settings_sync::*;
 
 mod start_on_boot;
 pub(crate) use start_on_boot::*;
 
-mod desktop_window_pinning_stay_on_desktop_win_d;
-pub(crate) use desktop_window_pinning_stay_on_desktop_win_d::*;
+mod window_pin;
+pub(crate) use window_pin::*;
 
 mod sleep_resume;
 pub(crate) use sleep_resume::*;
@@ -51,8 +51,8 @@ pub(crate) use plugin_commands::*;
 mod folders;
 pub(crate) use folders::*;
 
-mod putting_dragged_items_on_disk;
-pub(crate) use putting_dragged_items_on_disk::*;
+mod disk_drag;
+pub(crate) use disk_drag::*;
 
 mod live2d_model_library;
 pub(crate) use live2d_model_library::*;
@@ -66,17 +66,20 @@ pub(crate) use launcher_palette::*;
 mod undo_commands;
 pub(crate) use undo_commands::*;
 
-mod real_file_operations_desktop_parity;
-pub(crate) use real_file_operations_desktop_parity::*;
+mod desktop_files;
+pub(crate) use desktop_files::*;
 
 mod diagnostics_commands;
 pub(crate) use diagnostics_commands::*;
 
-mod audio_visualizer;
-pub(crate) use audio_visualizer::*;
+pub(crate) use audio::{
+    floaty_audio_set_fps, floaty_audio_start, floaty_audio_status, floaty_audio_stop,
+};
 
-mod system_monitor;
-pub(crate) use system_monitor::*;
+pub(crate) use sysmon::{
+    floaty_sysmon_history, floaty_sysmon_set_interval, floaty_sysmon_start, floaty_sysmon_status,
+    floaty_sysmon_stop,
+};
 
 // ---------- app ----------
 // (probe build 2)
@@ -594,12 +597,18 @@ mod tests {
         }
 
         let report = root_preview(&dir.to_string_lossy(), false);
-        assert!(!report.confirmed, "the screen is up because nobody has answered");
+        assert!(
+            !report.confirmed,
+            "the screen is up because nobody has answered"
+        );
         assert!(report.exists);
         assert_eq!(report.items, 13, "1 folder + 12 files");
         assert_eq!(report.folders, 1);
         assert_eq!(report.files, 12);
-        assert_eq!(report.apps, 1, "the .lnk is the one that becomes an app floatie");
+        assert_eq!(
+            report.apps, 1,
+            "the .lnk is the one that becomes an app floatie"
+        );
         assert_eq!(report.names.len(), ROOT_GUARD_NAMES);
         assert_eq!(report.more, 5, "the rest are counted, not listed");
 
@@ -640,8 +649,14 @@ mod tests {
         .expect("the shape of a real pre-change settings file");
         migrate_float_settings(&mut old);
         let s: FloatSettings = serde_json::from_value(old.clone()).expect("must still parse");
-        assert_eq!(s.float_amplitude, 8.0, "2x of 4px is what the user was looking at");
-        assert_eq!(s.float_spread, 12.0, "0-200 scale becomes percent of one cycle");
+        assert_eq!(
+            s.float_amplitude, 8.0,
+            "2x of 4px is what the user was looking at"
+        );
+        assert_eq!(
+            s.float_spread, 12.0,
+            "0-200 scale becomes percent of one cycle"
+        );
         assert_eq!(s.float_period, 6.0, "nothing else moves");
         assert!(
             !old.as_object().unwrap().contains_key("floatiness"),
@@ -649,7 +664,10 @@ mod tests {
         );
         migrate_float_settings(&mut old);
         let again: FloatSettings = serde_json::from_value(old).expect("parses again");
-        assert_eq!(again.float_amplitude, 8.0, "a second pass must not fold again");
+        assert_eq!(
+            again.float_amplitude, 8.0,
+            "a second pass must not fold again"
+        );
 
         // a file that already speaks the new scale is left alone
         let mut new: serde_json::Value =
@@ -758,7 +776,10 @@ mod tests {
     fn test_kind_for_path() {
         use std::path::Path;
         // directories are folders
-        assert_eq!(kind_for_path(Path::new("C:/x/Desktop/Stuff"), true), "folder");
+        assert_eq!(
+            kind_for_path(Path::new("C:/x/Desktop/Stuff"), true),
+            "folder"
+        );
         // launchable entries are apps
         for p in [
             "C:/Users/e/Desktop/Code.lnk",
@@ -766,7 +787,11 @@ mod tests {
             "C:/Users/e/Desktop/site.url",
             "C:/tools/run.cmd",
         ] {
-            assert_eq!(kind_for_path(Path::new(p), false), "app", "{p} should be an app");
+            assert_eq!(
+                kind_for_path(Path::new(p), false),
+                "app",
+                "{p} should be an app"
+            );
         }
         // loose documents/images/archives are files
         for p in [
@@ -776,7 +801,11 @@ mod tests {
             "C:/Users/e/Desktop/archive.zip",
             "C:/Users/e/Desktop/no-extension",
         ] {
-            assert_eq!(kind_for_path(Path::new(p), false), "file", "{p} should be a file");
+            assert_eq!(
+                kind_for_path(Path::new(p), false),
+                "file",
+                "{p} should be a file"
+            );
         }
         assert!(is_path_kind("app") && is_path_kind("file"));
         assert!(!is_path_kind("folder") && !is_path_kind("note"));
@@ -806,16 +835,25 @@ mod tests {
         );
     }
 
-    fn scratch_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "floaty_{tag}_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    struct TestDir(tempfile::TempDir);
+    impl std::ops::Deref for TestDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+    impl AsRef<std::path::Path> for TestDir {
+        fn as_ref(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+
+    fn scratch_dir(tag: &str) -> TestDir {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("floaty_{tag}_"))
+            .tempdir()
+            .unwrap();
+        TestDir(dir)
     }
 
     /// What the shell says a .lnk points at — the same COM object Explorer uses,
@@ -896,9 +934,15 @@ mod tests {
 
     #[test]
     fn shortcut_names_are_usable_file_names() {
-        assert_eq!(shortcut_file_name("Visual Studio Code"), "Visual Studio Code.lnk");
+        assert_eq!(
+            shortcut_file_name("Visual Studio Code"),
+            "Visual Studio Code.lnk"
+        );
         // characters Windows refuses in a name are dropped, not escaped
-        assert_eq!(shortcut_file_name("a/b\\c:d*e?f\"g<h>i|j"), "abcdefghij.lnk");
+        assert_eq!(
+            shortcut_file_name("a/b\\c:d*e?f\"g<h>i|j"),
+            "abcdefghij.lnk"
+        );
         // a label that is punctuation only still gets a usable name
         assert_eq!(shortcut_file_name("  ..  "), "Shortcut.lnk");
         // an app already named with its extension is not double-suffixed
@@ -944,7 +988,10 @@ mod tests {
             place_item_in_dir(&dir, &folder_item("notes.txt", &src), Some(&root)).unwrap();
 
         assert!(!src.exists(), "the original should have moved");
-        assert_eq!(std::path::PathBuf::from(&item.target), dir.join("notes.txt"));
+        assert_eq!(
+            std::path::PathBuf::from(&item.target),
+            dir.join("notes.txt")
+        );
         assert!(log.starts_with("moved into folder"), "{log}");
         // the new folder scans back with the moved file in it
         let items = scan_folder_items(&dir);
@@ -965,7 +1012,8 @@ mod tests {
         std::fs::write(&exe, b"MZ").unwrap();
 
         let dir = placement::create_new_folder(&root).unwrap();
-        let (item, log) = place_item_in_dir(&dir, &folder_item("Some App", &exe), Some(&root)).unwrap();
+        let (item, log) =
+            place_item_in_dir(&dir, &folder_item("Some App", &exe), Some(&root)).unwrap();
 
         assert!(exe.exists(), "the program must not be moved");
         let made = std::path::PathBuf::from(&item.target);
@@ -1019,12 +1067,16 @@ mod tests {
         std::fs::write(&lnk_src, b"shell-authored shortcut bytes").unwrap();
 
         let dir = placement::create_new_folder(&root).unwrap();
-        let (item, log) = place_item_in_dir(&dir, &folder_item("App", &lnk_src), Some(&root)).unwrap();
+        let (item, log) =
+            place_item_in_dir(&dir, &folder_item("App", &lnk_src), Some(&root)).unwrap();
 
         assert!(lnk_src.exists(), "the original shortcut stays where it was");
         let made = std::path::PathBuf::from(&item.target);
         assert_eq!(made, dir.join("App.lnk"));
-        assert_eq!(std::fs::read(&made).unwrap(), b"shell-authored shortcut bytes");
+        assert_eq!(
+            std::fs::read(&made).unwrap(),
+            b"shell-authored shortcut bytes"
+        );
         assert!(log.starts_with("shortcut in folder"), "{log}");
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1044,7 +1096,13 @@ mod tests {
 
     #[test]
     fn test_scan_folder_items() {
-        let temp_dir = std::env::temp_dir().join(format!("floaty_test_scan_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "floaty_test_scan_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let sub_dir = temp_dir.join("sub_folder");
@@ -1080,7 +1138,10 @@ mod tests {
         ];
 
         // sync: matched by target, and a 32px icon must survive the rescan
-        let mut rescanned = vec![item("a.txt", "C:\\d\\a.txt", ""), item("b.txt", "C:\\d\\b.txt", "")];
+        let mut rescanned = vec![
+            item("a.txt", "C:\\d\\a.txt", ""),
+            item("b.txt", "C:\\d\\b.txt", ""),
+        ];
         carry_icons_by_target(&old, &mut rescanned);
         assert_eq!(rescanned[0].icon, icon32);
         assert_eq!(rescanned[1].icon, "");
@@ -1093,7 +1154,13 @@ mod tests {
 
     #[test]
     fn test_disk_move_relative() {
-        let temp_dir = std::env::temp_dir().join(format!("floaty_test_move_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "floaty_test_move_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let folder_dir = temp_dir.join("MyFolder");
         std::fs::create_dir_all(&folder_dir).unwrap();
 
@@ -1178,7 +1245,12 @@ mod tests {
         write_text_atomic(&path, good);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
         assert!(!path.with_extension("tmp").exists());
-        assert_eq!(serde_json::from_str::<Vec<WidgetRecord>>(&std::fs::read_to_string(&path).unwrap()).unwrap().len(), 1);
+        assert_eq!(
+            serde_json::from_str::<Vec<WidgetRecord>>(&std::fs::read_to_string(&path).unwrap())
+                .unwrap()
+                .len(),
+            1
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1186,15 +1258,16 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_windows_startup_configuration() {
+        use windows::core::PCWSTR;
         use windows::Win32::System::Registry::{
             RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
             HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, REG_DWORD,
         };
-        use windows::core::PCWSTR;
 
-        let serialize: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
-            .encode_utf16()
-            .collect();
+        let serialize: Vec<u16> =
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
+                .encode_utf16()
+                .collect();
 
         // A REG_DWORD's state before this test touched it: `Some(v)` if it existed, `None`
         // if it did not.
@@ -1223,7 +1296,13 @@ mod tests {
                 match prior {
                     Some(value) => {
                         let bytes = value.to_ne_bytes();
-                        let _ = RegSetValueExW(key, PCWSTR(wide.as_ptr()), None, REG_DWORD, Some(&bytes));
+                        let _ = RegSetValueExW(
+                            key,
+                            PCWSTR(wide.as_ptr()),
+                            None,
+                            REG_DWORD,
+                            Some(&bytes),
+                        );
                     }
                     None => {
                         let _ = RegDeleteValueW(key, PCWSTR(wide.as_ptr()));
@@ -1240,7 +1319,15 @@ mod tests {
         let mut prior_idle = None;
         unsafe {
             let mut key = HKEY::default();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(serialize.as_ptr()), None, KEY_ALL_ACCESS, &mut key).is_ok() {
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(serialize.as_ptr()),
+                None,
+                KEY_ALL_ACCESS,
+                &mut key,
+            )
+            .is_ok()
+            {
                 prior_delay = read_dword(key, "StartupDelayInMSec");
                 prior_idle = read_dword(key, "WaitForIdleState");
                 let _ = RegCloseKey(key);
@@ -1253,10 +1340,19 @@ mod tests {
         // Verify Serialize key
         unsafe {
             let mut key = HKEY::default();
-            let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
-                .encode_utf16()
-                .collect();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), None, KEY_READ, &mut key).is_ok() {
+            let subkey: Vec<u16> =
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
+                    .encode_utf16()
+                    .collect();
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(subkey.as_ptr()),
+                None,
+                KEY_READ,
+                &mut key,
+            )
+            .is_ok()
+            {
                 let mut data = 0u32;
                 let mut data_len = 4u32;
                 let mut val_type = REG_DWORD;
@@ -1268,7 +1364,9 @@ mod tests {
                     Some(&mut val_type),
                     Some(&mut data as *mut u32 as *mut u8),
                     Some(&mut data_len),
-                ).is_ok() {
+                )
+                .is_ok()
+                {
                     assert_eq!(data, 0, "StartupDelayInMSec must be 0");
                 }
                 let idle_name: Vec<u16> = "WaitForIdleState\0".encode_utf16().collect();
@@ -1279,7 +1377,9 @@ mod tests {
                     Some(&mut val_type),
                     Some(&mut data as *mut u32 as *mut u8),
                     Some(&mut data_len),
-                ).is_ok() {
+                )
+                .is_ok()
+                {
                     assert_eq!(data, 0, "WaitForIdleState must be 0");
                 }
                 let _ = RegCloseKey(key);
@@ -1295,27 +1395,37 @@ mod tests {
             let run_subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Run\0"
                 .encode_utf16()
                 .collect();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(run_subkey.as_ptr()), None, KEY_ALL_ACCESS, &mut key).is_ok() {
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(run_subkey.as_ptr()),
+                None,
+                KEY_ALL_ACCESS,
+                &mut key,
+            )
+            .is_ok()
+            {
+                use windows::core::PWSTR;
                 use windows::Win32::System::Registry::{
                     RegDeleteValueW, RegEnumValueW, RegSetValueExW, REG_SZ,
                 };
-                use windows::core::PWSTR;
 
                 let floaty_name: Vec<u16> = "Floaty\0".encode_utf16().collect();
-                let present = RegQueryValueExW(
-                    key,
-                    PCWSTR(floaty_name.as_ptr()),
-                    None,
-                    None,
-                    None,
-                    None,
-                ).is_ok();
+                let present =
+                    RegQueryValueExW(key, PCWSTR(floaty_name.as_ptr()), None, None, None, None)
+                        .is_ok();
 
                 if !present {
                     let exe = std::env::current_exe().unwrap_or_default();
-                    let command: Vec<u16> = format!("\"{}\"\0", exe.display()).encode_utf16().collect();
+                    let command: Vec<u16> =
+                        format!("\"{}\"\0", exe.display()).encode_utf16().collect();
                     let bytes: Vec<u8> = command.iter().flat_map(|w| w.to_le_bytes()).collect();
-                    let _ = RegSetValueExW(key, PCWSTR(floaty_name.as_ptr()), None, REG_SZ, Some(&bytes));
+                    let _ = RegSetValueExW(
+                        key,
+                        PCWSTR(floaty_name.as_ptr()),
+                        None,
+                        REG_SZ,
+                        Some(&bytes),
+                    );
                     // the call under test again, now with something to promote
                     prioritize_run_key_entry();
                 }
@@ -1331,9 +1441,14 @@ mod tests {
                     None,
                     None,
                     None,
-                ).is_ok() {
+                )
+                .is_ok()
+                {
                     let first_name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
-                    assert_eq!(first_name, "Floaty", "Floaty must be at index 0 of the Run key");
+                    assert_eq!(
+                        first_name, "Floaty",
+                        "Floaty must be at index 0 of the Run key"
+                    );
                 } else {
                     panic!("the Run key has no values to enumerate");
                 }
@@ -1349,7 +1464,15 @@ mod tests {
             // leaves behind. Same shape as the Floaty entry just above: touch only what the
             // call under test needs, then take it back.
             let mut key = HKEY::default();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(serialize.as_ptr()), None, KEY_ALL_ACCESS, &mut key).is_ok() {
+            if RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(serialize.as_ptr()),
+                None,
+                KEY_ALL_ACCESS,
+                &mut key,
+            )
+            .is_ok()
+            {
                 restore_dword(key, "StartupDelayInMSec", prior_delay);
                 restore_dword(key, "WaitForIdleState", prior_idle);
                 let _ = RegCloseKey(key);
@@ -1456,7 +1579,10 @@ mod tests {
             }],
             vec![],
         );
-        assert!(step_changes_anything(&store, &before), "the position differs");
+        assert!(
+            step_changes_anything(&store, &before),
+            "the position differs"
+        );
         assert!(step_changes_anything(
             &store,
             &step(vec![], vec![undo::DiskOp::recycled("C:\\gone.txt")])
@@ -1484,5 +1610,4 @@ mod tests {
             )
         ));
     }
-
 }

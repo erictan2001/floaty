@@ -76,8 +76,6 @@ impl Screen {
     pub fn to_virtual(&self, x: f64, y: f64) -> (f64, f64) {
         (self.logical.x + x, self.logical.y + y)
     }
-
-
 }
 
 /// Which screen a virtual point is on, if any. `None` for the mixed-DPI band — and
@@ -391,19 +389,31 @@ mod tests {
         let alone = alone();
         let there = union(&alone);
         assert_eq!(nearest(&alone, 2000.0, 120.0), Some(0));
-        assert_eq!(clamp_into(there, 2000.0, 120.0, 92.0, 112.0, 24.0), (1324.0, 120.0));
+        assert_eq!(
+            clamp_into(there, 2000.0, 120.0, 92.0, 112.0, 24.0),
+            (1324.0, 120.0)
+        );
         assert!(
             1324.0 + 92.0 <= there.right(),
             "the whole icon is on the screen, not just its corner"
         );
 
         // One from above a screen comes down into it, keeping its column ...
-        assert_eq!(clamp_into(there, 300.0, -400.0, 92.0, 112.0, 24.0), (300.0, 24.0));
+        assert_eq!(
+            clamp_into(there, 300.0, -400.0, 92.0, 112.0, 24.0),
+            (300.0, 24.0)
+        );
         // ... and a panel as tall as most of the screen fits by its own height.
-        assert_eq!(clamp_into(there, 2000.0, 5000.0, 300.0, 330.0, 24.0), (1116.0, 606.0));
+        assert_eq!(
+            clamp_into(there, 2000.0, 5000.0, 300.0, 330.0, 24.0),
+            (1116.0, 606.0)
+        );
         // Something bigger than the screen cannot be fitted: it is held at the
         // top-left instead of being pushed off the far edge.
-        assert_eq!(clamp_into(there, 2000.0, 5000.0, 5000.0, 5000.0, 24.0), (24.0, 24.0));
+        assert_eq!(
+            clamp_into(there, 2000.0, 5000.0, 5000.0, 5000.0, 24.0),
+            (24.0, 24.0)
+        );
 
         // Three screens, including one to the left: nearest is nearest, not first.
         let mut three = measured_pair();
@@ -471,12 +481,21 @@ mod tests {
         taken.push(Rect::new(second.0, second.1, w, h));
         let third = place_without_overlap(rect, w, h, start, &taken, 24.0, 8.0);
 
-        assert_eq!(first, start, "the first one keeps the spot it was clamped to");
+        assert_eq!(
+            first, start,
+            "the first one keeps the spot it was clamped to"
+        );
         assert_eq!(second.1, 100.0 + 112.0 + 8.0, "the second goes below it");
         assert_eq!(third.1, 100.0 + 2.0 * (112.0 + 8.0), "the third below that");
         for (x, y) in [first, second, third] {
-            assert!(x >= 0.0 && x + w <= rect.right(), "fully on the screen: {x}");
-            assert!(y >= 0.0 && y + h <= rect.bottom(), "fully on the screen: {y}");
+            assert!(
+                x >= 0.0 && x + w <= rect.right(),
+                "fully on the screen: {x}"
+            );
+            assert!(
+                y >= 0.0 && y + h <= rect.bottom(),
+                "fully on the screen: {y}"
+            );
         }
         let placed = [
             Rect::new(first.0, first.1, w, h),

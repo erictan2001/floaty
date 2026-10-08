@@ -42,7 +42,6 @@ pub enum DiskAction {
     Discard,
 }
 
-
 // ---------------------------------------------------------------------------------------
 // The rule every mutating action follows
 // ---------------------------------------------------------------------------------------
@@ -169,7 +168,10 @@ pub fn begin_gesture(label: &str, restore: Vec<Restore>) {
 /// Does this gesture need a step? Only if a record it named still exists and is not the
 /// record it started as. A record that is gone was consumed by an action that took its own
 /// step, and a record that is unchanged is a gesture that did not happen.
-pub fn changed_records(before: &[Restore], live: &dyn Fn(&str) -> Option<serde_json::Value>) -> Vec<Restore> {
+pub fn changed_records(
+    before: &[Restore],
+    live: &dyn Fn(&str) -> Option<serde_json::Value>,
+) -> Vec<Restore> {
     before
         .iter()
         .filter(|snapshot| {
@@ -184,9 +186,7 @@ pub fn changed_records(before: &[Restore], live: &dyn Fn(&str) -> Option<serde_j
 
 /// Commit the gesture: push one step for the records it actually changed, or nothing.
 /// Returns the label of the step pushed, if any.
-pub fn commit_gesture(
-    live: &dyn Fn(&str) -> Option<serde_json::Value>,
-) -> Option<String> {
+pub fn commit_gesture(live: &dyn Fn(&str) -> Option<serde_json::Value>) -> Option<String> {
     let (label, before) = {
         let mut slot = match GESTURE.lock() {
             Ok(guard) => guard,
@@ -466,7 +466,9 @@ mod tests {
         clear();
         push("move", vec![restore("app-1")]);
         let step = pop().unwrap();
-        push_redo(inverse_of(&step, &|id| Some(serde_json::json!({ "id": id }))));
+        push_redo(inverse_of(&step, &|id| {
+            Some(serde_json::json!({ "id": id }))
+        }));
         assert_eq!(redo_depth(), 1);
         assert_eq!(redo_label().as_deref(), Some("move"));
 
@@ -480,9 +482,13 @@ mod tests {
         push("one", vec![restore("a")]);
         push("two", vec![restore("b")]);
         let undone = pop().unwrap();
-        push_redo(inverse_of(&undone, &|id| Some(serde_json::json!({ "id": id }))));
+        push_redo(inverse_of(&undone, &|id| {
+            Some(serde_json::json!({ "id": id }))
+        }));
         let forward = pop_redo().unwrap();
-        push_from_redo(inverse_of(&forward, &|id| Some(serde_json::json!({ "id": id }))));
+        push_from_redo(inverse_of(&forward, &|id| {
+            Some(serde_json::json!({ "id": id }))
+        }));
         assert_eq!(depth(), 2);
         assert_eq!(redo_depth(), 0);
 
@@ -543,7 +549,10 @@ mod tests {
         assert_eq!(step.disk[0].action, DiskAction::Move);
         assert_eq!(step.disk[1].action, DiskAction::Discard);
         assert_eq!(step.restore.len(), 3, "two records and the folder it made");
-        assert!(step.restore[2].record.is_none(), "a created id has no 'before'");
+        assert!(
+            step.restore[2].record.is_none(),
+            "a created id has no 'before'"
+        );
     }
 
     #[test]

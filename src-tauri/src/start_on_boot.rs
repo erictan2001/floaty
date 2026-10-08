@@ -4,23 +4,24 @@
 //! boundary now; nothing here changed shape on the way out.
 
 use crate::*;
-use tauri::{AppHandle};
+use tauri::AppHandle;
 
 // ---------- start on boot ----------
 
 #[cfg(windows)]
 pub(crate) fn set_windows_startup_delay_zero() {
+    use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
         RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
         REG_DWORD, REG_OPTION_NON_VOLATILE,
     };
-    use windows::core::PCWSTR;
 
     unsafe {
         let mut key = HKEY::default();
-        let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
-            .encode_utf16()
-            .collect();
+        let subkey: Vec<u16> =
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize\0"
+                .encode_utf16()
+                .collect();
         let status = RegCreateKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(subkey.as_ptr()),
@@ -58,11 +59,11 @@ pub(crate) fn set_windows_startup_delay_zero() {
 
 #[cfg(windows)]
 pub(crate) fn prioritize_run_key_entry() {
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::System::Registry::{
         RegCloseKey, RegDeleteValueW, RegEnumValueW, RegFlushKey, RegOpenKeyExW, RegQueryValueExW,
         RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_ALL_ACCESS, REG_VALUE_TYPE,
     };
-    use windows::core::{PCWSTR, PWSTR};
 
     unsafe {
         let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Run\0"
@@ -123,7 +124,10 @@ pub(crate) fn prioritize_run_key_entry() {
         }
 
         if items.first().map(|(n, ..)| n.as_str()) != Some("Floaty") {
-            if let Some(pos) = items.iter().position(|(n, ..)| n.eq_ignore_ascii_case("Floaty")) {
+            if let Some(pos) = items
+                .iter()
+                .position(|(n, ..)| n.eq_ignore_ascii_case("Floaty"))
+            {
                 let floaty_item = items.remove(pos);
                 items.insert(0, floaty_item);
 
@@ -173,7 +177,11 @@ pub(crate) fn set_start_on_boot(app: &AppHandle, on: bool) -> bool {
         return true;
     }
 
-    match if on { manager.enable() } else { manager.disable() } {
+    match if on {
+        manager.enable()
+    } else {
+        manager.disable()
+    } {
         Ok(()) => {
             #[cfg(windows)]
             if on {

@@ -379,7 +379,11 @@ impl Drop for DirWatch {
 /// struct gives whatever happened to follow it on the stack.
 ///
 #[cfg(windows)]
-fn parse_notification_entry(buffer: &[u8], offset: usize, end: usize) -> Option<(usize, u32, String)> {
+fn parse_notification_entry(
+    buffer: &[u8],
+    offset: usize,
+    end: usize,
+) -> Option<(usize, u32, String)> {
     const HEADER: usize = 12;
     if offset + HEADER > end {
         return None;

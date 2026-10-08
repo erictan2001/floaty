@@ -116,8 +116,7 @@ pub(crate) fn reverse_disk(op: &undo::DiskOp) -> Result<String, String> {
             if from.exists() {
                 return Err(format!("'{}' is in the way", op.from));
             }
-            std::fs::rename(to, from)
-                .map_err(|e| format!("'{}' -> '{}': {e}", op.to, op.from))?;
+            std::fs::rename(to, from).map_err(|e| format!("'{}' -> '{}': {e}", op.to, op.from))?;
             Ok(format!("'{}' back to '{}'", op.to, op.from))
         }
         undo::DiskAction::Discard => {
@@ -145,7 +144,9 @@ pub(crate) fn reverse_disk(op: &undo::DiskOp) -> Result<String, String> {
 /// the inverse of a step is the state it finds.
 pub(crate) fn live_record(app: &AppHandle) -> impl Fn(&str) -> Option<serde_json::Value> + '_ {
     move |id: &str| {
-        store::with(app, |s| s.get(id).and_then(|rec| serde_json::to_value(rec).ok()))
+        store::with(app, |s| {
+            s.get(id).and_then(|rec| serde_json::to_value(rec).ok())
+        })
     }
 }
 
@@ -154,7 +155,10 @@ pub(crate) fn live_record(app: &AppHandle) -> impl Fn(&str) -> Option<serde_json
 ///
 /// Shared by undo and redo, because a step means the same thing in both directions — only
 /// the state it carries differs.
-pub(crate) fn apply_step_records(app: &AppHandle, step: &undo::Step) -> (usize, usize, Vec<String>) {
+pub(crate) fn apply_step_records(
+    app: &AppHandle,
+    step: &undo::Step,
+) -> (usize, usize, Vec<String>) {
     let mut restored = 0usize;
     let mut removed = 0usize;
     let mut touched: Vec<String> = Vec::new();
@@ -192,16 +196,15 @@ pub(crate) fn apply_step_records(app: &AppHandle, step: &undo::Step) -> (usize, 
 /// with it.
 pub(crate) fn emit_step_changes(app: &AppHandle, touched: &[String]) {
     let (now_here, now_gone): (Vec<WidgetRecord>, Vec<String>) = store::with(app, |s| {
-        touched.iter().fold(
-            (Vec::new(), Vec::new()),
-            |(mut here, mut gone), id| {
+        touched
+            .iter()
+            .fold((Vec::new(), Vec::new()), |(mut here, mut gone), id| {
                 match s.get(id).cloned() {
                     Some(rec) => here.push(rec),
                     None => gone.push(id.clone()),
                 }
                 (here, gone)
-            },
-        )
+            })
     });
     for rec in &now_here {
         app.emit("floaty-widget-updated", rec).ok();
@@ -362,7 +365,11 @@ pub(crate) async fn floaty_redo(app: AppHandle) -> Result<undo::UndoReport, Stri
 /// from the page because that is where the positions it is about to overwrite
 /// are already in hand.
 #[tauri::command]
-pub(crate) fn floaty_undo_checkpoint(label: String, restore: Vec<undo::Restore>, app: AppHandle) -> usize {
+pub(crate) fn floaty_undo_checkpoint(
+    label: String,
+    restore: Vec<undo::Restore>,
+    app: AppHandle,
+) -> usize {
     let depth = undo::push(&label, restore);
     log_line(
         &app,

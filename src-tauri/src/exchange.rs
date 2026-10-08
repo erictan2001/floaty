@@ -127,8 +127,8 @@ mod win {
             let mut out = None;
             if let Ok(handle) = GetClipboardData(CF_UNICODETEXT.0 as u32) {
                 if !handle.is_invalid() {
-                    let ptr = windows::Win32::System::Memory::GlobalLock(HGLOBAL(handle.0))
-                        as *const u16;
+                    let ptr =
+                        windows::Win32::System::Memory::GlobalLock(HGLOBAL(handle.0)) as *const u16;
                     if !ptr.is_null() {
                         let mut len = 0usize;
                         while *ptr.add(len) != 0 && len < 32_768 {
@@ -304,12 +304,20 @@ mod tests {
         assert!(is_program_dir(exe));
         assert_eq!(arrival(exe, false, desktop), Arrival::Shortcut);
         assert_eq!(
-            arrival(std::path::Path::new("C:/Windows/System32/notepad.exe"), false, desktop),
+            arrival(
+                std::path::Path::new("C:/Windows/System32/notepad.exe"),
+                false,
+                desktop
+            ),
             Arrival::Shortcut
         );
         // ...but a file in Documents, on the same drive, is still a move
         assert_eq!(
-            arrival(std::path::Path::new("C:/Users/erict/Documents/a.txt"), false, desktop),
+            arrival(
+                std::path::Path::new("C:/Users/erict/Documents/a.txt"),
+                false,
+                desktop
+            ),
             Arrival::Move
         );
     }
@@ -324,11 +332,20 @@ mod tests {
         };
         assert!(hits(&tile, 100.0, 200.0), "the tile's own corner");
         // the left slop runs from 88 (tile.x - 12) to the tile
-        assert!(hits(&tile, 100.0 - SLOP, 200.0), "the far edge of the slop still hits");
-        assert!(!hits(&tile, 100.0 - SLOP - 1.0, 200.0), "one px beyond it does not");
+        assert!(
+            hits(&tile, 100.0 - SLOP, 200.0),
+            "the far edge of the slop still hits"
+        );
+        assert!(
+            !hits(&tile, 100.0 - SLOP - 1.0, 200.0),
+            "one px beyond it does not"
+        );
         // and the right edge: 100 + 92 + 12 = 204 is outside, 203 is inside
         assert!(hits(&tile, 203.0, 200.0));
         assert!(!hits(&tile, 204.0, 200.0));
-        assert!(!hits(&tile, 100.0, 200.0 + 112.0 + SLOP), "below the slop is outside");
+        assert!(
+            !hits(&tile, 100.0, 200.0 + 112.0 + SLOP),
+            "below the slop is outside"
+        );
     }
 }

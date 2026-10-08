@@ -22,7 +22,11 @@ pub(crate) async fn floaty_diagnostics(app: AppHandle) -> diagnostics::Report {
     let mut backups = 0;
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.filter_map(|e| e.ok()) {
-            if entry.file_name().to_string_lossy().starts_with("floaty-store.json.") {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("floaty-store.json.")
+            {
                 backups += 1;
                 store_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
             }
@@ -95,8 +99,12 @@ pub(crate) async fn floaty_diagnostics(app: AppHandle) -> diagnostics::Report {
         .webview_windows()
         .into_iter()
         .map(|(label, window)| {
-            let pos = window.outer_position().unwrap_or(tauri::PhysicalPosition::new(0, 0));
-            let size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(0, 0));
+            let pos = window
+                .outer_position()
+                .unwrap_or(tauri::PhysicalPosition::new(0, 0));
+            let size = window
+                .outer_size()
+                .unwrap_or(tauri::PhysicalSize::new(0, 0));
             diagnostics::WindowInfo {
                 layer: if is_desktop_layer_label(&label) {
                     "desktop".to_string()
@@ -325,7 +333,10 @@ fn fit_desktop(app: &AppHandle) -> screens::Rect {
     let union = screens::union(&screens(app));
     log_line(
         app,
-        &format!("monitors: the desktop is now {}", screens::arrangement(union)),
+        &format!(
+            "monitors: the desktop is now {}",
+            screens::arrangement(union)
+        ),
     );
     // Pages re-read the layout from this. `display` is "arrangement" rather than
     // "on"/"off" on purpose: a plugin watching the screen state ignores a value it
@@ -368,8 +379,9 @@ pub(crate) fn rehome_stranded(app: &AppHandle, why: &str) -> Vec<String> {
     if moved.is_empty() {
         return moved;
     }
-    let records: Vec<WidgetRecord> =
-        store::with(app, |s| moved.iter().filter_map(|id| s.get(id).cloned()).collect());
+    let records: Vec<WidgetRecord> = store::with(app, |s| {
+        moved.iter().filter_map(|id| s.get(id).cloned()).collect()
+    });
     for rec in &records {
         app.emit("floaty-widget-updated", rec).ok();
     }
@@ -416,7 +428,13 @@ pub(crate) fn rehome_into(
         .iter()
         .filter(|rec| screens::screen_of(list, rec.x as f64, rec.y as f64).is_none())
         .map(|rec| {
-            (rec.y, rec.x, rec.id.clone(), rec.kind.clone(), rec.data.clone())
+            (
+                rec.y,
+                rec.x,
+                rec.id.clone(),
+                rec.kind.clone(),
+                rec.data.clone(),
+            )
         })
         .collect();
     stranded.sort_by_key(|(y, x, _, _, _)| (*y, *x));
@@ -472,8 +490,7 @@ pub(crate) fn rehome_into(
             if screens::within_one_screen(list, rec.x as f64, rec.y as f64, w, h) {
                 return None;
             }
-            let (nx, ny) =
-                screens::confine(list, rec.x as f64, rec.y as f64, w, h, 0.0)?;
+            let (nx, ny) = screens::confine(list, rec.x as f64, rec.y as f64, w, h, 0.0)?;
             Some((rec.id.clone(), nx as i32, ny as i32))
         })
         .collect();
@@ -544,7 +561,6 @@ fn remember_place(rec: &mut WidgetRecord, arrangement: &str, to_x: i32, to_y: i3
     }
 }
 
-
 /// Fit the desktop to the screens that exist now, and bring back anything that was
 /// left off-screen. The Diagnostics tab's button: the same work a display change
 /// does, for a user who would rather press something than restart.
@@ -612,7 +628,8 @@ pub(crate) fn floaty_drag_to(id: String, x: f64, y: f64, app: AppHandle) -> Drag
 /// been overwritten many times over. Undo has to put the icon back on the spot the user
 /// took it from, which is what undoing a move means, so the first move of a drag is where
 /// it is remembered.
-pub(crate) static DRAG_ORIGIN: std::sync::Mutex<Option<(String, i32, i32)>> = std::sync::Mutex::new(None);
+pub(crate) static DRAG_ORIGIN: std::sync::Mutex<Option<(String, i32, i32)>> =
+    std::sync::Mutex::new(None);
 
 /// Remember where this floatie was, once per drag.
 pub(crate) fn remember_drag_origin(app: &AppHandle, id: &str) {
@@ -743,7 +760,9 @@ pub(crate) fn floaty_gesture_end(app: AppHandle) -> Option<String> {
     // into the void, and redo would put the widget back where nothing can see it.
     rehome_stranded(&app, "gesture");
     let pushed = undo::commit_gesture(&|id| {
-        store::with(&app, |s| s.get(id).and_then(|rec| serde_json::to_value(rec).ok()))
+        store::with(&app, |s| {
+            s.get(id).and_then(|rec| serde_json::to_value(rec).ok())
+        })
     });
     if let Some(label) = pushed.as_deref() {
         log_line(&app, &format!("gesture: '{label}' is undoable now"));
@@ -931,8 +950,7 @@ mod tests {
     }
 
     fn places(s: &store::StoreData) -> Vec<(String, i32, i32)> {
-        let mut out: Vec<(String, i32, i32)> =
-            s.iter().map(|r| (r.id.clone(), r.x, r.y)).collect();
+        let mut out: Vec<(String, i32, i32)> = s.iter().map(|r| (r.id.clone(), r.x, r.y)).collect();
         out.sort();
         out
     }
@@ -974,7 +992,11 @@ mod tests {
             // what Windows said, when it said it
             while arriving < trace.len() && trace[arriving].1 <= now {
                 let (list, at) = &trace[arriving];
-                note_arrangement(&mut pending, screens::arrangement(screens::union(list)), *at);
+                note_arrangement(
+                    &mut pending,
+                    screens::arrangement(screens::union(list)),
+                    *at,
+                );
                 arriving += 1;
             }
             let Some(shape) = settled_arrangement(&mut pending, now, ARRANGEMENT_SETTLE_MS) else {
@@ -1039,7 +1061,11 @@ mod tests {
             Vec::<String>::new(),
             "every floatie is drawn by an overlay again"
         );
-        assert_ne!(places(&desktop), before, "a portrait screen is not this desktop's shape");
+        assert_ne!(
+            places(&desktop),
+            before,
+            "a portrait screen is not this desktop's shape"
+        );
 
         // ... and when the arrangement it *was* chosen for comes back, so do the places.
         // Without this the four seconds of a fullscreen app changing mode are permanent.
@@ -1063,7 +1089,10 @@ mod tests {
             .find(|r| r.id == "folder-29")
             .map(|r| (r.id.clone(), r.x, r.y))
             .expect("folder-29 is on the desktop");
-        assert!(x != 1279 || y != 838, "it was displaced for the portrait shape");
+        assert!(
+            x != 1279 || y != 838,
+            "it was displaced for the portrait shape"
+        );
         desktop.edit(&id, |rec| {
             rec.x = 160;
             rec.y = 300;
@@ -1078,4 +1107,3 @@ mod tests {
         );
     }
 }
-

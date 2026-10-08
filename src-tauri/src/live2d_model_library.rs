@@ -4,8 +4,8 @@
 //! boundary now; nothing here changed shape on the way out.
 
 use crate::*;
-use serde::{ Serialize};
-use std::collections::{HashMap};
+use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -26,7 +26,10 @@ pub(crate) struct ScoredModelEntry {
 
 pub(crate) fn is_generic_model_stem(stem: &str) -> bool {
     let s = stem.to_ascii_lowercase();
-    matches!(s.as_str(), "model" | "index" | "model3" | "character" | "main")
+    matches!(
+        s.as_str(),
+        "model" | "index" | "model3" | "character" | "main"
+    )
 }
 
 pub(crate) fn extract_model_stem(file_name: &str) -> Option<&str> {
@@ -187,7 +190,11 @@ pub(crate) async fn floaty_scan_models(root: String, app: AppHandle) -> Vec<Live
 }
 
 #[tauri::command]
-pub(crate) fn floaty_set_widget_model(id: String, model: String, app: AppHandle) -> Result<(), String> {
+pub(crate) fn floaty_set_widget_model(
+    id: String,
+    model: String,
+    app: AppHandle,
+) -> Result<(), String> {
     store::with(&app, |s| -> Result<(), String> {
         // Read first, write second: a widget that is not a live2d one is refused before
         // anything is touched, exactly as when the record was reached through `get_mut`.

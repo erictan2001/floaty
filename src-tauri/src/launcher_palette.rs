@@ -4,7 +4,7 @@
 //! boundary now; nothing here changed shape on the way out.
 
 use crate::*;
-use std::collections::{ HashSet};
+use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::AppHandle;
 
@@ -216,7 +216,10 @@ pub(crate) fn palette_search(app: &AppHandle, query: &str) -> Vec<palette::Palet
 
 /// The launcher's rows: the same search the palette shows, for whatever asks.
 #[tauri::command]
-pub(crate) async fn floaty_palette_search(query: String, app: AppHandle) -> Vec<palette::PaletteHit> {
+pub(crate) async fn floaty_palette_search(
+    query: String,
+    app: AppHandle,
+) -> Vec<palette::PaletteHit> {
     tauri::async_runtime::spawn_blocking(move || palette_search(&app, &query))
         .await
         .unwrap_or_default()

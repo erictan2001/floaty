@@ -98,7 +98,10 @@ pub(crate) struct OverlayArea {
 }
 
 #[tauri::command]
-pub(crate) fn floaty_overlay_area(window: tauri::WebviewWindow, app: AppHandle) -> Option<OverlayArea> {
+pub(crate) fn floaty_overlay_area(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+) -> Option<OverlayArea> {
     let list = screens(&app);
     let index = overlay_index(window.label())?;
     Some(OverlayArea {
@@ -117,8 +120,29 @@ pub(crate) fn floaty_screens(app: AppHandle) -> Vec<screens::Screen> {
 /// directory is a *file*: it floats with a document icon and opens with its
 /// default app instead of being spawned like an executable.
 pub(crate) const LAUNCHABLE_EXTS: &[&str] = &[
-    "exe", "lnk", "url", "bat", "cmd", "com", "scr", "msi", "appref-ms", "ps1", "psm1", "vbs",
-    "vbe", "js", "jse", "wsf", "wsh", "hta", "cpl", "msc", "reg", "jar", "ahk",
+    "exe",
+    "lnk",
+    "url",
+    "bat",
+    "cmd",
+    "com",
+    "scr",
+    "msi",
+    "appref-ms",
+    "ps1",
+    "psm1",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "wsh",
+    "hta",
+    "cpl",
+    "msc",
+    "reg",
+    "jar",
+    "ahk",
 ];
 
 pub(crate) fn is_launchable_target(path: &std::path::Path) -> bool {
@@ -208,7 +232,6 @@ pub(crate) fn fit_overlay_to_monitor(app: &AppHandle) {
     }
 }
 
-
 /// One desktop-layer overlay per screen, plus a top-layer overlay on each screen that
 /// has a pinned widget.
 ///
@@ -284,7 +307,11 @@ pub(crate) fn spawn_desktop_overlay(
 
 /// Put a window exactly on a screen, in physical px — and doing it through the window
 /// rather than the builder is what lets WebView2 pick up that screen's scale.
-pub(crate) fn place_on_screen(app: &AppHandle, win: &tauri::WebviewWindow, screen: &screens::Screen) {
+pub(crate) fn place_on_screen(
+    app: &AppHandle,
+    win: &tauri::WebviewWindow,
+    screen: &screens::Screen,
+) {
     use tauri::{PhysicalPosition, PhysicalSize};
     if let Ok(size) = win.inner_size() {
         let scale = win.scale_factor().unwrap_or(1.0);
@@ -313,7 +340,10 @@ pub(crate) fn close_extra_overlays(app: &AppHandle) {
     for (label, _) in app.webview_windows() {
         if let Some(index) = overlay_index(&label) {
             if index >= count {
-                log_line(app, &format!("{label}: screen {index} is gone, taking it down"));
+                log_line(
+                    app,
+                    &format!("{label}: screen {index} is gone, taking it down"),
+                );
                 if let Some(w) = app.get_webview_window(&label) {
                     let _ = w.close();
                 }
@@ -342,7 +372,12 @@ pub(crate) fn spawn_top_overlay(app: &AppHandle, index: usize) -> tauri::Result<
         app,
         &format!(
             "spawn {label} on screen {} at {},{} size {}x{} @{}x",
-            screen.name, screen.physical.x, screen.physical.y, screen.physical.w, screen.physical.h, screen.scale
+            screen.name,
+            screen.physical.x,
+            screen.physical.y,
+            screen.physical.w,
+            screen.physical.h,
+            screen.scale
         ),
     );
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html#/overlay".into()))
@@ -377,10 +412,16 @@ pub(crate) fn spawn_top_overlay_async(app: &AppHandle, index: usize) {
         let h2 = handle.clone();
         if let Err(e) = handle.run_on_main_thread(move || {
             if let Err(e) = spawn_top_overlay(&h2, index) {
-                log_line(&h2, &format!("spawn {} FAILED: {e}", overlay_label(TOP_LAYER, index)));
+                log_line(
+                    &h2,
+                    &format!("spawn {} FAILED: {e}", overlay_label(TOP_LAYER, index)),
+                );
             }
         }) {
-            log_line(&handle, &format!("main-thread dispatch FAILED for the top layer: {e}"));
+            log_line(
+                &handle,
+                &format!("main-thread dispatch FAILED for the top layer: {e}"),
+            );
         }
     });
 }
@@ -411,7 +452,10 @@ pub(crate) fn sync_top_overlay(app: &AppHandle) {
             log_line(app, &format!("{count} pinned widget(s): building {label}"));
             spawn_top_overlay_async(app, index);
         } else if *count == 0 && exists {
-            log_line(app, &format!("nothing is pinned on that screen: taking {label} down"));
+            log_line(
+                app,
+                &format!("nothing is pinned on that screen: taking {label} down"),
+            );
             if let Some(w) = app.get_webview_window(&label) {
                 let _ = w.close();
             }
@@ -587,7 +631,10 @@ pub(crate) fn show_settings(app: &AppHandle) -> tauri::Result<()> {
         #[cfg(windows)]
         if let Ok(hwnd) = w.hwnd() {
             if desktop_pin::restore_ordinary_window(hwnd.0 as isize) {
-                log_line(app, "settings: handed back to the shell as an ordinary window");
+                log_line(
+                    app,
+                    "settings: handed back to the shell as an ordinary window",
+                );
             }
         }
         return Ok(());
@@ -601,6 +648,9 @@ pub(crate) fn show_settings(app: &AppHandle) -> tauri::Result<()> {
         .resizable(true)
         .skip_taskbar(false)
         .build()?;
-    log_line(app, &format!("settings built, visible={:?}", w.is_visible()));
+    log_line(
+        app,
+        &format!("settings built, visible={:?}", w.is_visible()),
+    );
     Ok(())
 }

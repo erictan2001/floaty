@@ -75,8 +75,8 @@ pub fn recycle_checked(_path: &Path) -> Result<Recycled, String> {
 
 pub fn recycle(path: &Path) -> Result<(), String> {
     use windows::Win32::UI::Shell::{
-        SHFileOperationW, SHFILEOPSTRUCTW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI,
-        FOF_SILENT, FO_DELETE,
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE,
+        SHFILEOPSTRUCTW,
     };
 
     if !path.exists() {
@@ -234,7 +234,11 @@ pub fn restore_from_bin(path: &str) -> Result<(), String> {
         if !same_path(&original, path) {
             continue;
         }
-        if best.as_ref().map(|(t, _, _)| deleted_at > *t).unwrap_or(true) {
+        if best
+            .as_ref()
+            .map(|(t, _, _)| deleted_at > *t)
+            .unwrap_or(true)
+        {
             best = Some((deleted_at, file, metadata));
         }
     }
@@ -356,7 +360,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("floaty-shellops-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("floaty-shellops-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -406,7 +411,9 @@ mod tests {
             parse_recycled_metadata(&i_file_v2(r"C:\Users\me\Desktop\a b.txt", unix)).unwrap();
         assert_eq!(path, r"C:\Users\me\Desktop\a b.txt");
         assert_eq!(
-            when.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+            when.duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             unix,
             "the deletion time is what picks the newest of several entries"
         );
@@ -500,7 +507,10 @@ mod tests {
 
         recycle(&victim).expect("shell delete should succeed");
         assert!(!victim.exists(), "the file must be gone from disk");
-        assert!(recycle(&victim).is_err(), "a missing path is reported, not silently ignored");
+        assert!(
+            recycle(&victim).is_err(),
+            "a missing path is reported, not silently ignored"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

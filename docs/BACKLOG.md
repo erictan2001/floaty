@@ -30,9 +30,9 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
   them one owner.
 - The path key is honoured in `widget_path`, `record_path` and the launcher, and hardcoded
   everywhere else: `app_discovery_launch.rs` reads `"target"` at :692 and :745,
-  `putting_dragged_items_on_disk.rs` reads `"path"`/`"target"` at :335, :502, :698, :784, :895
+  `disk_drag.rs` reads `"path"`/`"target"` at :335, :502, :698, :784, :895
   and :899 (and writes them at :612, :757, :765, :807, :985, :1008), and
-  `global_floating_settings.rs` tries `["path", "target"]` at :549 and :635. An installed plugin
+  `settings_sync.rs` tries `["path", "target"]` at :549 and :635. An installed plugin
   with `pathKey: "where"` therefore works in three places and is invisible in the rest, and the
   readers that guess can hand a non-path value to a shell verb. `plugins::path_key(kind)` is the
   accessor; the writers need the same rule, which is why this is a pass of its own rather than a
@@ -53,7 +53,7 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
   run while the user's app is up: it fails with "the app never came up". Its own Vite and its own cargo
   target are not enough — the app has to be stopped first. `runtime.launch()` should say that instead of
   reporting a timeout, since the two look identical from inside the probe.
-- The store's rules still leak at the edges the refactor did not reach: `putting_dragged_items_on_disk.rs:981-1005`
+- The store's rules still leak at the edges the refactor did not reach: `disk_drag.rs:981-1005`
   mints `folder-{n}`/`{kind}-{n}` ids by hand and only hands the number back with `set_next` at `:1062`, so the
   store can hand out a number the root scan already claimed (a `store::take_id` would close it); `store::is_dead`
   (`store.rs:71`) has its only caller outside the store (`commands.rs:67`), so the tombstone refusal can be
@@ -62,7 +62,7 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
   `folder_fingerprint` + compare, and `floaty_install_plugin` (`:236`) records approvals through
   `remember_approval` directly instead of `set_approval` (`:117-128`) — the commit called that the write path,
   so either make it one or delete it.
-- Names left behind by the refactor: `floaty_dropped_inner` (`putting_dragged_items_on_disk.rs:381`) is the whole
+- Names left behind by the refactor: `floaty_dropped_inner` (`disk_drag.rs:381`) is the whole
   group/merge path now, not a drop.
 - `placement.clampTo` is the clamp, but appicon clamps flush to the edge while folder keeps 16px clear
   (`appicon.ts:305-306`, `folder.ts:141-145`, `:327-328`). The duplicated constant is folded into `GRID.edge`;

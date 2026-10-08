@@ -253,7 +253,8 @@ pub(crate) fn refresh_backup(path: &std::path::Path, force: bool) {
 }
 
 /// Set while a write is outstanding; the writer clears it before writing.
-pub(crate) static STORE_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) static STORE_DIRTY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Mark the store dirty and let the background writer do the work.
 ///
@@ -352,7 +353,10 @@ pub(crate) fn load_all(app: &AppHandle) -> Vec<WidgetRecord> {
             if from_backup {
                 log_line(
                     app,
-                    &format!("store unreadable; recovered {} widgets from backup", list.len()),
+                    &format!(
+                        "store unreadable; recovered {} widgets from backup",
+                        list.len()
+                    ),
                 );
                 quarantine(&path);
                 if let Ok(json) = serde_json::to_string_pretty(&list) {
@@ -363,7 +367,10 @@ pub(crate) fn load_all(app: &AppHandle) -> Vec<WidgetRecord> {
         }
         None => {
             if path.exists() {
-                log_line(app, "store and backup both unreadable; desktop starts empty");
+                log_line(
+                    app,
+                    "store and backup both unreadable; desktop starts empty",
+                );
                 quarantine(&path);
             }
             vec![]
@@ -399,7 +406,8 @@ mod tests {
 
     #[test]
     fn without_an_override_the_real_folder_is_used() {
-        let default = std::env::temp_dir().join(format!("floaty-data-default-{}", std::process::id()));
+        let default =
+            std::env::temp_dir().join(format!("floaty-data-default-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&default);
         assert_eq!(resolve_data_dir(None, default.clone()), default);
         assert!(default.is_dir(), "the default is created too");

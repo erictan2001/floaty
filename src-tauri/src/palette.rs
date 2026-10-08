@@ -82,7 +82,10 @@ pub fn score(query: &str, text: &str) -> Option<u8> {
 fn starts_a_word(text: &str, query: &str) -> bool {
     text.char_indices().any(|(i, _)| {
         i > 0
-            && text[..i].chars().next_back().is_some_and(|c| !c.is_alphanumeric())
+            && text[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_alphanumeric())
             && text[i..].starts_with(query)
     })
 }
@@ -104,7 +107,11 @@ pub fn rank(query: &str, keys: &[String], limit: usize) -> Vec<usize> {
         .filter_map(|(index, key)| score(query, key).map(|rank| (rank, index)))
         .collect();
     scored.sort_by_key(|(rank, index)| (*rank, *index));
-    scored.into_iter().take(limit).map(|(_, index)| index).collect()
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, index)| index)
+        .collect()
 }
 
 /// The palette window, built on first use and then only shown and hidden.
@@ -259,7 +266,11 @@ mod tests {
 
     #[test]
     fn a_name_that_starts_with_the_query_beats_one_that_merely_contains_it() {
-        assert_eq!(score("code", "Visual Studio Code"), Some(2), "starts a word");
+        assert_eq!(
+            score("code", "Visual Studio Code"),
+            Some(2),
+            "starts a word"
+        );
         assert_eq!(score("barcode", "Barcode"), Some(0), "exact");
         assert_eq!(score("bar", "Barcode"), Some(1), "prefix");
         assert_eq!(score("code", "Barcode"), Some(3), "inside a word");
@@ -280,7 +291,11 @@ mod tests {
             None,
             "and a letter that is not there, in order, does not match"
         );
-        assert_eq!(score("", "anything"), Some(0), "an empty query asks for everything");
+        assert_eq!(
+            score("", "anything"),
+            Some(0),
+            "an empty query asks for everything"
+        );
         assert_eq!(score("  ", "anything"), Some(0));
     }
 
@@ -292,8 +307,16 @@ mod tests {
             vec![1, 3, 0],
             "two prefixes in the order given, then Barcode, which merely contains it"
         );
-        assert_eq!(rank("code", &keys, 10), vec![2, 0], "word-start before inside");
-        assert_eq!(rank("", &keys, 2), vec![0, 1], "an empty query is the first page");
+        assert_eq!(
+            rank("code", &keys, 10),
+            vec![2, 0],
+            "word-start before inside"
+        );
+        assert_eq!(
+            rank("", &keys, 2),
+            vec![0, 1],
+            "an empty query is the first page"
+        );
         assert_eq!(rank("zzz", &keys, 10), Vec::<usize>::new());
         assert_eq!(rank("a", &keys, 1).len(), 1, "the cap is the cap");
     }

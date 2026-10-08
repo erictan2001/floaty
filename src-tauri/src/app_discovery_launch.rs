@@ -4,7 +4,7 @@
 //! boundary now; nothing here changed shape on the way out.
 
 use crate::*;
-use serde::{ Serialize};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Mutex;
@@ -18,7 +18,12 @@ pub(crate) struct DiscoveredApp {
     pub(crate) path: String,
 }
 
-pub(crate) fn collect_lnk(dir: &str, out: &mut Vec<DiscoveredApp>, seen: &mut HashSet<String>, depth: u8) {
+pub(crate) fn collect_lnk(
+    dir: &str,
+    out: &mut Vec<DiscoveredApp>,
+    seen: &mut HashSet<String>,
+    depth: u8,
+) {
     if depth > 2 {
         return;
     }
@@ -130,11 +135,11 @@ pub(crate) fn try_extract_png_from_ico_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
         if image_offset + bytes_in_res <= bytes.len() && bytes_in_res >= 8 {
             let img = &bytes[image_offset..image_offset + bytes_in_res];
             // PNG magic signature: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A
-            if img.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-                && w > best_width {
-                    best_width = w;
-                    best_data = Some(img);
-                }
+            if img.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) && w > best_width
+            {
+                best_width = w;
+                best_data = Some(img);
+            }
         }
     }
 
@@ -879,7 +884,10 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
         if let Ok(json) = serde_json::to_string_pretty(&settings) {
             write_text_atomic(&settings_file(app), &json);
         }
-        log_line(app, &format!("icon pipeline: stored icons re-resolved to v{ICON_PIPELINE}"));
+        log_line(
+            app,
+            &format!("icon pipeline: stored icons re-resolved to v{ICON_PIPELINE}"),
+        );
     };
 
     if to_upgrade.is_empty() && folders_to_check.is_empty() {
@@ -896,7 +904,13 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
     all_paths.sort();
     all_paths.dedup();
 
-    log_line(app, &format!("upgrade_low_res_icons: batch resolving {} icons", all_paths.len()));
+    log_line(
+        app,
+        &format!(
+            "upgrade_low_res_icons: batch resolving {} icons",
+            all_paths.len()
+        ),
+    );
 
     let icon_map =
         tauri::async_runtime::spawn_blocking(move || resolve_icons_batch(&all_paths, true))
@@ -937,7 +951,9 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
                     for target in needed {
                         // matched by target, not by index: the resolve can take a
                         // second, and the user can add or remove items meanwhile
-                        let Some(hi_res) = icon_map.get(target) else { continue };
+                        let Some(hi_res) = icon_map.get(target) else {
+                            continue;
+                        };
                         if hi_res == "none" {
                             continue;
                         }
@@ -1003,7 +1019,10 @@ mod image_thumbnail_tests {
             .filter(|p| p.is_file())
             .map(|p| p.to_string_lossy().to_string())
             .collect();
-        assert!(!present.is_empty(), "no image files in the repo to test against");
+        assert!(
+            !present.is_empty(),
+            "no image files in the repo to test against"
+        );
 
         let resolved = resolve_icons_batch_raw(&present, true);
         assert_eq!(
@@ -1023,7 +1042,14 @@ mod image_thumbnail_tests {
                 .unwrap_or_else(|| panic!("icon for {} is not readable png", path));
             let (w, h) = icons::pixel_size(icon)
                 .unwrap_or_else(|| panic!("icon for {} has no readable size", path));
-            println!("  {} -> {}x{} {}b {}", path, w, h, bytes.len(), fingerprint(&bytes));
+            println!(
+                "  {} -> {}x{} {}b {}",
+                path,
+                w,
+                h,
+                bytes.len(),
+                fingerprint(&bytes)
+            );
 
             // The generic glyph is 32x32 whatever the file is. A picture comes back at the
             // file's own dimensions, downscaled to fit 256 on the long edge and never up.
@@ -1046,7 +1072,6 @@ mod image_thumbnail_tests {
             seen.push(fp);
         }
     }
-
 
     /// The flag is the whole fix, and it ships as C# source inside the PowerShell the
     /// resolver runs — which Rust cannot call, but can read. `include_str!` takes this
@@ -1105,7 +1130,10 @@ mod image_thumbnail_tests {
 }
 
 #[tauri::command]
-pub(crate) async fn floaty_resolve_folder_icons(folder_id: String, app: AppHandle) -> Result<(), String> {
+pub(crate) async fn floaty_resolve_folder_icons(
+    folder_id: String,
+    app: AppHandle,
+) -> Result<(), String> {
     // No visibility filter here, and deliberately so: this runs exactly when the folder is
     // open, which is the only moment its items are on the screen. Everything it is asked for
     // is something the user is looking at right now.

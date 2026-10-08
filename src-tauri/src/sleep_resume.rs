@@ -21,20 +21,22 @@ pub(crate) const PBT_APMRESUMECRITICAL: usize = 0x0006;
 pub(crate) const PBT_POWERSETTINGCHANGE: usize = 0x8013;
 
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::Power::{
-    RegisterPowerSettingNotification, POWERBROADCAST_SETTING,
-};
+use windows::Win32::System::Power::{RegisterPowerSettingNotification, POWERBROADCAST_SETTING};
 use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
-use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, DEVICE_NOTIFY_WINDOW_HANDLE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DEVICE_NOTIFY_CALLBACK, DEVICE_NOTIFY_WINDOW_HANDLE,
+};
 
 /// Windows delivers power-setting changes through a pool thread when registered
 /// in callback mode, which is the whole point: the callback still lands while the
 /// app's own pumping thread is blocked, and it can therefore both *measure* the
 /// wake-up and do the recovery from a thread that is not stuck.
 /// 2 = no report yet, 1 = display on, 0 = display off
-pub(crate) static DISPLAY_STATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2);
+pub(crate) static DISPLAY_STATE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(2);
 /// when the display-on callback last ran, in ms since the process started
-pub(crate) static DISPLAY_ON_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static DISPLAY_ON_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 #[repr(C)]
 pub(crate) struct DeviceNotifySubscribeParameters {
@@ -61,8 +63,7 @@ unsafe extern "system" fn display_setting_changed(
                     &app,
                     &format!(
                         "power: other setting changed ({:?} = {})",
-                        s.PowerSetting,
-                        s.Data[0]
+                        s.PowerSetting, s.Data[0]
                     ),
                 );
             }
@@ -126,8 +127,14 @@ pub fn watch_display_by_callback(app: &AppHandle) {
             DEVICE_NOTIFY_CALLBACK,
         )
     } {
-        Ok(_) => log_line(app, "power: display state is watched by callback (survives window rebuilds)"),
-        Err(e) => log_line(app, &format!("power: could not register the display callback: {e}")),
+        Ok(_) => log_line(
+            app,
+            "power: display state is watched by callback (survives window rebuilds)",
+        ),
+        Err(e) => log_line(
+            app,
+            &format!("power: could not register the display callback: {e}"),
+        ),
     }
 }
 
@@ -141,7 +148,9 @@ pub(crate) fn start_pump_watchdog() {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
             let Some(app) = shared_app() else { continue };
-            let Some(w) = app.get_webview_window("desktop-overlay") else { continue };
+            let Some(w) = app.get_webview_window("desktop-overlay") else {
+                continue;
+            };
             let Ok(hwnd) = w.hwnd() else { continue };
             let t0 = std::time::Instant::now();
             let mut res = 0usize;
@@ -167,7 +176,9 @@ pub(crate) fn start_pump_watchdog() {
                 SLOW_SINCE.store(elapsed_ms(), Ordering::SeqCst);
                 log_line(
                     &app,
-                    &format!("pump: the overlay did not answer for {ms}ms — the main thread is blocked"),
+                    &format!(
+                        "pump: the overlay did not answer for {ms}ms — the main thread is blocked"
+                    ),
                 );
             } else if ms <= 400 && answered.0 != 0 && since != 0 {
                 SLOW_SINCE.store(0, Ordering::SeqCst);
@@ -184,8 +195,10 @@ pub(crate) fn start_pump_watchdog() {
 }
 
 pub(crate) static SHARED_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
-pub(crate) static RESUME_CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-pub(crate) static LAST_RESUME_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static RESUME_CLOCK: std::sync::OnceLock<std::time::Instant> =
+    std::sync::OnceLock::new();
+pub(crate) static LAST_RESUME_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// The app handle, for the window procedures that only get an HWND.
 pub(crate) fn shared_app() -> Option<AppHandle> {
@@ -242,8 +255,7 @@ pub fn watch_display_state(hwnd: isize) {
     // the app deaf to the display coming back.
     static WATCHED: AtomicIsize = AtomicIsize::new(0);
     let watched = WATCHED.load(Ordering::SeqCst);
-    if watched != 0
-        && unsafe { IsWindow(Some(HWND(watched as *mut core::ffi::c_void))) }.as_bool()
+    if watched != 0 && unsafe { IsWindow(Some(HWND(watched as *mut core::ffi::c_void))) }.as_bool()
     {
         return;
     }
@@ -292,7 +304,11 @@ pub(crate) fn recover_windows(reason: &str) {
         .collect();
     let started = std::time::Instant::now();
     let seen = DISPLAY_ON_MS.load(std::sync::atomic::Ordering::SeqCst);
-    let lag = if seen > 0 { now_ms.saturating_sub(seen) } else { 0 };
+    let lag = if seen > 0 {
+        now_ms.saturating_sub(seen)
+    } else {
+        0
+    };
     log_line(
         &app,
         &format!(
@@ -307,7 +323,10 @@ pub(crate) fn recover_windows(reason: &str) {
     fit_overlay_to_monitor(&app);
     log_line(
         &app,
-        &format!("power: overlay refit (+{}ms)", started.elapsed().as_millis()),
+        &format!(
+            "power: overlay refit (+{}ms)",
+            started.elapsed().as_millis()
+        ),
     );
 
     let mut suspects: Vec<String> = Vec::new();
@@ -425,16 +444,24 @@ pub(crate) fn recover_windows(reason: &str) {
         for label in &suspects {
             let (beat_ms, visibility) = last_beat(label);
             if beat_ms > now_ms && visibility != "hidden" {
-                log_line(&app2, &format!("power: {label} came back after the reload ({visibility})"));
+                log_line(
+                    &app2,
+                    &format!("power: {label} came back after the reload ({visibility})"),
+                );
                 continue;
             }
             if beat_ms > now_ms {
                 log_line(
                     &app2,
-                    &format!("power: {label} came back but still believes it is hidden — re-creating it"),
+                    &format!(
+                        "power: {label} came back but still believes it is hidden — re-creating it"
+                    ),
                 );
             } else {
-                log_line(&app2, &format!("power: {label} never reported in — re-creating it"));
+                log_line(
+                    &app2,
+                    &format!("power: {label} never reported in — re-creating it"),
+                );
             }
             recreate_window(&app2, label);
         }
@@ -443,7 +470,10 @@ pub(crate) fn recover_windows(reason: &str) {
 
 /// How many ms this process has been running, for the heartbeat bookkeeping.
 pub(crate) fn elapsed_ms() -> u64 {
-    RESUME_CLOCK.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+    RESUME_CLOCK
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
 }
 
 /// One-pixel resize and back, straight to the window: no webview API involved.
@@ -455,15 +485,33 @@ pub(crate) fn nudge_bounds(hwnd: isize) {
             GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
         };
         let mut r = RECT::default();
-        if unsafe { GetWindowRect(windows::Win32::Foundation::HWND(hwnd as *mut _), &mut r) }.is_ok() {
+        if unsafe { GetWindowRect(windows::Win32::Foundation::HWND(hwnd as *mut _), &mut r) }
+            .is_ok()
+        {
             let (w, h) = (r.right - r.left, r.bottom - r.top);
             if w < 2 || h < 2 {
                 return;
             }
             unsafe {
                 let hwnd = windows::Win32::Foundation::HWND(hwnd as *mut _);
-                let _ = SetWindowPos(hwnd, None, 0, 0, w + 1, h + 1, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-                let _ = SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    w + 1,
+                    h + 1,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    w,
+                    h,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
             }
         }
         // a resize alone does not clear a stale surface: ask for a full repaint
@@ -489,7 +537,8 @@ pub(crate) static HEARTBEATS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, (u64, String)>>,
 > = std::sync::OnceLock::new();
 
-pub(crate) fn heartbeats() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u64, String)>> {
+pub(crate) fn heartbeats(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (u64, String)>> {
     HEARTBEATS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -500,7 +549,8 @@ pub(crate) static HEARTBEAT_REPAIRS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, (u64, u32)>>,
 > = std::sync::OnceLock::new();
 
-pub(crate) fn heartbeat_repairs() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u64, u32)>> {
+pub(crate) fn heartbeat_repairs(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (u64, u32)>> {
     HEARTBEAT_REPAIRS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -650,7 +700,10 @@ pub(crate) fn recreate_window(app: &AppHandle, label: &str) {
             match again {
                 Ok(()) => {
                     let waited = attempt as f64 * 0.25;
-                    log_line(app, &format!("power: {label} re-created after {waited:.1}s"));
+                    log_line(
+                        app,
+                        &format!("power: {label} re-created after {waited:.1}s"),
+                    );
                     return;
                 }
                 Err(e) => log_line(app, &format!("power: {label} re-create failed: {e}")),
@@ -663,14 +716,18 @@ pub(crate) fn recreate_window(app: &AppHandle, label: &str) {
         return;
     }
     // one widget per window: close it and show it again from its record
-    let Some(rec) = record_for_window(app, label) else { return };
+    let Some(rec) = record_for_window(app, label) else {
+        return;
+    };
     close_widget_async(app, &rec.id);
     show_widget(app, &rec);
 }
 
 /// The record behind a per-widget window label, if that window has one.
 pub(crate) fn record_for_window(app: &AppHandle, label: &str) -> Option<WidgetRecord> {
-    store::with(app, |s| s.iter().find(|r| widget_label(&r.id) == label).cloned())
+    store::with(app, |s| {
+        s.iter().find(|r| widget_label(&r.id) == label).cloned()
+    })
 }
 
 /// Whether this widget asked to sit above other windows.
@@ -681,7 +738,10 @@ pub(crate) fn record_for_window(app: &AppHandle, label: &str) -> Option<WidgetRe
 /// applications are drawn in a second overlay that is always on top instead — see
 /// `spawn_top_overlay` — and only that layer carries the flag.
 pub(crate) fn wants_on_top(rec: &WidgetRecord) -> bool {
-    rec.data.get("on_top").and_then(|v| v.as_bool()).unwrap_or(false)
+    rec.data
+        .get("on_top")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// The desktop layer's window, and the layer a pinned widget is drawn in.

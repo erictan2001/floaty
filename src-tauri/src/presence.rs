@@ -239,7 +239,8 @@ pub fn observe(own: &[isize]) -> Observations {
                         (rect.bottom - rect.top) as f64,
                     ),
                     shell: is_shell_class(&class),
-                    ours: own.contains(&(hwnd.0 as isize)) || class.eq_ignore_ascii_case("Tauri Window"),
+                    ours: own.contains(&(hwnd.0 as isize))
+                        || class.eq_ignore_ascii_case("Tauri Window"),
                 });
             }
         }
@@ -290,7 +291,10 @@ mod tests {
         assert_eq!(state.reason, Some("fullscreen"));
         // a fullscreen app on the *second* screen is just as good a reason
         let fg = fullscreen_on(2880.0, 1920.0, 1080.0);
-        assert_eq!(decide(Some(&fg), &pair(), &rules(), 0).reason, Some("fullscreen"));
+        assert_eq!(
+            decide(Some(&fg), &pair(), &rules(), 0).reason,
+            Some("fullscreen")
+        );
     }
 
     #[test]
@@ -303,7 +307,10 @@ mod tests {
         let fg = fullscreen_on(2880.0, 1920.0, 1080.0);
         let first = decide_for(Some(&fg), Some(&screens[0]), &rules(), 0);
         let second = decide_for(Some(&fg), Some(&screens[1]), &rules(), 0);
-        assert!(!first.hidden, "a fullscreen app on the other screen must not hide this one");
+        assert!(
+            !first.hidden,
+            "a fullscreen app on the other screen must not hide this one"
+        );
         assert!(second.hidden, "the screen it is on goes away");
         // ...and the other way round.
         let fg = fullscreen_on(0.0, 2880.0, 1920.0);
@@ -325,7 +332,10 @@ mod tests {
             decide_for(Some(&fg), Some(&screens[0]), &rules(), 0),
             decide_for(Some(&fg), Some(&screens[1]), &rules(), 0),
         ]);
-        assert!(!one.hidden && !one.quiet, "one screen left is enough to keep the audio");
+        assert!(
+            !one.hidden && !one.quiet,
+            "one screen left is enough to keep the audio"
+        );
         assert_eq!(one.reason, Some("fullscreen"));
         // Every screen hidden: nothing left to animate or to listen for. Two fullscreen
         // apps, one per screen — which is what it takes, now that each screen decides.
@@ -350,7 +360,10 @@ mod tests {
         // the work area of the primary: the taskbar's 96px are still visible
         let fg = fullscreen_on(0.0, 2880.0, 1920.0 - 96.0);
         let state = decide(Some(&fg), &pair(), &rules(), 0);
-        assert!(!state.hidden, "a maximized window must leave the desktop alone");
+        assert!(
+            !state.hidden,
+            "a maximized window must leave the desktop alone"
+        );
         // ...and a window that covers one screen but not the other is not fullscreen either
         let fg = fullscreen_on(0.0, 1440.0, 960.0);
         assert!(!decide(Some(&fg), &pair(), &rules(), 0).hidden);

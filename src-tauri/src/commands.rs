@@ -30,7 +30,9 @@ pub(crate) fn floaty_create(kind: String, app: AppHandle) -> Result<WidgetRecord
     // A widget of an unapproved plugin would mount nothing and sit on the desktop
     // as a square, so refuse it with the reason instead.
     let settings = load_settings(&app);
-    if plugins::find(&kind).is_none() && !plugin_approved(&settings, &plugins_dir(&app).join(&kind), &kind) {
+    if plugins::find(&kind).is_none()
+        && !plugin_approved(&settings, &plugins_dir(&app).join(&kind), &kind)
+    {
         return Err(format!(
             "{kind} is not approved — approve it in the Plugins tab first"
         ));
@@ -71,8 +73,13 @@ pub(crate) async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
         // never lose an icon, and never trade a crisp one for a blurry one.
         if let Some(existing) = s.get(&record.id) {
             if let Some(existing_icon) = existing.data.get("icon").and_then(|v| v.as_str()) {
-                let incoming_icon = record.data.get("icon").and_then(|v| v.as_str()).unwrap_or("");
-                let would_lose = icons::is_missing(incoming_icon) && !icons::is_missing(existing_icon);
+                let incoming_icon = record
+                    .data
+                    .get("icon")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let would_lose =
+                    icons::is_missing(incoming_icon) && !icons::is_missing(existing_icon);
                 let would_downgrade =
                     icons::is_low_res(incoming_icon) && !icons::is_low_res(existing_icon);
                 if would_lose || would_downgrade {
@@ -89,7 +96,8 @@ pub(crate) async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
                 let mut incoming_items = folder_items(&record);
                 for in_it in incoming_items.iter_mut() {
                     if let Some(ex) = existing_items.iter().find(|e| e.target == in_it.target) {
-                        let would_lose = icons::is_missing(&in_it.icon) && !icons::is_missing(&ex.icon);
+                        let would_lose =
+                            icons::is_missing(&in_it.icon) && !icons::is_missing(&ex.icon);
                         let would_downgrade =
                             icons::is_low_res(&in_it.icon) && !icons::is_low_res(&ex.icon);
                         if would_lose || would_downgrade {
@@ -114,8 +122,9 @@ pub(crate) async fn floaty_save(mut record: WidgetRecord, app: AppHandle) {
 /// was put, instead of falling to the floor the next time it is mounted.
 #[tauri::command]
 pub(crate) fn floaty_refresh(ids: Vec<String>, app: AppHandle) {
-    let records: Vec<WidgetRecord> =
-        store::with(&app, |s| ids.iter().filter_map(|id| s.get(id).cloned()).collect());
+    let records: Vec<WidgetRecord> = store::with(&app, |s| {
+        ids.iter().filter_map(|id| s.get(id).cloned()).collect()
+    });
     if records.is_empty() {
         return;
     }

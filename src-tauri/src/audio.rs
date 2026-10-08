@@ -88,20 +88,25 @@ pub fn is_running() -> bool {
 // ---------------------------------------------------------------- capture ---
 
 #[cfg(windows)]
-unsafe fn init_wasapi_capture(
-) -> Result<(windows::Win32::Media::Audio::IAudioClient, windows::Win32::Media::Audio::IAudioCaptureClient, AudioFormat), String> {
+unsafe fn init_wasapi_capture() -> Result<
+    (
+        windows::Win32::Media::Audio::IAudioClient,
+        windows::Win32::Media::Audio::IAudioCaptureClient,
+        AudioFormat,
+    ),
+    String,
+> {
     use windows::Win32::Media::Audio::{
-        eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
+        MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
     };
 
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    let enumerator: IMMDeviceEnumerator =
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
+    let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+        .map_err(|e| format!("MMDeviceEnumerator: {e}"))?;
     let device = enumerator
         .GetDefaultAudioEndpoint(eRender, eConsole)
         .map_err(|e| format!("no default render endpoint: {e}"))?;
@@ -147,7 +152,9 @@ unsafe fn drain_audio_packets(
         let mut data: *mut u8 = std::ptr::null_mut();
         let mut frames: u32 = 0;
         let mut flags: u32 = 0;
-        let ok = capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None).is_ok();
+        let ok = capture
+            .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
+            .is_ok();
         if !ok || frames == 0 {
             break;
         }
@@ -216,12 +223,18 @@ fn capture_loop(app: &AppHandle) -> Result<(), String> {
             }
         };
 
-        let drained = unsafe { drain_audio_packets(&capture, &fmt, packet_frames, &mut scratch, &mut window) };
+        let drained = unsafe {
+            drain_audio_packets(&capture, &fmt, packet_frames, &mut scratch, &mut window)
+        };
         let (rms, analyzed) = process_fft_windows(&mut window, &mut fft, &mut bands);
         let got_audio = drained || analyzed;
 
         // fast attack / slow release keeps the bars lively but not jittery
-        level = if rms > level { rms } else { level * 0.82 + rms * 0.18 };
+        level = if rms > level {
+            rms
+        } else {
+            level * 0.82 + rms * 0.18
+        };
         let quiet = !got_audio || rms < SILENCE_RMS;
         if quiet {
             if !silent && silent_since.elapsed().as_millis() > 400 {
@@ -239,7 +252,11 @@ fn capture_loop(app: &AppHandle) -> Result<(), String> {
             silent_since = std::time::Instant::now();
         }
 
-        let target_fps = if silent { SILENT_FPS } else { FPS.load(Ordering::Relaxed).max(5) };
+        let target_fps = if silent {
+            SILENT_FPS
+        } else {
+            FPS.load(Ordering::Relaxed).max(5)
+        };
         if last_emit.elapsed().as_millis() as u32 * target_fps >= 1000 {
             last_emit = std::time::Instant::now();
             let _ = app.emit(
@@ -327,12 +344,7 @@ impl AudioFormat {
         } else if bits == 16 {
             i16::from_le_bytes([bytes[off], bytes[off + 1]]) as f32 / 32768.0
         } else {
-            i32::from_le_bytes([
-                bytes[off],
-                bytes[off + 1],
-                bytes[off + 2],
-                bytes[off + 3],
-            ]) as f32
+            i32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]) as f32
                 / 2147483648.0
         }
     }
@@ -388,9 +400,7 @@ impl Fft {
             sin[i] = a.sin();
         }
         let window = (0..n)
-            .map(|i| {
-                0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos()
-            })
+            .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos())
             .collect();
         let mut rev = vec![0usize; n];
         let bits = n.trailing_zeros();
@@ -460,7 +470,8 @@ impl Fft {
             len *= 2;
         }
         for i in 0..n / 2 {
-            self.mag[i] = (self.re[i] * self.re[i] + self.im[i] * self.im[i]).sqrt() / (n as f32 * 0.25);
+            self.mag[i] =
+                (self.re[i] * self.re[i] + self.im[i] * self.im[i]).sqrt() / (n as f32 * 0.25);
         }
         // dB -> 0..1 with a -70dB floor, then smooth attack/release per band
         for (b, (lo, hi)) in self.edges.clone().into_iter().enumerate() {
@@ -473,9 +484,40 @@ impl Fft {
             let db = 20.0 * (amp + 1e-9).log10();
             let norm = ((db + 70.0) / 70.0).clamp(0.0, 1.0);
             let prev = out[b];
-            out[b] = if norm > prev { norm } else { prev * 0.80 + norm * 0.20 };
+            out[b] = if norm > prev {
+                norm
+            } else {
+                prev * 0.80 + norm * 0.20
+            };
         }
     }
+}
+
+// ---------- audio visualizer commands ----------
+
+/// Claim the system-audio capture (ref-counted, started by the first
+/// visualizer widget). `fps` is the redraw rate the widget wants.
+#[tauri::command]
+pub(crate) fn floaty_audio_start(fps: Option<u32>, app: tauri::AppHandle) {
+    start(&app, fps);
+}
+
+/// Release one visualizer's claim on the capture thread.
+#[tauri::command]
+pub(crate) fn floaty_audio_stop() {
+    stop();
+}
+
+#[tauri::command]
+pub(crate) fn floaty_audio_set_fps(fps: u32) {
+    set_fps(fps);
+}
+
+/// False when loopback capture could not start, so the visualizer can say so
+/// instead of sitting there as a flat line.
+#[tauri::command]
+pub(crate) fn floaty_audio_status() -> bool {
+    is_running()
 }
 
 #[cfg(test)]
@@ -515,7 +557,10 @@ mod tests {
         fft.ensure_edges(rate);
         assert_eq!(fft.edges.len(), BANDS);
         for w in fft.edges.windows(2) {
-            assert!(w[0].0 <= w[1].0 && w[0].1 <= w[1].1, "band edges must ascend");
+            assert!(
+                w[0].0 <= w[1].0 && w[0].1 <= w[1].1,
+                "band edges must ascend"
+            );
             assert!(w[1].0 >= w[0].1 - 1, "bands must not invert");
         }
         let mut quiet = vec![0.0f32; BANDS];

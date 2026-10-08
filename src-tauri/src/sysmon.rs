@@ -74,7 +74,10 @@ pub fn ensure_running(app: &AppHandle, interval_ms: Option<u32>) {
 }
 
 pub fn set_interval(ms: u32) {
-    INTERVAL_MS.store(ms.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS), Ordering::Relaxed);
+    INTERVAL_MS.store(
+        ms.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS),
+        Ordering::Relaxed,
+    );
 }
 
 pub fn is_running() -> bool {
@@ -359,6 +362,38 @@ fn mem_sample() -> (f32, u32, u32) {
     (st.dwMemoryLoad as f32, used, total)
 }
 
+// ---------- system monitor commands ----------
+
+/// Claim system sampling (ref-counted, started by the first sysmon widget).
+#[tauri::command]
+pub(crate) fn floaty_sysmon_start(interval_ms: Option<u32>, app: tauri::AppHandle) {
+    start(&app, interval_ms);
+}
+
+/// Release one sysmon widget's claim on the sampler.
+#[tauri::command]
+pub(crate) fn floaty_sysmon_stop() {
+    stop();
+}
+
+#[tauri::command]
+pub(crate) fn floaty_sysmon_set_interval(ms: u32) {
+    set_interval(ms);
+}
+
+/// Number of samples the widget graph keeps — one source of truth.
+#[tauri::command]
+pub(crate) fn floaty_sysmon_history() -> usize {
+    HISTORY
+}
+
+/// False when the sampler could not start (e.g. no GPU performance counters),
+/// which lets the widget say so instead of showing dashes forever.
+#[tauri::command]
+pub(crate) fn floaty_sysmon_status() -> bool {
+    is_running()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,10 +412,16 @@ mod tests {
 
     #[test]
     fn only_3d_engine_instances_count() {
-        assert!(is_3d_engine("pid_1234_luid_0x00000000_0x0000C3B1_phys_0_eng_0_engtype_3D"));
+        assert!(is_3d_engine(
+            "pid_1234_luid_0x00000000_0x0000C3B1_phys_0_eng_0_engtype_3D"
+        ));
         assert!(is_3d_engine("pid_9_engtype_3d"));
-        assert!(!is_3d_engine("pid_1234_luid_0x0_0x0_phys_0_eng_0_engtype_VideoDecode"));
-        assert!(!is_3d_engine("pid_1234_luid_0x0_0x0_phys_0_eng_1_engtype_Copy"));
+        assert!(!is_3d_engine(
+            "pid_1234_luid_0x0_0x0_phys_0_eng_0_engtype_VideoDecode"
+        ));
+        assert!(!is_3d_engine(
+            "pid_1234_luid_0x0_0x0_phys_0_eng_1_engtype_Copy"
+        ));
         assert!(!is_3d_engine(""));
     }
 
