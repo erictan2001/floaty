@@ -413,13 +413,6 @@ function refuse(what: string): (...args: unknown[]) => never {
   };
 }
 
-/** The api to hand a plugin of this kind: the surface its manifest promised. */
-export function pluginApi(kind: string): WidgetApi {
-  const entry = installedEntries().find((candidate) => candidate.id === kind);
-  if (entry && entry.api_version < WIDGET_API_VERSION) return legacyApi;
-  return widgetApi;
-}
-
 /**
  * The built-in plugins, in the order the settings window lists them. This is the
  * single list — the registry is derived from it.
@@ -434,6 +427,61 @@ const BUILTINS: FloatyPlugin[] = [
   visualizerPlugin,
   sysmonPlugin,
 ];
+
+/**
+ * Commands that third-party plugins are permitted to invoke.
+ * Destructive operations (like `floaty_delete`, `floaty_install_plugin`, shell execution)
+ * are excluded to sandbox third-party plugin execution.
+ */
+export const ALLOWED_PLUGIN_COMMANDS: ReadonlySet<string> = new Set([
+  "floaty_log",
+  "floaty_get_record",
+  "floaty_save",
+  "floaty_get_settings",
+  "floaty_list",
+  "floaty_plugins",
+  "floaty_refresh",
+  "floaty_monitors",
+  "floaty_desktop_rect",
+  "floaty_screens",
+  "floaty_overlay_area",
+  "floaty_update_hit_rects",
+  "floaty_set_overlay_dragging",
+  "floaty_heartbeat",
+]);
+
+/** Wrap an API surface with access controls for third-party plugins. */
+export function createScopedPluginApi(kind: string, baseApi: WidgetApi): WidgetApi {
+  const scopedInvoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
+    if (!ALLOWED_PLUGIN_COMMANDS.has(cmd)) {
+      const msg = `[security] Plugin "${kind}" is not permitted to invoke command "${cmd}"`;
+      void Promise.resolve(baseApi.invoke("floaty_log", { msg })).catch(() => undefined);
+      throw new Error(msg);
+    }
+    return baseApi.invoke<T>(cmd, args);
+  };
+
+  return {
+    ...baseApi,
+    invoke: scopedInvoke as typeof invoke,
+    log: (msg: string) => {
+      void Promise.resolve(baseApi.invoke("floaty_log", { msg: `[plugin:${kind}] ${msg}` })).catch(
+        () => undefined,
+      );
+    },
+  };
+}
+
+/** The api to hand a plugin of this kind: the surface its manifest promised. */
+export function pluginApi(kind: string): WidgetApi {
+  const entry = installedEntries().find((candidate) => candidate.id === kind);
+  const base = entry && entry.api_version < WIDGET_API_VERSION ? legacyApi : widgetApi;
+  const isBuiltin = BUILTINS.some((p) => p.kind === kind);
+  if (!isBuiltin) {
+    return createScopedPluginApi(kind, base);
+  }
+  return base;
+}
 
 const registry = new Map<string, FloatyPlugin>();
 
