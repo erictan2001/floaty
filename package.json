@@ -2,8 +2,26 @@
   "name": "floaty",
   "private": true,
   "version": "0.2.3",
+  "description": "Your Windows desktop, but the icons float.",
   "license": "MIT",
   "author": "erictan2001",
+  "homepage": "https://github.com/erictan2001/floaty",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/erictan2001/floaty.git"
+  },
+  "bugs": {
+    "url": "https://github.com/erictan2001/floaty/issues"
+  },
+  "keywords": [
+    "desktop",
+    "windows",
+    "tauri",
+    "widgets",
+    "live2d",
+    "physics",
+    "productivity"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",
