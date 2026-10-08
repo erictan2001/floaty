@@ -40,6 +40,8 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -49,6 +51,9 @@ jobs:
 
       - name: install frontend dependencies
         run: npm ci
+
+      - name: code formatting check
+        run: npm run format:check
 
       # The guards `npm run build` also runs, on their own so a failure says which.
       - name: plugin ids, types and the widget api version
@@ -64,6 +69,12 @@ jobs:
 
       - name: build the frontend (the Rust side needs dist/)
         run: npm run build
+
+      - name: rust formatting and clippy
+        working-directory: src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy -- -D warnings
 
       - name: backend tests
         working-directory: src-tauri

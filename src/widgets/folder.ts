@@ -1,6 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { addPinMenu, appWin, applyFloatieAnimation, displayName, enforceDesktopLayer, iconIsMissing, isOverlayMode, loadRecord, monitorArea, notifyDragging, onSettings, removeSelf, saveRecord, setWidgetSize, watchPluginEnabled, watchSettings, type WidgetRecord } from "./lib";
+import {
+  addPinMenu,
+  appWin,
+  applyFloatieAnimation,
+  displayName,
+  enforceDesktopLayer,
+  iconIsMissing,
+  isOverlayMode,
+  loadRecord,
+  monitorArea,
+  notifyDragging,
+  onSettings,
+  removeSelf,
+  saveRecord,
+  setWidgetSize,
+  watchPluginEnabled,
+  watchSettings,
+  type WidgetRecord,
+} from "./lib";
 import { floatie, DRAG_CONTROLS } from "./floatie";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 import { BODY, clampTo, GRID } from "./placement";
@@ -364,9 +382,13 @@ export function mountFolder(root: HTMLElement, id: string): void {
             // rename — it writes the new name into the record and announces it, and a
             // refusal (a name that is taken, one Windows will not accept) leaves the tile
             // saying what the folder is really called instead of saving a name it never got.
-            void invoke("floaty_rename_folder_dir", { folderId: id, newName }).catch((err: unknown) => {
-              void invoke("floaty_log", { msg: `[folder] rename refused: ${String(err)}` }).catch(() => undefined);
-            });
+            void invoke("floaty_rename_folder_dir", { folderId: id, newName }).catch(
+              (err: unknown) => {
+                void invoke("floaty_log", { msg: `[folder] rename refused: ${String(err)}` }).catch(
+                  () => undefined,
+                );
+              },
+            );
           } else {
             // A folder made only of items exists in its record; there is nowhere else its
             // name could live.
@@ -544,8 +566,11 @@ export const folderPlugin: FloatyPlugin = {
   describe: (rec: PluginRecord) => {
     const raw = rec.data["items"];
     const n = Array.isArray(raw) ? raw.length : 0;
-    const nm = typeof rec.data["name"] === "string" && rec.data["name"] ? rec.data["name"] : "folder";
+    const nm =
+      typeof rec.data["name"] === "string" && rec.data["name"] ? rec.data["name"] : "folder";
     const path = typeof rec.data["path"] === "string" ? rec.data["path"] : "";
-    return path ? `${nm} (${n} item${n === 1 ? "" : "s"}) — ${path}` : `${nm} (${n} item${n === 1 ? "" : "s"})`;
+    return path
+      ? `${nm} (${n} item${n === 1 ? "" : "s"}) — ${path}`
+      : `${nm} (${n} item${n === 1 ? "" : "s"})`;
   },
 };

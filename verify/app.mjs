@@ -161,13 +161,16 @@ async function health(app) {
     screens.push(where);
     if (report.mounted !== report.shouldMount)
       problems.push(`${where}: ${report.mounted} mounted, ${report.shouldMount} belong here`);
-    if (report.missing.length)
-      problems.push(`${where}: no slot for ${report.missing.join(", ")}`);
+    if (report.missing.length) problems.push(`${where}: no slot for ${report.missing.join(", ")}`);
     if (report.strangers.length)
-      problems.push(`${where}: drew a floatie that is not on this screen: ${report.strangers.join(", ")}`);
+      problems.push(
+        `${where}: drew a floatie that is not on this screen: ${report.strangers.join(", ")}`,
+      );
     if (report.iconsFailed) problems.push(`${where}: ${report.iconsFailed} icon(s) failed to load`);
     if (report.hidden !== "visible")
-      problems.push(`${where}: the page believes it is ${report.hidden} — timers will be throttled`);
+      problems.push(
+        `${where}: the page believes it is ${report.hidden} — timers will be throttled`,
+      );
   }
   // Drained once, across every page, and not per window: `takeErrors()` sweeps all of
   // them, so draining inside the loop would file every screen's complaints under the
@@ -177,9 +180,13 @@ async function health(app) {
 
   // Between the windows: every record is drawn exactly once, wherever it lives.
   if (mountedTotal !== expectedTotal)
-    problems.push(`${mountedTotal} floaties drawn across ${app.sessions.length} window(s) for ${expectedTotal} that belong to a screen`);
+    problems.push(
+      `${mountedTotal} floaties drawn across ${app.sessions.length} window(s) for ${expectedTotal} that belong to a screen`,
+    );
   if (expectedTotal !== total)
-    problems.push(`${total - expectedTotal} floatie(s) are on no screen at all — run the Diagnostics tab's "bring back off-screen floaties"`);
+    problems.push(
+      `${total - expectedTotal} floatie(s) are on no screen at all — run the Diagnostics tab's "bring back off-screen floaties"`,
+    );
   // An empty desktop and an app that has lost its store look the same from here: no records
   // to mount, none drawn, nothing to disagree about. `total` is the app's own count of what
   // it knows, so zero of them means the store did not load — and a probe that calls that
@@ -188,7 +195,9 @@ async function health(app) {
 
   console.log(JSON.stringify({ windows, records: total, drawn: mountedTotal }, null, 2));
   if (problems.length === 0) {
-    console.log(`\n${app.sessions.length} overlay(s) healthy — ${mountedTotal} floatie(s) drawn, once each`);
+    console.log(
+      `\n${app.sessions.length} overlay(s) healthy — ${mountedTotal} floatie(s) drawn, once each`,
+    );
     return;
   }
   console.log("");

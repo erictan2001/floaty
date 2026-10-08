@@ -43,8 +43,8 @@ const fail = (what, lines = []) => {
 };
 
 const fixture = Fixture.create({ dir: join(os.tmpdir(), `floaty-drag-${process.pid}`) });
-const app = await launch({ fixture, cwd: resolve(import.meta.dirname, ".."), port }).catch((error) =>
-  skip(error.message),
+const app = await launch({ fixture, cwd: resolve(import.meta.dirname, ".."), port }).catch(
+  (error) => skip(error.message),
 );
 // Registered after the launch, so it runs *after* the launch's own exit hook: on Windows
 // the scratch folder cannot be deleted while the app still has it open. It is also what
@@ -361,7 +361,10 @@ const whereDrawn = async (nth, expect, label) => {
     () => app.page(nth).evaluate(SLOT_AT(id)),
     expect,
   ).catch(() => null);
-  const state = await app.page(nth).evaluate(STATE(id)).catch(() => null);
+  const state = await app
+    .page(nth)
+    .evaluate(STATE(id))
+    .catch(() => null);
   if (!at) return { label, missing: true, state };
   return { label, off: Math.hypot(at.x - expect.x, at.y - expect.y), at, expect, state };
 };
@@ -382,7 +385,11 @@ await hand.moveTo(aim.back.client.x, aim.back.client.y, { from: aim.client });
 legs.push(await whereDrawn(source.nth, aim.back.expect, `back on ${source.screen}`));
 await hand.mouse("mouseReleased", aim.back.client.x, aim.back.client.y);
 // The drop settles: the record follows the pointer to the end of the drag and then stops.
-const after = await rested(`${id} to come to rest where the pointer left it`, where, aim.back.expect);
+const after = await rested(
+  `${id} to come to rest where the pointer left it`,
+  where,
+  aim.back.expect,
+);
 
 const drawn = (await app.drawnBy(id)).map((nth) => surveyed[nth]?.screen ?? `page ${nth}`);
 
@@ -517,4 +524,8 @@ if (!problems.length) {
     `  - the pointer left it at ${aim.back.expect.x},${aim.back.expect.y} on ${source.screen}`,
   );
 }
-await finish(clean, () => app.stop(), () => fixture.remove());
+await finish(
+  clean,
+  () => app.stop(),
+  () => fixture.remove(),
+);

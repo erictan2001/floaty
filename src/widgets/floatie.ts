@@ -503,11 +503,7 @@ export class Floatie {
    * hands it between windows as that changes, in both directions. The overlay is told so a
    * drop here can show what it would do — it decides what that means for each kind.
    */
-  private moveTo(
-    at: { x: number; y: number },
-    ev: PointerAt | undefined,
-    state: DragState,
-  ): void {
+  private moveTo(at: { x: number; y: number }, ev: PointerAt | undefined, state: DragState): void {
     const dx = at.x - state.startSX;
     const dy = at.y - state.startSY;
     const want = placedAt(state, ev ? dragPosition(ev) : null, dx, dy);

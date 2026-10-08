@@ -195,9 +195,7 @@ async function installFromArchive(): Promise<void> {
     replaces
       ? `replaces the installed v${report.installed_version} — ${report.relation}`
       : "not installed yet",
-    report.relation === "downgrade"
-      ? "This archive is OLDER than the copy you have."
-      : "",
+    report.relation === "downgrade" ? "This archive is OLDER than the copy you have." : "",
     report.relation === "same"
       ? "Same version as the installed copy: this rewrites it as it is."
       : "",
@@ -211,11 +209,12 @@ async function installFromArchive(): Promise<void> {
   const go = await confirm(
     `${summary}\n\nInstalling approves this plugin's code for your desktop. The approval is tied to these files: replacing them later asks again.`,
     {
-    title: "floaty plugins",
-    kind: report.relation === "downgrade" ? "warning" : "info",
-    okLabel: replaces ? "replace" : "install",
-    cancelLabel: "cancel",
-  });
+      title: "floaty plugins",
+      kind: report.relation === "downgrade" ? "warning" : "info",
+      okLabel: replaces ? "replace" : "install",
+      cancelLabel: "cancel",
+    },
+  );
   if (!go) return;
 
   const done = await safe("install plugin", () =>
@@ -275,7 +274,9 @@ function installGroup(): HTMLElement {
   );
   const row = actionRow();
   row.append(
-    action("open plugin folder", () => safe("open plugin folder", () => invoke("floaty_open_plugins_dir"))),
+    action("open plugin folder", () =>
+      safe("open plugin folder", () => invoke("floaty_open_plugins_dir")),
+    ),
     action("install from .zip…", installFromArchive, { busyLabel: "installing…" }),
     action(
       "rescan plugins",
@@ -284,7 +285,9 @@ function installGroup(): HTMLElement {
         if (rejected === undefined) return;
         if (status) {
           status.textContent =
-            rejected.length === 0 ? "all plugin folders loaded" : `rejected: ${rejected.join(" | ")}`;
+            rejected.length === 0
+              ? "all plugin folders loaded"
+              : `rejected: ${rejected.join(" | ")}`;
         }
         await reloadPlugins();
         await reloadWidgets();

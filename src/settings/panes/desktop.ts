@@ -58,7 +58,9 @@ function listGroup(): HTMLElement {
     group_.body.append(floatieCard(rec));
   }
   if (hidden > 0) {
-    group_.body.append(note(`${hidden} floatie${hidden === 1 ? "" : "s"} hidden — their plugin is off.`));
+    group_.body.append(
+      note(`${hidden} floatie${hidden === 1 ? "" : "s"} hidden — their plugin is off.`),
+    );
   }
   return group_.root;
 }

@@ -93,7 +93,9 @@ async function boot(): Promise<void> {
   crossCheckPlugins(
     allPlugins()
       .map((plugin) => plugin.kind)
-      .filter((kind) => manifestEntries().some((entry) => entry.id === kind && entry.source === "builtin")),
+      .filter((kind) =>
+        manifestEntries().some((entry) => entry.id === kind && entry.source === "builtin"),
+      ),
   );
   await loadSettings();
   await reloadPlugins();
@@ -127,7 +129,9 @@ try {
   showError(`settings failed to start: ${err instanceof Error ? err.message : String(err)}`);
 }
 
-window.addEventListener("error", (e) => log(`[settings] error: ${e.message} @${e.lineno}:${e.colno}`));
+window.addEventListener("error", (e) =>
+  log(`[settings] error: ${e.message} @${e.lineno}:${e.colno}`),
+);
 window.addEventListener("unhandledrejection", (e) =>
   log(`[settings] rejection: ${String((e as PromiseRejectionEvent).reason)}`),
 );

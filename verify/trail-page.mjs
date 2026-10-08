@@ -195,19 +195,27 @@ try {
   // A query as well as the hash, so every run is a real page load: navigating between
   // two urls that differ only after `#` is a same-document navigation, and the probe
   // would measure the previous run's DOM.
-  await chrome.session.send("Page.navigate", { url: `${base}/index.html?run=${Date.now()}#/overlay` });
+  await chrome.session.send("Page.navigate", {
+    url: `${base}/index.html?run=${Date.now()}#/overlay`,
+  });
 
   // Wait for the thing being measured, never for a stopwatch: a fixed delay after
   // `Page.navigate` measures a half-loaded page.
   const mounted = await page
-    .until("the trail panel to mount", async () => {
-      const m = await read();
-      return m?.mounted && m.panelShown ? m : null;
-    }, { timeout: 45 })
+    .until(
+      "the trail panel to mount",
+      async () => {
+        const m = await read();
+        return m?.mounted && m.panelShown ? m : null;
+      },
+      { timeout: 45 },
+    )
     .catch((e) => e.last);
   check(!!mounted?.panelShown, "the trail panel mounted and drew itself", mounted ? "yes" : "no");
   if (!mounted?.panelShown) {
-    const log = await chrome.session.evaluate("return (window.__LOG__ ?? []).slice(-6)").catch(() => null);
+    const log = await chrome.session
+      .evaluate("return (window.__LOG__ ?? []).slice(-6)")
+      .catch(() => null);
     if (log) console.log(`       the page logged: ${JSON.stringify(log)}`);
     await finish(chrome.stop, () => vite.kill());
   }
@@ -304,9 +312,10 @@ try {
     "and that it lives where the user put it",
     `${afterClose.x},${afterClose.y}`,
   );
-  const stretchWrites = (await chrome.session.evaluate(
-    "return JSON.stringify(window.__SAVES__.filter((s) => s && (s.w > 400 || s.h > 400)))",
-  )) ?? "[]";
+  const stretchWrites =
+    (await chrome.session.evaluate(
+      "return JSON.stringify(window.__SAVES__.filter((s) => s && (s.w > 400 || s.h > 400)))",
+    )) ?? "[]";
   check(
     JSON.parse(stretchWrites).length === 0,
     "and no write ever recorded the screen's size as the panel's",
@@ -347,7 +356,11 @@ try {
       "return JSON.stringify(window.__SAVES__.filter((s) => s && (s.w > 400 || s.h > 400)))",
     )) ?? "[]",
   );
-  check(allWrites.length === 0, "still no write recorded the screen's size", JSON.stringify(allWrites));
+  check(
+    allWrites.length === 0,
+    "still no write recorded the screen's size",
+    JSON.stringify(allWrites),
+  );
 
   // ---- 4. the save that makes it permanent -----------------------------
   // Neither gesture *saves* on its own, and each open re-reads the record — which is
@@ -362,7 +375,7 @@ try {
   await click("load");
   await settle("the page to open for the save", async () => (await read())?.pageOpen);
   check(
-    isPanel((await read())) === false,
+    isPanel(await read()) === false,
     "the slot is stretched while the page is open",
     where(await read()),
   );

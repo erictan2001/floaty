@@ -1,4 +1,13 @@
-import { addPinMenu, appWin, debounce, loadRecord, makeBar, removeSelf, saveRecord, watchPluginEnabled } from "./lib";
+import {
+  addPinMenu,
+  appWin,
+  debounce,
+  loadRecord,
+  makeBar,
+  removeSelf,
+  saveRecord,
+  watchPluginEnabled,
+} from "./lib";
 import { floatie } from "./floatie";
 import type { FloatyPlugin, PluginRecord } from "./plugin";
 

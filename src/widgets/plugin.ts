@@ -150,11 +150,7 @@ export interface WidgetApi {
 
 /** The events a plugin may listen for, and the app event each is forwarded from. */
 export type PluginEventName =
-  | "settings"
-  | "widget-updated"
-  | "widget-removed"
-  | "plugins-changed"
-  | "display";
+  "settings" | "widget-updated" | "widget-removed" | "plugins-changed" | "display";
 
 const FORWARDED: Array<[PluginEventName, string]> = [
   ["settings", "floaty-settings-changed"],

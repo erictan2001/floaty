@@ -149,10 +149,10 @@ export async function attach({ port = APP_PORT, screens = 1, timeout = 60 } = {}
               "previous run is holding the port. Kill it (or restart the app) and retry."
           : booting
             ? `the overlay page(s) on port ${port} have not finished loading after ${timeout}s — no ` +
-                "Tauri bridge yet. A cold dev server can take a minute to serve the first module; give it " +
-                "longer, or reload the page. A page hidden behind a fullscreen app is suspended by " +
-                "WebView2 and never gets one at all — the app's log says 'desktop off screen' when that " +
-                "is what happened."
+              "Tauri bridge yet. A cold dev server can take a minute to serve the first module; give it " +
+              "longer, or reload the page. A page hidden behind a fullscreen app is suspended by " +
+              "WebView2 and never gets one at all — the app's log says 'desktop off screen' when that " +
+              "is what happened."
             : `no live overlay page on port ${port} after ${timeout}s`,
       );
     }
@@ -411,7 +411,12 @@ export class Fixture {
    * Make the world. `files` is a list of names, written into the root; `dirs` are
    * folders made there. Nothing is written outside `dir`.
    */
-  static create({ dir, files = ["alpha.txt", "beta.txt"], dirs = ["sub"], shortcut = "Ctrl+Alt+F9" } = {}) {
+  static create({
+    dir,
+    files = ["alpha.txt", "beta.txt"],
+    dirs = ["sub"],
+    shortcut = "Ctrl+Alt+F9",
+  } = {}) {
     if (!dir) throw new Error("verify: a fixture needs a dir");
     fs.rmSync(dir, { recursive: true, force: true });
     const data = path.join(dir, "data");
@@ -477,7 +482,13 @@ export class Fixture {
  * verified. The user's own app must not be running at the same time — two overlays
  * stack, and the fixture's shortcut exists so at least the hotkey is not a fight.
  */
-export async function launch({ fixture, cwd, port = APP_PORT, timeout = 240, log = console.log } = {}) {
+export async function launch({
+  fixture,
+  cwd,
+  port = APP_PORT,
+  timeout = 240,
+  log = console.log,
+} = {}) {
   // A probe must drive the app it started. An app already on the port — the user's,
   // or a corpse from a run that was interrupted — would answer every call and make
   // this probe report on a world it never made.
@@ -518,7 +529,8 @@ export async function launch({ fixture, cwd, port = APP_PORT, timeout = 240, log
       // "failed to remove floaty.exe: Access is denied", from cargo, not from the probe.
       // One shared fixture target inside the gitignored `target/`, so the first fixture
       // run pays for a build and the rest are incremental.
-      CARGO_TARGET_DIR: process.env.FLOATY_VERIFY_TARGET ?? path.join(cwd, "src-tauri", "target", "verify"),
+      CARGO_TARGET_DIR:
+        process.env.FLOATY_VERIFY_TARGET ?? path.join(cwd, "src-tauri", "target", "verify"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -560,7 +572,9 @@ export async function launch({ fixture, cwd, port = APP_PORT, timeout = 240, log
       } catch (error) {
         if (Date.now() > deadline) {
           await stop(child, port);
-          throw new Error(`verify: the app never came up — ${error.message}\n${output.slice(-2000)}`);
+          throw new Error(
+            `verify: the app never came up — ${error.message}\n${output.slice(-2000)}`,
+          );
         }
         await sleep(2000);
       }
@@ -593,7 +607,10 @@ async function stop(child, port) {
   // to the previous run's app.
   if (process.platform === "win32" && pid) {
     await new Promise((resolve) => {
-      spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore" }).on("close", resolve);
+      spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore" }).on(
+        "close",
+        resolve,
+      );
     });
   }
   try {

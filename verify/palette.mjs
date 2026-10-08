@@ -367,7 +367,8 @@ try {
   );
   check(
     "the summon asked the backend for the empty query again",
-    lastSearch(summoned)?.args?.query === "" && of(summoned, "floaty_palette_search").length > of(narrowed, "floaty_palette_search").length,
+    lastSearch(summoned)?.args?.query === "" &&
+      of(summoned, "floaty_palette_search").length > of(narrowed, "floaty_palette_search").length,
     JSON.stringify(lastSearch(summoned)?.args ?? null),
   );
   check(
@@ -383,7 +384,10 @@ try {
   await session.send("Input.insertText", { text: "arc" });
   await after("the one row to be selected", (v) => v.titles.length === 1);
   await press("enter");
-  const ran = await after("Enter to hand the hit to the backend", (v) => of(v, "floaty_palette_run").length > 0);
+  const ran = await after(
+    "Enter to hand the hit to the backend",
+    (v) => of(v, "floaty_palette_run").length > 0,
+  );
   const run = of(ran, "floaty_palette_run").at(-1);
   check("Enter runs a hit", run !== undefined, "floaty_palette_run was never invoked");
   check(
@@ -391,14 +395,13 @@ try {
     run?.args?.hit?.title === "Arc" && run?.args?.hit?.kind === "app",
     JSON.stringify(run?.args?.hit ?? null),
   );
-  check(
-    "the input is cleared after a run",
-    ran.input === "",
-    `value=${JSON.stringify(ran.input)}`,
-  );
+  check("the input is cleared after a run", ran.input === "", `value=${JSON.stringify(ran.input)}`);
 
   await press("escape");
-  const hid = await after("Escape to ask the window to hide", (v) => of(v, "floaty_palette_hide").length >= 1);
+  const hid = await after(
+    "Escape to ask the window to hide",
+    (v) => of(v, "floaty_palette_hide").length >= 1,
+  );
   check(
     "Escape asks the window to hide",
     of(hid, "floaty_palette_hide").length >= 1,
@@ -419,6 +422,8 @@ try {
 }
 
 console.log(
-  problems.length === 0 ? "\nthe palette behaves" : `\n${problems.length} palette check(s) need a look`,
+  problems.length === 0
+    ? "\nthe palette behaves"
+    : `\n${problems.length} palette check(s) need a look`,
 );
 await finish();

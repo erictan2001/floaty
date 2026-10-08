@@ -40,8 +40,8 @@ const PROBE = fileURLToPath(new URL("./fullscreen-probe.ps1", import.meta.url));
 
 const fixture = Fixture.create({ dir: join(os.tmpdir(), `floaty-presence-${process.pid}`) });
 
-const app = await launch({ fixture, cwd: resolve(import.meta.dirname, ".."), port }).catch((error) =>
-  skip(error.message),
+const app = await launch({ fixture, cwd: resolve(import.meta.dirname, ".."), port }).catch(
+  (error) => skip(error.message),
 );
 
 // After `launch`, not before: exit handlers run in the order they were registered, and the
@@ -141,9 +141,13 @@ const closeProbe = (status) => {
     /* no status file: nothing to close by pid */
   }
   if (!pid) return false;
-  spawnSync("powershell", ["-NoProfile", "-Command", `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`], {
-    stdio: "ignore",
-  });
+  spawnSync(
+    "powershell",
+    ["-NoProfile", "-Command", `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`],
+    {
+      stdio: "ignore",
+    },
+  );
   return true;
 };
 
@@ -222,12 +226,16 @@ for (const [index, label] of layers.entries()) {
           "machine; run this when the desktop is free.",
       );
     }
-    problems.push(`a fullscreen window on ${label} (${screen}) did not hide it — ${JSON.stringify(await hidden())}`);
+    problems.push(
+      `a fullscreen window on ${label} (${screen}) did not hide it — ${JSON.stringify(await hidden())}`,
+    );
   } else {
     const others = Object.entries(state.byLabel).filter(([l]) => l !== label);
     const leaked = others.filter(([, isHidden]) => isHidden).map(([l]) => l);
     if (leaked.length) {
-      problems.push(`a fullscreen window on ${label} also hid ${leaked.join(", ")} — every screen decides for itself`);
+      problems.push(
+        `a fullscreen window on ${label} also hid ${leaked.join(", ")} — every screen decides for itself`,
+      );
     }
     if (state.machineQuiet) {
       problems.push(
@@ -263,7 +271,8 @@ for (const [index, label] of layers.entries()) {
       problems.push(`${label} reports hidden but its window is still visible`);
     }
     for (const [other] of others) {
-      if (visible[other] === false) problems.push(`${other} is hidden as a window while ${label} is covered`);
+      if (visible[other] === false)
+        problems.push(`${other} is hidden as a window while ${label} is covered`);
     }
     console.log(
       `  ${label} (${screen}): hidden${others.length ? `, ${others.map(([l]) => l).join(", ")} left alone` : ""}` +
@@ -306,21 +315,31 @@ if (!keepOpen) {
     const log = (await app.logLines(1000)).join("\n");
     const heard = (log.match(/\[presence\] page quiet=true/g) ?? []).length;
     if (heard < 1) {
-      problems.push("the pages never heard the machine go quiet — nothing would restart the audio capture on wake");
+      problems.push(
+        "the pages never heard the machine go quiet — nothing would restart the audio capture on wake",
+      );
     }
     if (await audioRunning()) {
       problems.push("the shared audio capture kept running while every screen was covered");
     }
-    console.log(`  every screen covered: machine quiet=${quiet.machineQuiet}, pages that heard it=${heard}`);
+    console.log(
+      `  every screen covered: machine quiet=${quiet.machineQuiet}, pages that heard it=${heard}`,
+    );
   }
   closeAll();
-  const back = await waitFor((s) => !s.machineQuiet && Object.values(s.byLabel).every((h) => !h), "awake", 25);
+  const back = await waitFor(
+    (s) => !s.machineQuiet && Object.values(s.byLabel).every((h) => !h),
+    "awake",
+    25,
+  );
   if (!back) {
     problems.push("the machine did not come back after closing the probes");
   } else {
     // This is the fix: the capture is restarted by the page, and it has to actually come up.
     const up = await app
-      .until("the audio capture to come back", async () => (await audioRunning()) || null, { timeout: 6 })
+      .until("the audio capture to come back", async () => (await audioRunning()) || null, {
+        timeout: 6,
+      })
       .catch(() => null);
     if (!up) {
       problems.push("the audio capture did not come back when the machine woke up");
@@ -334,6 +353,11 @@ if (problems.length) {
   console.error(`presence: FAILED — ${problems.length} problem(s)`);
   for (const p of problems) console.error(`  - ${p}`);
 } else {
-  console.log("presence: each screen hid for its own fullscreen app and came back, the others untouched");
+  console.log(
+    "presence: each screen hid for its own fullscreen app and came back, the others untouched",
+  );
 }
-await finish(() => app.stop(), () => (keepOpen ? undefined : fixture.remove()));
+await finish(
+  () => app.stop(),
+  () => (keepOpen ? undefined : fixture.remove()),
+);

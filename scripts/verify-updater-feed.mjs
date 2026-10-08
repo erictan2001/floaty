@@ -228,13 +228,17 @@ async function apiJson(url, token, what) {
  * is certain to return one — it is also what tauri-action itself searches.
  */
 async function findRelease(api, repo, tag, token) {
-  const releases = await apiJson(`${api}/repos/${repo}/releases?per_page=100`, token, `${repo} releases`);
+  const releases = await apiJson(
+    `${api}/repos/${repo}/releases?per_page=100`,
+    token,
+    `${repo} releases`,
+  );
   const found = releases.find((release) => release.tag_name === tag);
   if (!found) {
     throw new Error(
-      `no release for ${tag} (looked through ${releases.length} releases: ${releases
-        .map((release) => release.tag_name)
-        .join(", ") || "none"})`,
+      `no release for ${tag} (looked through ${releases.length} releases: ${
+        releases.map((release) => release.tag_name).join(", ") || "none"
+      })`,
     );
   }
   return found;
@@ -367,12 +371,19 @@ function checkArtifacts(paths, publicKey, version) {
     const head = readHead(file.path);
     const isExe = file.path.endsWith(".exe");
     const isZip = file.path.endsWith(".zip");
-    const looksRight = isExe ? head[0] === 0x4d && head[1] === 0x5a : isZip ? head[0] === 0x50 && head[1] === 0x4b : true;
+    const looksRight = isExe
+      ? head[0] === 0x4d && head[1] === 0x5a
+      : isZip
+        ? head[0] === 0x50 && head[1] === 0x4b
+        : true;
     const kind = isExe ? "MZ" : isZip ? "PK" : "no header check";
     if (looksRight) {
       ok(`artifact ${basename(file.path)}`, `${file.size} bytes, ${kind}`);
     } else {
-      bad(`artifact ${basename(file.path)}`, `${file.size} bytes but the ${isExe ? "MZ" : "PK"} header is missing`);
+      bad(
+        `artifact ${basename(file.path)}`,
+        `${file.size} bytes but the ${isExe ? "MZ" : "PK"} header is missing`,
+      );
     }
     const named = versionInName(basename(file.path));
     if (named !== null && !versionsMatch(named, version)) {
@@ -395,7 +406,10 @@ function checkArtifacts(paths, publicKey, version) {
     }
     const bytes = readFileSync(target);
     try {
-      const decoded = decodeSignature(readFileSync(signature.path, "utf8"), basename(signature.path));
+      const decoded = decodeSignature(
+        readFileSync(signature.path, "utf8"),
+        basename(signature.path),
+      );
       const result = verifySignature(bytes, decoded, publicKey);
       if (result.ok) {
         ok(
@@ -453,11 +467,16 @@ function readEntryUrl(url, repo, tag) {
 
 /** `owner/name`, from whatever the release payload happens to carry. */
 function repoOf(release) {
-  const candidates = [release?.url, release?.html_url, ...(release?.assets ?? []).map((asset) => asset.url)];
+  const candidates = [
+    release?.url,
+    release?.html_url,
+    ...(release?.assets ?? []).map((asset) => asset.url),
+  ];
   for (const candidate of candidates) {
     const text = String(candidate ?? "");
     const found =
-      text.match(/\/repos\/([^/]+)\/([^/]+)\//) ?? text.match(/github\.com\/([^/]+)\/([^/]+)\/releases\//);
+      text.match(/\/repos\/([^/]+)\/([^/]+)\//) ??
+      text.match(/github\.com\/([^/]+)\/([^/]+)\/releases\//);
     if (found) return `${found[1]}/${found[2]}`;
   }
   return "";
@@ -465,7 +484,8 @@ function repoOf(release) {
 
 function findAsset(release, entry) {
   const assets = Array.isArray(release.assets) ? release.assets : [];
-  if (entry.assetId !== undefined) return assets.find((asset) => asset.id === entry.assetId) ?? null;
+  if (entry.assetId !== undefined)
+    return assets.find((asset) => asset.id === entry.assetId) ?? null;
   return assets.find((asset) => asset.name === entry.name) ?? null;
 }
 
@@ -501,12 +521,20 @@ async function checkFeed({ release, manifest, repo, tag, publicKey, options, tok
   }
 
   const assets = Array.isArray(release.assets) ? release.assets : [];
-  section(`release ${tag} (id ${release.id}, ${release.draft ? "draft" : "published"}, ${assets.length} assets)`);
+  section(
+    `release ${tag} (id ${release.id}, ${release.draft ? "draft" : "published"}, ${assets.length} assets)`,
+  );
   for (const asset of assets) {
     note(`  asset ${asset.name}`, `${asset.size} bytes`);
   }
   if (assets.some((asset) => asset.size === 0)) {
-    bad("an asset on the release is zero bytes", assets.filter((asset) => asset.size === 0).map((asset) => asset.name).join(", "));
+    bad(
+      "an asset on the release is zero bytes",
+      assets
+        .filter((asset) => asset.size === 0)
+        .map((asset) => asset.name)
+        .join(", "),
+    );
   }
 
   const downloaded = new Map();
@@ -525,7 +553,9 @@ async function checkFeed({ release, manifest, repo, tag, publicKey, options, tok
     ok(`${platform}: artifact`, `${asset.name}, ${asset.size} bytes`);
     if (asset.size === 0) bad(`${platform}: artifact`, `${asset.name} is zero bytes`);
 
-    const signatureAsset = release.assets.find((candidate) => candidate.name === `${asset.name}.sig`);
+    const signatureAsset = release.assets.find(
+      (candidate) => candidate.name === `${asset.name}.sig`,
+    );
     if (!signatureAsset) {
       bad(`${platform}: signature file`, `${asset.name}.sig is not on the release`);
     } else if (signatureAsset.size === 0) {
@@ -552,19 +582,32 @@ async function checkFeed({ release, manifest, repo, tag, publicKey, options, tok
     );
     const stamped = signedVersion(decoded.trustedComment);
     if (stamped !== null && !versionsMatch(stamped, version)) {
-      bad(`${platform}: signed version`, `the signature is for ${stamped}, the tag says ${version}`);
+      bad(
+        `${platform}: signed version`,
+        `the signature is for ${stamped}, the tag says ${version}`,
+      );
     } else if (stamped !== null) {
       ok(`${platform}: signed version`, stamped);
     } else {
-      note(`${platform}: signed version`, "the trusted comment carries none (signed by an older CLI)");
+      note(
+        `${platform}: signed version`,
+        "the trusted comment carries none (signed by an older CLI)",
+      );
     }
 
     if (signatureAsset && signatureAsset.size > 0) {
       try {
-        const onTheRelease = (await downloadAsset(api, repo, signatureAsset, token)).toString("utf8").replace(/\s+/g, "");
+        const onTheRelease = (await downloadAsset(api, repo, signatureAsset, token))
+          .toString("utf8")
+          .replace(/\s+/g, "");
         const inTheManifest = String(entry.signature).replace(/\s+/g, "");
-        if (onTheRelease === inTheManifest) ok(`${platform}: signature matches the .sig on the release`);
-        else bad(`${platform}: signature`, `${signatureAsset.name} and the manifest's signature differ`);
+        if (onTheRelease === inTheManifest)
+          ok(`${platform}: signature matches the .sig on the release`);
+        else
+          bad(
+            `${platform}: signature`,
+            `${signatureAsset.name} and the manifest's signature differ`,
+          );
       } catch (error) {
         bad(`${platform}: signature file`, error.message);
       }
@@ -580,7 +623,10 @@ async function checkFeed({ release, manifest, repo, tag, publicKey, options, tok
         }
         bytes = downloaded.get(asset.name);
         if (bytes.length !== asset.size) {
-          bad(`${platform}: artifact`, `${asset.name} downloaded as ${bytes.length} bytes, the release says ${asset.size}`);
+          bad(
+            `${platform}: artifact`,
+            `${asset.name} downloaded as ${bytes.length} bytes, the release says ${asset.size}`,
+          );
         }
       } catch (error) {
         bad(`${platform}: artifact`, error.message);
@@ -602,7 +648,10 @@ async function checkFeed({ release, manifest, repo, tag, publicKey, options, tok
     }
     const result = verifySignature(bytes, decoded, publicKey);
     if (result.ok) {
-      ok(`${platform}: signature verifies`, `over ${bytes.length} bytes against the key in the config`);
+      ok(
+        `${platform}: signature verifies`,
+        `over ${bytes.length} bytes against the key in the config`,
+      );
     } else {
       bad(`${platform}: signature verifies`, result.why);
     }
@@ -635,7 +684,9 @@ async function publish({ api, repo, release, token, dryRun }) {
     body: JSON.stringify({ draft: false }),
   });
   if (!response.ok) {
-    throw new Error(`publishing release ${release.id} answered ${response.status} ${response.statusText}`);
+    throw new Error(
+      `publishing release ${release.id} answered ${response.status} ${response.statusText}`,
+    );
   }
   const published = await response.json();
   ok("release published", `${published.html_url} (draft: ${published.draft})`);
@@ -646,7 +697,11 @@ async function publish({ api, repo, release, token, dryRun }) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log(readFileSync(new URL(import.meta.url), "utf8").split("*/")[0].replace(/^#![^\n]*\n/, ""));
+    console.log(
+      readFileSync(new URL(import.meta.url), "utf8")
+        .split("*/")[0]
+        .replace(/^#![^\n]*\n/, ""),
+    );
     return 0;
   }
 
@@ -662,7 +717,9 @@ async function main() {
   console.log(`  repository   ${options.repo || "(none — the release is not read)"}`);
   console.log(`  config       ${resolve(options.config)}`);
   console.log(`  artifacts    ${list(options.artifacts)}`);
-  console.log(`  token        ${token ? "present" : "absent (drafts and private assets will not be readable)"}`);
+  console.log(
+    `  token        ${token ? "present" : "absent (drafts and private assets will not be readable)"}`,
+  );
 
   section("the configuration");
   const config = JSON.parse(readFileSync(options.config, "utf8"));
@@ -671,7 +728,10 @@ async function main() {
   } else if (versionsMatch(config.version, tag)) {
     ok("tauri.conf.json version", `${config.version} equals the tag ${tag}`);
   } else {
-    bad("tauri.conf.json version", `${config.version} is not the version of ${tag} (${versionOf(tag)})`);
+    bad(
+      "tauri.conf.json version",
+      `${config.version} is not the version of ${tag} (${versionOf(tag)})`,
+    );
   }
 
   const updater = config.plugins?.updater ?? {};
@@ -758,7 +818,13 @@ async function main() {
       // read from the API — never on one handed in as a file
       bad("not publishing", "--publish needs the release read from the API, not --release-json");
     } else {
-      await publish({ api, repo: options.repo || repoOf(release), release, token, dryRun: options.dryRun });
+      await publish({
+        api,
+        repo: options.repo || repoOf(release),
+        release,
+        token,
+        dryRun: options.dryRun,
+      });
     }
   }
 

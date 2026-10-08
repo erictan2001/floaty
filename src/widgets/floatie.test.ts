@@ -42,10 +42,16 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
   currentMonitor: () => Promise.resolve(null),
   PhysicalPosition: class {
-    constructor(public x: number, public y: number) {}
+    constructor(
+      public x: number,
+      public y: number,
+    ) {}
   },
   PhysicalSize: class {
-    constructor(public w: number, public h: number) {}
+    constructor(
+      public w: number,
+      public h: number,
+    ) {}
   },
 }));
 
@@ -71,14 +77,7 @@ vi.stubGlobal("document", {
 });
 
 import { overlaySlots, type OverlaySlot, type WidgetRecord } from "./lib";
-import {
-  dragCrossed,
-  floatie,
-  placedAt,
-  pointerAt,
-  resizedTo,
-  type DragState,
-} from "./floatie";
+import { dragCrossed, floatie, placedAt, pointerAt, resizedTo, type DragState } from "./floatie";
 
 const rec = (id: string, x = 100, y = 100): WidgetRecord => ({ id, kind: "note", x, y, data: {} });
 

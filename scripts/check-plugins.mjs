@@ -41,7 +41,9 @@ function typescriptKinds() {
   for (const file of readdirSync(SOURCE)) {
     if (!file.endsWith(".ts") || file === "plugin.ts") continue;
     const source = read(join(SOURCE, file));
-    for (const m of source.matchAll(/export const (\w+): FloatyPlugin = \{\s*\n\s*kind: "([a-z0-9_-]+)"/g)) {
+    for (const m of source.matchAll(
+      /export const (\w+): FloatyPlugin = \{\s*\n\s*kind: "([a-z0-9_-]+)"/g,
+    )) {
       modules.set(m[1], { kind: m[2], file });
     }
   }
@@ -49,7 +51,9 @@ function typescriptKinds() {
   return identifiers.map((identifier) => {
     const found = modules.get(identifier);
     if (!found) {
-      throw new Error(`src/widgets/plugin.ts: BUILTINS lists "${identifier}" but no module exports it as a FloatyPlugin with a kind`);
+      throw new Error(
+        `src/widgets/plugin.ts: BUILTINS lists "${identifier}" but no module exports it as a FloatyPlugin with a kind`,
+      );
     }
     return { ...found, identifier };
   });

@@ -80,7 +80,10 @@ export async function reloadPlugins(): Promise<void> {
  * step depends on the backend already having them — browsing to a folder and
  * then asking the backend to scan it, for instance.
  */
-export function updateSettings(patch: Partial<FloatSettings>, opts: { now?: boolean } = {}): Promise<void> {
+export function updateSettings(
+  patch: Partial<FloatSettings>,
+  opts: { now?: boolean } = {},
+): Promise<void> {
   settingsState = { ...settingsState, ...patch };
   if (opts.now) {
     window.clearTimeout(saveTimer);

@@ -54,9 +54,9 @@ const size = (which, nth) =>
   })()`);
 /** The page's own release, command for command. */
 const release = (which, x, y) =>
-  app.tryInvoke("floaty_gesture_begin", { label: "move", ids: [which] }).then(() =>
-    app.tryInvoke("floaty_drag_to", { id: which, x, y }),
-  );
+  app
+    .tryInvoke("floaty_gesture_begin", { label: "move", ids: [which] })
+    .then(() => app.tryInvoke("floaty_drag_to", { id: which, x, y }));
 /** The log's own words about this widget coming back. */
 const said = async (which, n = 60) =>
   (await app.logLines(n)).filter((l) => l.includes("brought") && l.includes(which));
@@ -86,10 +86,13 @@ const sorted = [...list].sort((a, b) => a.x - b.x);
 let nowhere = null;
 for (let i = 0; i + 1 < sorted.length; i += 1) {
   const gap = sorted[i + 1].x - (sorted[i].x + sorted[i].w);
-  if (gap > 8) nowhere = [Math.round(sorted[i].x + sorted[i].w + gap / 2), Math.round(sorted[i].y + 60)];
+  if (gap > 8)
+    nowhere = [Math.round(sorted[i].x + sorted[i].w + gap / 2), Math.round(sorted[i].y + 60)];
 }
 if (!nowhere) nowhere = [Number(process.argv[4] ?? 120), -20];
-console.log(`stranded: dropping ${id} at ${nowhere}, which is on no screen: ${!onAnyScreen(...nowhere)}`);
+console.log(
+  `stranded: dropping ${id} at ${nowhere}, which is on no screen: ${!onAnyScreen(...nowhere)}`,
+);
 if (onAnyScreen(...nowhere)) skip("the chosen point is on a screen — nothing to check");
 
 const before = await app.placeOf(id);
@@ -98,7 +101,10 @@ console.log(`${id} before: ${before} (undo depth ${depthBefore})`);
 
 // The page's release, command for command.
 const placed = await release(id, nowhere[0], nowhere[1]);
-check(!placed?.error, `the page's own release placed the widget in the band (${placed?.error ?? "placed"})`);
+check(
+  !placed?.error,
+  `the page's own release placed the widget in the band (${placed?.error ?? "placed"})`,
+);
 const strandedAt = await app.placeOf(id);
 await app.tryInvoke("floaty_gesture_end");
 // Wait for the re-home, not for a guess at how long it takes. A timeout is not the end of the
@@ -111,7 +117,9 @@ await app
   })
   .catch(() => null);
 const after = await app.placeOf(id);
-console.log(`  dragged to ${strandedAt} (on a screen: ${strandedAt && onAnyScreen(...strandedAt)}), released`);
+console.log(
+  `  dragged to ${strandedAt} (on a screen: ${strandedAt && onAnyScreen(...strandedAt)}), released`,
+);
 
 // The app says so itself, in its own words: the re-home fired for this widget. A "same place
 // as before" reading cannot show that on its own — a drag that moved nothing looks identical
@@ -130,7 +138,9 @@ const drawn = drawing.length;
 const window0 = drawing[0] ?? 0;
 console.log(`  drawn by ${drawn} window(s)`);
 const body = await size(id, window0);
-console.log(`  body ${body?.[0]}x${body?.[1]}: wholly on one screen: ${body && insideOneScreen(...after, ...body)}`);
+console.log(
+  `  body ${body?.[0]}x${body?.[1]}: wholly on one screen: ${body && insideOneScreen(...after, ...body)}`,
+);
 
 // And the step it pushed has to hold the place it ended up, not the void: undo goes back to
 // where the drag started, and redo must not put it back into the band. The probe leaves the
@@ -171,7 +181,9 @@ try {
 }
 const depthAfter = await depth();
 const steps = depthAfter - depthBefore;
-console.log(`${id} undo -> ${undone}, redo -> ${redone}, undo again -> ${settled} (undo depth ${depthAfter})`);
+console.log(
+  `${id} undo -> ${undone}, redo -> ${redone}, undo again -> ${settled} (undo depth ${depthAfter})`,
+);
 
 // ---- and the way a person does it: a pointer drag on a real title bar -----------------
 // The pass above places the widget during a drag and then asks for the re-home, which is the
@@ -258,7 +270,9 @@ console.log(`${id} undo -> ${undone}, redo -> ${redone}, undo again -> ${settled
             console.log("  (nothing needed bringing back — the body never left a screen)");
           }
           const landedSize = await size(barPanel, nth);
-          const okLanded = Boolean(landed && landedSize && insideOneScreen(...landed, ...landedSize));
+          const okLanded = Boolean(
+            landed && landedSize && insideOneScreen(...landed, ...landedSize),
+          );
           check(
             okLanded,
             `a real pointer drag left ${barPanel}'s body on the desktop: at ${landed}, body ${landedSize?.[0]}x${landedSize?.[1]}`,
@@ -287,10 +301,7 @@ console.log(`${id} undo -> ${undone}, redo -> ${redone}, undo again -> ${settled
 if (!brought.length) {
   console.log(`  (nothing to bring back — ${id} never left a screen)`);
 }
-check(
-  Boolean(after && onAnyScreen(...after)),
-  `the release left ${id} on a screen (at ${after})`,
-);
+check(Boolean(after && onAnyScreen(...after)), `the release left ${id} on a screen (at ${after})`);
 check(
   Boolean(after && body && insideOneScreen(...after, ...body)),
   `the release left ${id}'s whole body on one screen (at ${after}, body ${body?.[0]}x${body?.[1]})`,
@@ -300,7 +311,9 @@ check(drawn > 0, `something is drawing ${id} after the release (${drawn} window(
 // same desktop, and their steps land between the probe's. What is checked above is what the
 // fix is about — where the widget ends up, who draws it, and where undo and redo take it.
 if (steps !== 1) {
-  console.log(`  note: the undo stack moved ${steps} step(s) across the release (other drags count too)`);
+  console.log(
+    `  note: the undo stack moved ${steps} step(s) across the release (other drags count too)`,
+  );
 }
 // That the round trip ran at all is a check of its own. The three below all read "no value,
 // so nothing to say", which on a run where `floaty_undo` threw is not a pass but a probe
@@ -317,15 +330,16 @@ check(
   !settled || JSON.stringify(settled) === JSON.stringify(before),
   `the probe left ${id} where it found it (${before} -> ${settled})`,
 );
-check(
-  !redone || onAnyScreen(...redone),
-  `redo did not put ${id} back into the void (${redone})`,
-);
+check(!redone || onAnyScreen(...redone), `redo did not put ${id} back into the void (${redone})`);
 // A note, for the same reason: the probe's own undo covers the step its drag pushed, but the
 // total only lines up on a desktop nobody else is using.
 const depthEnd = await depth();
-console.log(`  undo stack: ${depthBefore} before, ${depthEnd} after (the probe undoes what it drags)`);
-console.log(`stranded: ${id} went to ${strandedAt} (on no screen), came back to ${after} and is ` +
-  `drawn by ${drawn} window(s)${steps ? "; undo/redo are exact" : ""}`);
+console.log(
+  `  undo stack: ${depthBefore} before, ${depthEnd} after (the probe undoes what it drags)`,
+);
+console.log(
+  `stranded: ${id} went to ${strandedAt} (on no screen), came back to ${after} and is ` +
+    `drawn by ${drawn} window(s)${steps ? "; undo/redo are exact" : ""}`,
+);
 
 await finish(() => app.close());

@@ -32,10 +32,11 @@ export const motionPane: Pane = {
   render(node) {
     node.innerHTML = "";
     node.append(
-      rows("Falling", "Gravity pulls a floatie back down; bounce is how much of the drop it gives back.", [
-        "gravity",
-        "bounce",
-      ]),
+      rows(
+        "Falling",
+        "Gravity pulls a floatie back down; bounce is how much of the drop it gives back.",
+        ["gravity", "bounce"],
+      ),
       rows(
         "Floating",
         "The idle bob, one value at a time: how far a floatie rises, how long one bob takes, and — in wave mode — how far apart neighbours bob. Float height is the real travel in every mode, so the numbers mean what they say.",
@@ -46,7 +47,10 @@ export const motionPane: Pane = {
         "wave: a hop that travels from one floatie to the next. sync: all of them hop together. gentle: a slow, continuous drift. static: no motion at all. The last slider decides how many floaties take part — the rest sit still.",
         ["animation_mode", "animated_ratio"],
       ),
-      rows("Clicking", "What one click and two clicks do to a floatie.", ["single_click", "double_click"]),
+      rows("Clicking", "What one click and two clicks do to a floatie.", [
+        "single_click",
+        "double_click",
+      ]),
     );
   },
 };

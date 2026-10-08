@@ -50,19 +50,21 @@ async function refreshUndo(): Promise<void> {
   if (!state) return;
   if (button && button === undoButton) {
     button.disabled = state.depth === 0;
-    button.textContent = state.depth === 0
-      ? "nothing to undo yet"
-      : state.label
-        ? `undo ${state.label}`
-        : `undo (${state.depth})`;
+    button.textContent =
+      state.depth === 0
+        ? "nothing to undo yet"
+        : state.label
+          ? `undo ${state.label}`
+          : `undo (${state.depth})`;
   }
   if (redo && redo === redoButton) {
     redo.disabled = (state.redo_depth ?? 0) === 0;
-    redo.textContent = (state.redo_depth ?? 0) === 0
-      ? "nothing to redo"
-      : state.redo_label
-        ? `redo ${state.redo_label}`
-        : `redo (${state.redo_depth})`;
+    redo.textContent =
+      (state.redo_depth ?? 0) === 0
+        ? "nothing to redo"
+        : state.redo_label
+          ? `redo ${state.redo_label}`
+          : `redo (${state.redo_depth})`;
   }
 }
 
@@ -205,14 +207,15 @@ export const generalPane: Pane = {
       if (e.key === "Escape") keyInput.value = settings().palette_shortcut;
     });
     keyInput.addEventListener("blur", () => void commitKey());
-    keyRow.append(textBlock("Launcher key", "A key combination, like Ctrl+Alt+Space or Win+Shift+K."), keyInput);
+    keyRow.append(
+      textBlock("Launcher key", "A key combination, like Ctrl+Alt+Space or Win+Shift+K."),
+      keyInput,
+    );
     void invoke<PaletteState>("floaty_palette_state")
       .then(describeKey)
       .catch(() => describeKey(undefined));
     const launcherRow = actionRow();
-    launcherRow.append(
-      action("show the launcher", () => invoke("floaty_show_palette")),
-    );
+    launcherRow.append(action("show the launcher", () => invoke("floaty_show_palette")));
     launcher.body.append(keyRow, keyStatus, launcherRow);
 
     const arrange = group(
@@ -261,47 +264,57 @@ export const generalPane: Pane = {
     const updates = group("Updates");
     const updateRow = actionRow();
     const updateStatus = note("");
-    const install = action("install and restart", async () => {
-      try {
-        await invoke("floaty_install_update");
-      } catch (err) {
-        if (updateStatus?.isConnected) updateStatus.textContent = String(err);
-      }
-    }, { busyLabel: "installing…" });
-    install.disabled = true;
-    updateRow.append(
-      action("check for updates", async () => {
+    const install = action(
+      "install and restart",
+      async () => {
         try {
-          const report = await invoke<{
-            available: boolean;
-            current: string;
-            version?: string | null;
-            notes?: string | null;
-            error?: string | null;
-          }>("floaty_check_update");
-          if (!updateStatus?.isConnected) return;
-          if (report.error) {
-            // A check that could not be made is not "up to date", and saying so is the
-            // difference between a quiet failure and a wrong claim.
-            updateStatus.textContent = `could not check: ${report.error}`;
-            install.disabled = true;
-          } else if (report.available) {
-            updateStatus.textContent = `${report.version} is available — you have ${report.current}${
-              report.notes ? `: ${report.notes}` : ""
-            }`;
-            install.disabled = false;
-          } else {
-            updateStatus.textContent = `${report.current} is the newest version`;
-            install.disabled = true;
-          }
+          await invoke("floaty_install_update");
         } catch (err) {
           if (updateStatus?.isConnected) updateStatus.textContent = String(err);
         }
-      }, { busyLabel: "checking…" }),
+      },
+      { busyLabel: "installing…" },
+    );
+    install.disabled = true;
+    updateRow.append(
+      action(
+        "check for updates",
+        async () => {
+          try {
+            const report = await invoke<{
+              available: boolean;
+              current: string;
+              version?: string | null;
+              notes?: string | null;
+              error?: string | null;
+            }>("floaty_check_update");
+            if (!updateStatus?.isConnected) return;
+            if (report.error) {
+              // A check that could not be made is not "up to date", and saying so is the
+              // difference between a quiet failure and a wrong claim.
+              updateStatus.textContent = `could not check: ${report.error}`;
+              install.disabled = true;
+            } else if (report.available) {
+              updateStatus.textContent = `${report.version} is available — you have ${report.current}${
+                report.notes ? `: ${report.notes}` : ""
+              }`;
+              install.disabled = false;
+            } else {
+              updateStatus.textContent = `${report.current} is the newest version`;
+              install.disabled = true;
+            }
+          } catch (err) {
+            if (updateStatus?.isConnected) updateStatus.textContent = String(err);
+          }
+        },
+        { busyLabel: "checking…" },
+      ),
       install,
     );
     updates.body.append(
-      note("Updates come from this project's releases and are signed: the installer is refused unless the signature matches the public key built into this copy. Nothing downloads or installs unless you ask."),
+      note(
+        "Updates come from this project's releases and are signed: the installer is refused unless the signature matches the public key built into this copy. Nothing downloads or installs unless you ask.",
+      ),
       updateRow,
       updateStatus,
     );
@@ -309,10 +322,15 @@ export const generalPane: Pane = {
     const app = group("Floaties");
     const row = actionRow();
     row.append(
-      action("quit floaty", () => invoke("floaty_quit"), { cls: "pill danger-btn", busyLabel: "quitting…" }),
+      action("quit floaty", () => invoke("floaty_quit"), {
+        cls: "pill danger-btn",
+        busyLabel: "quitting…",
+      }),
     );
     app.body.append(
-      note("Closing this window leaves floaty running in the tray. Quitting takes every floatie off the desktop until it is started again."),
+      note(
+        "Closing this window leaves floaty running in the tray. Quitting takes every floatie off the desktop until it is started again.",
+      ),
       row,
     );
 

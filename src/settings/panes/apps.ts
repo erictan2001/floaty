@@ -99,7 +99,10 @@ function draw(): void {
 
   const section = group("Find an app");
   const controls = actionRow();
-  controls.append(search, action("scan apps", () => scan(), { busyLabel: "scanning…" }));
+  controls.append(
+    search,
+    action("scan apps", () => scan(), { busyLabel: "scanning…" }),
+  );
   countLine = el("div", "count", "");
   results = el("div", "set-scroll");
   section.body.append(controls, countLine, results);

@@ -2,7 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { desktopItemFor, pathOf } from "./pluginManifest";
 import { onScreen, rippleIndex, screenAt } from "./placement";
 import { listen } from "@tauri-apps/api/event";
-import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
+import {
+  currentMonitor,
+  getCurrentWindow,
+  PhysicalPosition,
+  PhysicalSize,
+} from "@tauri-apps/api/window";
 
 export interface WidgetRecord {
   id: string;
@@ -132,9 +137,7 @@ export function notifyDragging(dragging: boolean): void {
     }
     // per overlay layer: the drag only clears the region of the window being
     // dragged in, or the other layer loses its clicks for the duration
-    invoke("floaty_set_overlay_dragging", { label: appWin.label, dragging }).catch(
-      () => undefined,
-    );
+    invoke("floaty_set_overlay_dragging", { label: appWin.label, dragging }).catch(() => undefined);
     if (!dragging) {
       scheduleHitRectsUpdate();
     }
@@ -180,7 +183,9 @@ export function setWidgetPos(id: string, x: number, y: number, scale = 1): void 
       }
     }
   } else {
-    void appWin.setPosition(new PhysicalPosition(Math.round(x * scale), Math.round(y * scale))).catch(() => undefined);
+    void appWin
+      .setPosition(new PhysicalPosition(Math.round(x * scale), Math.round(y * scale)))
+      .catch(() => undefined);
   }
 }
 
@@ -195,7 +200,9 @@ export function setWidgetSize(id: string, w: number, h: number, scale = 1): void
       scheduleHitRectsUpdate();
     }
   } else {
-    void appWin.setSize(new PhysicalSize(Math.round(w * scale), Math.round(h * scale))).catch(() => undefined);
+    void appWin
+      .setSize(new PhysicalSize(Math.round(w * scale), Math.round(h * scale)))
+      .catch(() => undefined);
   }
 }
 
@@ -326,7 +333,10 @@ function pointerPhysical(e: { clientX: number; clientY: number }): { x: number; 
  * `null` when there are no screens to map through (a probe page, a window with no
  * screen), in which case the caller keeps its own delta maths.
  */
-export function dragPosition(ev: { clientX: number; clientY: number }): { x: number; y: number } | null {
+export function dragPosition(ev: {
+  clientX: number;
+  clientY: number;
+}): { x: number; y: number } | null {
   const spot = pointerPhysical(ev);
   return spot ? physicalToVirtual(spot) : null;
 }
@@ -471,33 +481,32 @@ function followPresence(): void {
     reason?: string | null;
     machine?: { quiet?: boolean; hidden?: boolean };
   }>("floaty-presence", (e) => {
-      // What a page acts on is the *machine's* answer, not its own screen's. The audio
-      // capture and the motion are shared, and the state arrives per screen: a screen
-      // covered by a fullscreen app is quiet on its own, so acting on that stopped the
-      // capture for every screen — the visualizer on the screen that was still showing went
-      // dead, and nothing started it again, because the machine had never gone quiet.
-      // The screen's own answer is still in the payload for anything that wants it.
-      const quiet = e.payload?.machine?.quiet ?? e.payload?.quiet === true;
-      if (quiet === presenceQuiet) return;
-      presenceQuiet = quiet;
-      void invoke("floaty_log", {
-        msg: `[presence] page quiet=${quiet} — ${quiet ? "motion and audio off" : "motion and audio back"}`,
-      }).catch(() => undefined);
-      // The bob is a CSS animation, so going quiet is a class change — and coming back
-      // needs the same call that started it, or the desktop stays still for good.
-      for (const slot of overlaySlots.values()) {
-        applyFloatieAnimation(slot.element, slot.id, { x: slot.x, y: slot.y });
-      }
-      // Widgets that do their own work while nobody is watching (the visualizer's
-      // capture, a plugin's poll) get the same signal they can act on — with the machine's
-      // answer as `quiet`, so a plugin does not have to know which screen it is on.
-      window.dispatchEvent(
-        new CustomEvent("floaty-presence", {
-          detail: { ...e.payload, quiet, screenQuiet: e.payload?.quiet === true },
-        }),
-      );
-    },
-  ).catch(() => undefined);
+    // What a page acts on is the *machine's* answer, not its own screen's. The audio
+    // capture and the motion are shared, and the state arrives per screen: a screen
+    // covered by a fullscreen app is quiet on its own, so acting on that stopped the
+    // capture for every screen — the visualizer on the screen that was still showing went
+    // dead, and nothing started it again, because the machine had never gone quiet.
+    // The screen's own answer is still in the payload for anything that wants it.
+    const quiet = e.payload?.machine?.quiet ?? e.payload?.quiet === true;
+    if (quiet === presenceQuiet) return;
+    presenceQuiet = quiet;
+    void invoke("floaty_log", {
+      msg: `[presence] page quiet=${quiet} — ${quiet ? "motion and audio off" : "motion and audio back"}`,
+    }).catch(() => undefined);
+    // The bob is a CSS animation, so going quiet is a class change — and coming back
+    // needs the same call that started it, or the desktop stays still for good.
+    for (const slot of overlaySlots.values()) {
+      applyFloatieAnimation(slot.element, slot.id, { x: slot.x, y: slot.y });
+    }
+    // Widgets that do their own work while nobody is watching (the visualizer's
+    // capture, a plugin's poll) get the same signal they can act on — with the machine's
+    // answer as `quiet`, so a plugin does not have to know which screen it is on.
+    window.dispatchEvent(
+      new CustomEvent("floaty-presence", {
+        detail: { ...e.payload, quiet, screenQuiet: e.payload?.quiet === true },
+      }),
+    );
+  }).catch(() => undefined);
 }
 
 function followMonitors(): void {
@@ -572,7 +581,9 @@ export async function loadRecord(id: string): Promise<WidgetRecord | undefined> 
   // One record per widget, never the whole store: `floaty_list` carries every
   // icon inlined (~8.5MB) and this runs once per widget on a page load.
   try {
-    return await invoke<WidgetRecord | null>("floaty_get_record", { id }).then((r) => r ?? undefined);
+    return await invoke<WidgetRecord | null>("floaty_get_record", { id }).then(
+      (r) => r ?? undefined,
+    );
   } catch (err) {
     void invoke("floaty_log", {
       msg: `[lib] loadRecord(${id}) failed: ${String(err)}`,
@@ -706,7 +717,10 @@ export function describeForConfirm(rec: WidgetRecord): string {
  * stop floating.
  */
 export async function removeSelf(rec: WidgetRecord): Promise<void> {
-  if (currentSettings().confirm_remove && !(await confirmRemoveDialog(describeForConfirm(rec), rec.kind))) {
+  if (
+    currentSettings().confirm_remove &&
+    !(await confirmRemoveDialog(describeForConfirm(rec), rec.kind))
+  ) {
     return; // user kept it
   }
   try {
@@ -907,9 +921,9 @@ export function applyFloatieAnimation(
   const logDecision = (decision: string): void => {
     if (wrap.dataset.motionLogged === decision) return;
     wrap.dataset.motionLogged = decision;
-    void invoke("floaty_log", { msg: `[motion] ${id} -> ${decision} (${describeMotion(s)})` }).catch(
-      () => undefined,
-    );
+    void invoke("floaty_log", {
+      msg: `[motion] ${id} -> ${decision} (${describeMotion(s)})`,
+    }).catch(() => undefined);
   };
 
   if (mode === "static" || ratio <= 0 || height <= 0) {
@@ -925,7 +939,7 @@ export function applyFloatieAnimation(
     : Math.abs(Array.from(id).reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) | 0, 0));
 
   // Determine if this specific floatie is included in the motion ratio
-  const isAnimated = ((num * 37) % 100) < ratio;
+  const isAnimated = (num * 37) % 100 < ratio;
   if (!isAnimated) {
     wrap.classList.add("anim-static");
     logDecision("static");
@@ -1154,7 +1168,9 @@ export function addPinMenu(
         ev.stopPropagation();
         closeMenu();
         void fn().catch((err: unknown) => {
-          void invoke("floaty_log", { msg: `[menu] ${label} failed: ${String(err)}` }).catch(() => undefined);
+          void invoke("floaty_log", { msg: `[menu] ${label} failed: ${String(err)}` }).catch(
+            () => undefined,
+          );
         });
       });
     };
@@ -1319,7 +1335,9 @@ function startRename(
           input.disabled = false;
           input.focus();
           note(String(err));
-          void invoke("floaty_log", { msg: `[menu] rename failed: ${String(err)}` }).catch(() => undefined);
+          void invoke("floaty_log", { msg: `[menu] rename failed: ${String(err)}` }).catch(
+            () => undefined,
+          );
         });
     };
     input.addEventListener("keydown", (ev) => {

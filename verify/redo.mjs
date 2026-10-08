@@ -25,8 +25,8 @@ const { check, skip, finish, problems } = probe("redo");
 
 const fixture = Fixture.create({ dir: join(os.tmpdir(), `floaty-redo-${process.pid}`) });
 
-const app = await launch({ fixture, cwd: resolve(import.meta.dirname, ".."), port }).catch((error) =>
-  skip(error.message),
+const app = await launch({ fixture, cwd: resolve(import.meta.dirname, ".."), port }).catch(
+  (error) => skip(error.message),
 );
 
 // After `launch`, not before: exit handlers run in the order they were registered, and the
@@ -109,10 +109,16 @@ const folderStill = async () => {
 await app.invoke("floaty_drag_to", { id: file.id, x: folderAt[0] + 40, y: folderAt[1] + 50 });
 await app.invoke("floaty_dropped", { id: file.id, x: folderAt[0] + 40, y: folderAt[1] + 50 });
 check((await byPath(filePath, false)) === true, "the merge took the file's record away");
-check((await items()).includes(fileName), `the folder holds ${fileName} (items: ${JSON.stringify(await items())})`);
+check(
+  (await items()).includes(fileName),
+  `the folder holds ${fileName} (items: ${JSON.stringify(await items())})`,
+);
 check(existsSync(join(folderPath, fileName)), "the file is inside the folder on disk");
 check(
-  (await settled((s) => s.depth >= 1 && s.redo_depth === 0, "one step to undo, nothing to redo")) !== null,
+  (await settled(
+    (s) => s.depth >= 1 && s.redo_depth === 0,
+    "one step to undo, nothing to redo",
+  )) !== null,
   `one step to undo, nothing to redo (${JSON.stringify(await state())})${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 
@@ -121,7 +127,10 @@ await app.invoke("floaty_undo");
 const back = await byPath(filePath, true);
 check(back !== null && back !== true, "undo brought the file's record back");
 if (back && back !== true) {
-  check(back.x === fileAt[0] && back.y === fileAt[1], `it came back to ${fileAt} (was ${back.x},${back.y})`);
+  check(
+    back.x === fileAt[0] && back.y === fileAt[1],
+    `it came back to ${fileAt} (was ${back.x},${back.y})`,
+  );
 }
 check(!existsSync(join(folderPath, fileName)), "the file left the folder on disk");
 check(await folderStill(), "the folder did not move");
@@ -133,18 +142,27 @@ check(
 // ---- redo: the same file, the same folder, and the folder still does not move ---------
 await app.invoke("floaty_redo");
 check((await byPath(filePath, false)) === true, "redo took the file's record away again");
-check((await items()).includes(fileName), `the folder holds ${fileName} again (items: ${JSON.stringify(await items())})`);
+check(
+  (await items()).includes(fileName),
+  `the folder holds ${fileName} again (items: ${JSON.stringify(await items())})`,
+);
 check(existsSync(join(folderPath, fileName)), "the file is inside the folder on disk again");
 check(await folderStill(), "the folder still did not move");
 check(
-  (await settled((s) => s.redo_depth === 0 && s.depth >= 1, "redo to hand the step back to undo")) !== null,
+  (await settled(
+    (s) => s.redo_depth === 0 && s.depth >= 1,
+    "redo to hand the step back to undo",
+  )) !== null,
   `redo handed the step back to undo (${JSON.stringify(await state())})${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 
 // ---- and back once more: the two keys trade the same step ----------------------------
 await app.invoke("floaty_undo");
 const home2 = await byPath(filePath, true);
-check(home2 !== null && home2 !== true && home2.x === fileAt[0] && home2.y === fileAt[1], "undo put it home a second time");
+check(
+  home2 !== null && home2 !== true && home2.x === fileAt[0] && home2.y === fileAt[1],
+  "undo put it home a second time",
+);
 check(
   (await settled((s) => s.redo_depth === 1, "the redo to be available again")) !== null,
   `and the redo is available again${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
@@ -153,11 +171,15 @@ check(
 // ---- a new action makes the future unreachable ---------------------------------------
 await app.tryInvoke("floaty_undo_checkpoint", { label: "redo-probe", restore: [] });
 check(
-  (await settled((s) => s.redo_depth === 0, "a new action to clear what was left to redo")) !== null,
+  (await settled((s) => s.redo_depth === 0, "a new action to clear what was left to redo")) !==
+    null,
   `a new action cleared what was left to redo${gaveUp ? ` — gave up: ${gaveUp}` : ""}`,
 );
 const gone = await app.tryInvoke("floaty_redo");
-check(typeof gone?.error === "string" && gone.error.includes("nothing left to redo"), `redo now refuses: ${gone?.error ?? "no error"}`);
+check(
+  typeof gone?.error === "string" && gone.error.includes("nothing left to redo"),
+  `redo now refuses: ${gone?.error ?? "no error"}`,
+);
 
 // ---- put the world back, and leave the history empty ---------------------------------
 // The stack is the fixture's own, so unwinding all of it is safe here — a probe against
@@ -176,6 +198,11 @@ if (!keep) {
   await byPath(folderPath, false);
 }
 const final = await state();
-console.log(`redo: done — ${problems.length} problem(s); stack depth ${final.depth}, redo depth ${final.redo_depth}`);
+console.log(
+  `redo: done — ${problems.length} problem(s); stack depth ${final.depth}, redo depth ${final.redo_depth}`,
+);
 
-await finish(() => app.stop(), () => (keep ? undefined : fixture.remove()));
+await finish(
+  () => app.stop(),
+  () => (keep ? undefined : fixture.remove()),
+);

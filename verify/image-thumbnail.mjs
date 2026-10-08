@@ -144,30 +144,27 @@ try {
     stored.push({ name, got, len: buf.length });
     console.log(
       `  ${name.padEnd(22)} file ${String(w).padStart(4)}x${String(h).padEnd(4)}` +
-        `  icon ${String(got.w).padStart(3)}x${String(got.h).padEnd(4)}  ${buf.length}b`
+        `  icon ${String(got.w).padStart(3)}x${String(got.h).padEnd(4)}  ${buf.length}b`,
     );
 
     // The generic glyph is 32px whatever the file is; a picture comes back bigger.
     check(
       got.w > GENERIC && got.h > GENERIC,
-      `${name}: its own picture at ${got.w}x${got.h}, not the ${GENERIC}px type icon`
+      `${name}: its own picture at ${got.w}x${got.h}, not the ${GENERIC}px type icon`,
     );
     // Downscaled to fit 256 on the long edge, never above it.
-    check(
-      Math.max(got.w, got.h) <= 256,
-      `${name}: ${got.w}x${got.h}, within 256 on the long edge`
-    );
+    check(Math.max(got.w, got.h) <= 256, `${name}: ${got.w}x${got.h}, within 256 on the long edge`);
     // The shape has to be the file's own: a wide file must not come back square.
     check(
       Math.abs(got.w / got.h - w / h) < 0.06,
-      `${name}: ${got.w}x${got.h} keeps the file's ${w}x${h} proportions`
+      `${name}: ${got.w}x${got.h} keeps the file's ${w}x${h} proportions`,
     );
     // And the scale: the file's long edge, capped at 256.
     const wantLong = Math.min(256, Math.max(w, h));
     const gotLong = Math.max(got.w, got.h);
     check(
       gotLong === wantLong,
-      `${name}: long edge ${gotLong} is the ${wantLong} a ${Math.max(w, h)}px file calls for`
+      `${name}: long edge ${gotLong} is the ${wantLong} a ${Math.max(w, h)}px file calls for`,
     );
   }
 
@@ -177,7 +174,7 @@ try {
     const lens = new Set(stored.map((s) => s.len));
     check(
       lens.size > 1,
-      `${stored.length} different images each stored their own bytes (${lens.size} distinct)`
+      `${stored.length} different images each stored their own bytes (${lens.size} distinct)`,
     );
   }
 } finally {

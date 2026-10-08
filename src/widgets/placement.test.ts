@@ -101,12 +101,8 @@ describe("overlaps", () => {
     // 100 wide against a box starting at 100: they share 12px of x, and the rule is
     // "more than 12", so 12 is still neighbours and 13 is a collision.
     expect(overlaps(a, { x: 100, y: 0, w: 100, h: 100 })).toBe(false);
-    expect(overlaps({ x: 0, y: 0, w: 112, h: 100 }, { x: 100, y: 0, w: 100, h: 100 })).toBe(
-      false,
-    );
-    expect(overlaps({ x: 0, y: 0, w: 150, h: 100 }, { x: 100, y: 88, w: 100, h: 100 })).toBe(
-      false,
-    );
+    expect(overlaps({ x: 0, y: 0, w: 112, h: 100 }, { x: 100, y: 0, w: 100, h: 100 })).toBe(false);
+    expect(overlaps({ x: 0, y: 0, w: 150, h: 100 }, { x: 100, y: 88, w: 100, h: 100 })).toBe(false);
   });
 
   it("is true past the slop on both axes at once", () => {
@@ -350,7 +346,8 @@ describe("freeSpot", () => {
       { x: 712, y: 0, w: 100, h: 200 },
     ];
     const r = freeSpot({ id: "n", x: 24, y: 24, w: 100, h: 100, area: SCREEN_A, others });
-    for (const o of others) expect(overlaps({ ...r, w: 100, h: 100 }, o), `clear of ${o.x},${o.y}`).toBe(false);
+    for (const o of others)
+      expect(overlaps({ ...r, w: 100, h: 100 }, o), `clear of ${o.x},${o.y}`).toBe(false);
     // and the answer is a cell of the grid, edge-clear of the screen it was asked for
     expect(r.x).toBe(SCREEN_A.x + GRID.edge);
     expect(r.x - (SCREEN_A.x + GRID.margin)).toBeLessThanOrEqual(GRID.w);
@@ -360,14 +357,30 @@ describe("freeSpot", () => {
     // Nothing is free, so the answer is the requested place pulled inside the screen —
     // overlapping rather than missing, because a widget with no room still has to exist.
     const area = { x: 0, y: 0, w: 200, h: 200 };
-    const r = freeSpot({ id: "n", x: 500, y: 500, w: 100, h: 100, area, others: [{ x: 0, y: 0, w: 200, h: 200 }] });
+    const r = freeSpot({
+      id: "n",
+      x: 500,
+      y: 500,
+      w: 100,
+      h: 100,
+      area,
+      others: [{ x: 0, y: 0, w: 200, h: 200 }],
+    });
     expect(r).toEqual(clampTo(area, { x: 500, y: 500, w: 100, h: 100 }));
     expect(r).toEqual({ x: 84, y: 84 });
   });
 
   it("never gives an answer off the screen it was asked for", () => {
     const area = { x: 0, y: 0, w: 150, h: 150 };
-    const r = freeSpot({ id: "n", x: 500, y: 500, w: 100, h: 100, area, others: [{ x: 0, y: 0, w: 150, h: 150 }] });
+    const r = freeSpot({
+      id: "n",
+      x: 500,
+      y: 500,
+      w: 100,
+      h: 100,
+      area,
+      others: [{ x: 0, y: 0, w: 150, h: 150 }],
+    });
     expect(r.x).toBeGreaterThanOrEqual(area.x);
     expect(r.y).toBeGreaterThanOrEqual(area.y);
     expect(r.x).toBeLessThan(area.x + area.w);
@@ -405,7 +418,10 @@ describe("plan", () => {
 
   it("lays new widgets out around the ones already placed", () => {
     // The first new widget takes the top-left cell; the second must not land on it.
-    const r = plan([rec("a", "note", 0, 0), rec("b", "note", 0, 0)], { area: SCREEN_A, top: false });
+    const r = plan([rec("a", "note", 0, 0), rec("b", "note", 0, 0)], {
+      area: SCREEN_A,
+      top: false,
+    });
     expect(r.moves).toHaveLength(2);
     expect(overlaps({ ...r.moves[0]!, w: 300, h: 330 }, { ...r.moves[1]!, w: 300, h: 330 })).toBe(
       false,
@@ -416,8 +432,12 @@ describe("plan", () => {
     const desktopItem = rec("d", "app", 0, 0);
     const topWidget = rec("t", "note", 0, 0, { on_top: true });
 
-    expect(plan([desktopItem, topWidget], { area: SCREEN_A, top: false }).moves.map((m) => m.id)).toEqual(["d"]);
-    expect(plan([desktopItem, topWidget], { area: SCREEN_A, top: true }).moves.map((m) => m.id)).toEqual(["t"]);
+    expect(
+      plan([desktopItem, topWidget], { area: SCREEN_A, top: false }).moves.map((m) => m.id),
+    ).toEqual(["d"]);
+    expect(
+      plan([desktopItem, topWidget], { area: SCREEN_A, top: true }).moves.map((m) => m.id),
+    ).toEqual(["t"]);
   });
 
   it("reads the layer off the record, not off the kind", () => {
@@ -448,10 +468,11 @@ describe("plan", () => {
   });
 
   it("stacks a tidied icon from the floor upwards, one cell apart", () => {
-    const r = plan(
-      [rec("a", "app", 0, 0), rec("f", "file", 0, 0), rec("d", "folder", 0, 0)],
-      { area: SCREEN_A, top: false, tidy: true },
-    );
+    const r = plan([rec("a", "app", 0, 0), rec("f", "file", 0, 0), rec("d", "folder", 0, 0)], {
+      area: SCREEN_A,
+      top: false,
+      tidy: true,
+    });
     expect(r.moves.map((m) => m.id)).toEqual(["a", "f", "d"]);
     expect(r.arranged).toEqual(["a", "f", "d"]);
 
@@ -479,11 +500,14 @@ describe("plan", () => {
   });
 
   it("lays a pinned icon from the top down instead, and still counts it as arranged", () => {
-    const r = plan([rec("a", "app", 0, 0, { on_top: true }), rec("b", "app", 0, 0, { on_top: true })], {
-      area: SCREEN_A,
-      top: true,
-      tidy: true,
-    });
+    const r = plan(
+      [rec("a", "app", 0, 0, { on_top: true }), rec("b", "app", 0, 0, { on_top: true })],
+      {
+        area: SCREEN_A,
+        top: true,
+        tidy: true,
+      },
+    );
     expect(r.arranged).toEqual(["a", "b"]);
     expect(r.moves[0]!.y).toBe(GRID.margin);
     expect(r.moves[1]!.y).toBe(GRID.margin + GRID.h);

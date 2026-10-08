@@ -43,7 +43,7 @@ type L2DModel = Awaited<ReturnType<typeof Live2DModel.from>>;
  * enough that 10fps still reads as smooth; motions and pointer tracking keep
  * the 30fps budget.
  */
-const IDLE_FPS = 10;   // breathing loop only
+const IDLE_FPS = 10; // breathing loop only
 const MOTION_FPS = 20; // a self-triggered gesture is playing
 const ACTIVE_FPS = 30; // pointer is on/near the model, or it is being dragged
 
@@ -64,7 +64,8 @@ interface AvailableMotion {
  */
 function resolveModelUrl(model: string): string {
   if (!model) return "";
-  if (model.startsWith("http://") || model.startsWith("https://") || model.startsWith("asset://")) return model;
+  if (model.startsWith("http://") || model.startsWith("https://") || model.startsWith("asset://"))
+    return model;
   const normalized = model.replace(/\\/g, "/");
   const parts = normalized.split("/").map((part, idx) => {
     if (idx === 0 && /^[a-zA-Z]:$/.test(part)) return part;
@@ -255,10 +256,18 @@ export function mountLive2D(root: HTMLElement, id: string): void {
   /** Fit the model to the widget box. The box is what the zoom changes. */
   const fitModel = (model: L2DModel): void => {
     model.scale.set(1);
-    const mw = model.width || (model as unknown as { internalModel?: { width?: number } }).internalModel?.width || 300;
-    const mh = model.height || (model as unknown as { internalModel?: { height?: number } }).internalModel?.height || 400;
-    const targetW = wrap.clientWidth > 0 ? wrap.clientWidth : (wrap.offsetWidth > 0 ? wrap.offsetWidth : boxW);
-    const targetH = wrap.clientHeight > 0 ? wrap.clientHeight : (wrap.offsetHeight > 0 ? wrap.offsetHeight : boxH);
+    const mw =
+      model.width ||
+      (model as unknown as { internalModel?: { width?: number } }).internalModel?.width ||
+      300;
+    const mh =
+      model.height ||
+      (model as unknown as { internalModel?: { height?: number } }).internalModel?.height ||
+      400;
+    const targetW =
+      wrap.clientWidth > 0 ? wrap.clientWidth : wrap.offsetWidth > 0 ? wrap.offsetWidth : boxW;
+    const targetH =
+      wrap.clientHeight > 0 ? wrap.clientHeight : wrap.offsetHeight > 0 ? wrap.offsetHeight : boxH;
     const s = Math.min(targetW / mw, targetH / mh);
     const baseScale = Number.isFinite(s) && s > 0 ? s * 0.98 : 1;
     model.scale.set(baseScale);
@@ -424,9 +433,13 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       pixiApp.stage.addChild(model);
       fitModel(model);
       wrap.querySelector(".live2d-failed")?.remove();
-      invoke("floaty_log", { msg: `[live2d/${id}] model loaded successfully: ${url}` }).catch(() => undefined);
+      invoke("floaty_log", { msg: `[live2d/${id}] model loaded successfully: ${url}` }).catch(
+        () => undefined,
+      );
     } catch (err) {
-      invoke("floaty_log", { msg: `[live2d/${id}] model load failed: ${String(err)}` }).catch(() => undefined);
+      invoke("floaty_log", { msg: `[live2d/${id}] model load failed: ${String(err)}` }).catch(
+        () => undefined,
+      );
       failedBox();
       throw err;
     }
@@ -495,7 +508,9 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       let tickCount = 0;
       pixiApp.ticker.add(() => {
         if (tickCount++ === 0) {
-          invoke("floaty_log", { msg: `[live2d] TICKER FIRST TICK, started=${pixiApp?.ticker.started}` }).catch(() => undefined);
+          invoke("floaty_log", {
+            msg: `[live2d] TICKER FIRST TICK, started=${pixiApp?.ticker.started}`,
+          }).catch(() => undefined);
         }
         if (currentModel) {
           currentModel.update(pixiApp!.ticker.deltaMS);
@@ -517,7 +532,9 @@ export function mountLive2D(root: HTMLElement, id: string): void {
             root = s.live2d_root || "";
           }
           if (root) {
-            const list = await invoke<Array<{ name: string; path: string }>>("floaty_scan_models", { root });
+            const list = await invoke<Array<{ name: string; path: string }>>("floaty_scan_models", {
+              root,
+            });
             if (list && list.length > 0) {
               m = list[0].path;
               rec.data["model"] = m;
@@ -582,7 +599,8 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       };
 
       const pollDesktopCursor = async (): Promise<void> => {
-        if (document.hidden || dragging || !currentModel || performance.now() < interactUntil) return;
+        if (document.hidden || dragging || !currentModel || performance.now() < interactUntil)
+          return;
         try {
           const pos = await invoke<{ rel_x: number; rel_y: number } | null>(
             "floaty_window_cursor_pos",
@@ -599,7 +617,8 @@ export function mountLive2D(root: HTMLElement, id: string): void {
           // Check proximity to Live2D window (300x400)
           const targetW = wrap.clientWidth || 300;
           const targetH = wrap.clientHeight || 400;
-          const isNear = relX >= -160 && relX <= targetW + 160 && relY >= -160 && relY <= targetH + 160;
+          const isNear =
+            relX >= -160 && relX <= targetW + 160 && relY >= -160 && relY <= targetH + 160;
 
           updateCursorTracking(currentModel, { x: relX, y: relY }, dist, isNear);
         } catch {
@@ -633,7 +652,9 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         }
       }, 15000);
     } catch (err) {
-      invoke("floaty_log", { msg: `[live2d/${id}] init failed: ${String(err)}` }).catch(() => undefined);
+      invoke("floaty_log", { msg: `[live2d/${id}] init failed: ${String(err)}` }).catch(
+        () => undefined,
+      );
       failedBox();
     }
     await listen<string>("floaty-live2d-changed", (e) => {
@@ -751,13 +772,15 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       interactUntil = performance.now() + 1500;
       const now = performance.now();
       const isDouble =
-        now - lastTapTime < 380 &&
-        Math.hypot(localX - lastTapPos.x, localY - lastTapPos.y) < 30;
+        now - lastTapTime < 380 && Math.hypot(localX - lastTapPos.x, localY - lastTapPos.y) < 30;
       lastTapTime = now;
       lastTapPos = { x: localX, y: localY };
 
       if (isDouble) {
-        handleModelInteract(currentModel, localX, localY, { overrideTarget: "special", priority: MotionPriority.FORCE });
+        handleModelInteract(currentModel, localX, localY, {
+          overrideTarget: "special",
+          priority: MotionPriority.FORCE,
+        });
       } else {
         handleModelInteract(currentModel, localX, localY);
       }
@@ -776,4 +799,3 @@ if (import.meta.hot) {
     window.location.reload();
   });
 }
-

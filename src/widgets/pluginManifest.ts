@@ -161,7 +161,9 @@ export function pathOf(rec: WidgetRecord): string {
 export function pluginSize(rec: WidgetRecord): Size {
   const advertised = entries.get(rec.kind)?.default_size;
   const base: Size =
-    Array.isArray(advertised) && advertised.length === 2 && advertised.every((n) => num(n) !== undefined)
+    Array.isArray(advertised) &&
+    advertised.length === 2 &&
+    advertised.every((n) => num(n) !== undefined)
       ? { w: advertised[0], h: advertised[1] }
       : FALLBACK_SIZE;
   return {
@@ -186,7 +188,10 @@ export function isPinned(rec: WidgetRecord): boolean {
  * catches it in CI, this names the window it happened in. Installed plugins are
  * reported by the loader instead, since their module is imported at runtime.
  */
-export function crossCheckPlugins(kinds: string[]): { missingModule: string[]; missingManifest: string[] } {
+export function crossCheckPlugins(kinds: string[]): {
+  missingModule: string[];
+  missingManifest: string[];
+} {
   const known = new Set<string>();
   const missingModule: string[] = [];
   for (const entry of entries.values()) {

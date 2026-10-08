@@ -63,7 +63,9 @@ for (const folder of folders) {
     // not wrong — only a module that names a *different* one is. The folder name is
     // the id (`the_examples_validate_like_any_other_plugin` pins the two together).
     if (plugin?.kind !== undefined && plugin.kind !== folder) {
-      problems.push(`  ${folder}: the module calls itself "${plugin.kind}", the folder says "${folder}"`);
+      problems.push(
+        `  ${folder}: the module calls itself "${plugin.kind}", the folder says "${folder}"`,
+      );
     }
   }
 }

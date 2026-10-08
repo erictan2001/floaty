@@ -178,9 +178,10 @@ export function mountSysmon(root: HTMLElement, id: string): void {
       const values: Record<Metric, number> = { cpu: s.cpu, gpu: s.gpu, ram: s.ram };
       for (const m of METRICS) {
         const v = Math.max(0, Math.min(100, values[m]));
-        rows[m].val.textContent = m === "ram"
-          ? `${v.toFixed(0)}%  ${gb(s.mem_used_mb)}/${gb(s.mem_total_mb)}g`
-          : `${v.toFixed(0)}%`;
+        rows[m].val.textContent =
+          m === "ram"
+            ? `${v.toFixed(0)}%  ${gb(s.mem_used_mb)}/${gb(s.mem_total_mb)}g`
+            : `${v.toFixed(0)}%`;
         rows[m].bar.style.width = `${v.toFixed(1)}%`;
         // colour the bar with its own metric colour so the graph legend is obvious
         rows[m].bar.style.background = COLORS[m][1];
@@ -259,14 +260,17 @@ export function mountSysmon(root: HTMLElement, id: string): void {
     await invoke("floaty_sysmon_start", { intervalMs: interval() }).catch(() => undefined);
     // if no sample lands and the backend says it is not sampling, say so rather
     // than showing dashes forever (GPU performance counters can be unavailable)
-    window.setTimeout(() => {
-      if (latest) return;
-      void invoke<boolean>("floaty_sysmon_status")
-        .then((running) => {
-          if (!running) foot.textContent = "sampler unavailable on this system";
-        })
-        .catch(() => undefined);
-    }, Math.max(1500, interval() * 3));
+    window.setTimeout(
+      () => {
+        if (latest) return;
+        void invoke<boolean>("floaty_sysmon_status")
+          .then((running) => {
+            if (!running) foot.textContent = "sampler unavailable on this system";
+          })
+          .catch(() => undefined);
+      },
+      Math.max(1500, interval() * 3),
+    );
     onSettings(() => {
       void invoke("floaty_sysmon_set_interval", { ms: interval() }).catch(() => undefined);
     });

@@ -290,7 +290,9 @@ function presenceSection(presence: PresenceReport | null | undefined): HTMLEleme
     // story: say how much of the desktop went away.
     row(
       "state",
-      hiddenCount > 0 && screens.length > 1 ? `${state} (${hiddenCount} of ${screens.length} screens)` : state,
+      hiddenCount > 0 && screens.length > 1
+        ? `${state} (${hiddenCount} of ${screens.length} screens)`
+        : state,
     ),
     row("reason", presence.reason ?? "none"),
     // "2m 14s" reads; a millisecond count does not.
@@ -395,7 +397,9 @@ async function draw(): Promise<void> {
       report.log.path,
       `${human(report.log.bytes)}, ${count(report.log.rotated, "rotated file")}`,
     ),
-    note("floaty.log.1 is the previous file: the log rolls over at 1 MB, so the lines from just before a restart are still there."),
+    note(
+      "floaty.log.1 is the previous file: the log rolls over at 1 MB, so the lines from just before a restart are still there.",
+    ),
   );
 
   const only = report.monitors.length === 1 ? report.monitors[0] : undefined;
@@ -415,7 +419,11 @@ async function draw(): Promise<void> {
     if (monitor.primary) head.append(el("span", "diag-primary", "primary"));
     item.append(
       head,
-      el("p", "set-sub", `${monitor.x},${monitor.y} ${monitor.width}x${monitor.height} at ${scaleText(monitor.scale)}`),
+      el(
+        "p",
+        "set-sub",
+        `${monitor.x},${monitor.y} ${monitor.width}x${monitor.height} at ${scaleText(monitor.scale)}`,
+      ),
     );
     monitors.body.append(item);
   }
@@ -464,7 +472,11 @@ async function draw(): Promise<void> {
 
   const tail = group("Log tail", "the end of floaty.log, oldest line first");
   tail.body.append(
-    el("pre", "diag-log", report.log.lines.length > 0 ? report.log.lines.join("\n") : "the log is empty"),
+    el(
+      "pre",
+      "diag-log",
+      report.log.lines.length > 0 ? report.log.lines.join("\n") : "the log is empty",
+    ),
   );
 
   host.append(presenceEl, app.root, disk.root, monitors.root, windows.root, beats.root, tail.root);

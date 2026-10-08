@@ -87,7 +87,8 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     const gap = Math.max(1, Math.round(w / n / 5));
     const bw = Math.max(1, w / n - gap);
     // roundRect is Chromium 99+; fall back to plain rects rather than throwing
-    const rounded = typeof (ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect === "function";
+    const rounded =
+      typeof (ctx as CanvasRenderingContext2D & { roundRect?: unknown }).roundRect === "function";
     for (let i = 0; i < n; i++) {
       const v = Math.max(0.012, bands[i]);
       const bh = Math.max(2, usable * v);
@@ -139,7 +140,7 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     const step = w / n;
     for (let i = 0; i < n; i++) {
       const v = bands[i];
-      const r = Math.max(1.5, (step * 0.36) * (0.4 + v * 0.9));
+      const r = Math.max(1.5, step * 0.36 * (0.4 + v * 0.9));
       ctx.globalAlpha = 0.35 + v * 0.65;
       ctx.beginPath();
       ctx.arc(i * step + step / 2, h / 2, r, 0, Math.PI * 2);

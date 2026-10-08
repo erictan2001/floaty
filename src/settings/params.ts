@@ -114,8 +114,9 @@ export function choiceRow(key: string, def = choiceParam(key)): HTMLElement | un
     select.append(opt);
   }
   select.value = settings()[def.key];
-  select.addEventListener("change", () =>
-    void updateSettings({ [def.key]: select.value }, { now: true }),
+  select.addEventListener(
+    "change",
+    () => void updateSettings({ [def.key]: select.value }, { now: true }),
   );
   row.append(label(def.label), select);
   return row;

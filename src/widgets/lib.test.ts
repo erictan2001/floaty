@@ -34,10 +34,16 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ label: "desktop-overlay" }),
   currentMonitor: () => Promise.resolve(null),
   PhysicalPosition: class {
-    constructor(public x: number, public y: number) {}
+    constructor(
+      public x: number,
+      public y: number,
+    ) {}
   },
   PhysicalSize: class {
-    constructor(public w: number, public h: number) {}
+    constructor(
+      public w: number,
+      public h: number,
+    ) {}
   },
 }));
 

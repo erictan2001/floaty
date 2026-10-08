@@ -58,7 +58,9 @@ function draw(): void {
       count.textContent = "no root folder set";
       return;
     }
-    const result = await safe("sync files", () => invoke<SyncResult>("floaty_sync_files", { root }));
+    const result = await safe("sync files", () =>
+      invoke<SyncResult>("floaty_sync_files", { root }),
+    );
     if (!result) return;
     const files = `${result.files} file${result.files === 1 ? "" : "s"}`;
     const dirs = `${result.dirs} folder${result.dirs === 1 ? "" : "s"}`;

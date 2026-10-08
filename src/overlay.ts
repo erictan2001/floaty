@@ -21,19 +21,8 @@ import {
 } from "./widgets/lib";
 import { floatie } from "./widgets/floatie";
 import { freeSpot, hasPlace, plan, type PlacementPlan } from "./widgets/placement";
-import {
-  clearWidgetScope,
-  loadPlugins,
-  pluginApi,
-  pluginFor,
-  pluginKinds,
-} from "./widgets/plugin";
-import {
-  crossCheckPlugins,
-  isDesktopItem,
-  isPinned,
-  pluginSize,
-} from "./widgets/pluginManifest";
+import { clearWidgetScope, loadPlugins, pluginApi, pluginFor, pluginKinds } from "./widgets/plugin";
+import { crossCheckPlugins, isDesktopItem, isPinned, pluginSize } from "./widgets/pluginManifest";
 
 /**
  * Apply a placement plan: the session owns a record's place, so a move is `place` and a save
@@ -682,7 +671,9 @@ function mountDesktop(root: HTMLElement): void {
         summary.set(rec.kind, slot);
       }
       invoke("floaty_log", {
-        msg: `[overlay${top ? ":top" : ""}] mounted ${mountedSlots.size}/${mine.length} floaties — ${Array.from(summary)
+        msg: `[overlay${top ? ":top" : ""}] mounted ${mountedSlots.size}/${mine.length} floaties — ${Array.from(
+          summary,
+        )
           .map(([kind, s]) => `${kind} ${s.n}x${s.size}`)
           .join(", ")}`,
       }).catch(() => undefined);
@@ -805,7 +796,12 @@ function mountDesktop(root: HTMLElement): void {
   const observer = new MutationObserver(() => {
     scheduleHitRectsUpdate();
   });
-  observer.observe(canvas, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class"] });
+  observer.observe(canvas, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["style", "class"],
+  });
 
   // When window loses focus or user clicks outside, dismiss any menus
   window.addEventListener("blur", () => {
@@ -858,9 +854,7 @@ function mountDesktop(root: HTMLElement): void {
   const tidyDesktop = async (): Promise<number> => {
     const records = await invoke<WidgetRecord[]>("floaty_list");
     const mon = await monitorArea();
-    const mine = records.filter(
-      (rec) => isDesktopItem(rec.kind) && isPinned(rec) === top,
-    );
+    const mine = records.filter((rec) => isDesktopItem(rec.kind) && isPinned(rec) === top);
     if (mine.length === 0) return 0;
     await invoke("floaty_undo_checkpoint", {
       label: "tidy",
@@ -908,9 +902,7 @@ function mountDesktop(root: HTMLElement): void {
             msg: `[overlay] undid '${report.label}' (${report.remaining} left to undo)`,
           }),
         )
-        .catch((err) =>
-          invoke("floaty_log", { msg: `[overlay] undo: ${String(err)}` }),
-        );
+        .catch((err) => invoke("floaty_log", { msg: `[overlay] undo: ${String(err)}` }));
       return;
     }
     if (e.key === "Escape") {

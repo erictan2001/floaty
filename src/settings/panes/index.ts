@@ -15,4 +15,12 @@ import { diagnosticsPane } from "./diagnostics";
  * the window never shows more than one of them at a time. The first is where a
  * fresh window lands.
  */
-export const PANES: Pane[] = [desktopPane, appsPane, filesPane, motionPane, pluginsPane, generalPane, diagnosticsPane];
+export const PANES: Pane[] = [
+  desktopPane,
+  appsPane,
+  filesPane,
+  motionPane,
+  pluginsPane,
+  generalPane,
+  diagnosticsPane,
+];

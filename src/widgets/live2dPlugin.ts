@@ -7,7 +7,12 @@ import {
   type PinMenuApi,
   type WidgetRecord,
 } from "./lib";
-import type { FloatyPlugin, PluginRecord, PluginSettingsContext, WidgetControlContext } from "./plugin";
+import type {
+  FloatyPlugin,
+  PluginRecord,
+  PluginSettingsContext,
+  WidgetControlContext,
+} from "./plugin";
 
 export interface Live2dModelEntry {
   name: string;
@@ -182,7 +187,10 @@ export const live2dPlugin: FloatyPlugin = {
       };
 
       if (!cur) {
-        addOpt(cachedModels.length > 0 ? "Select a model..." : "No models found (set folder above)", "");
+        addOpt(
+          cachedModels.length > 0 ? "Select a model..." : "No models found (set folder above)",
+          "",
+        );
       }
       for (const m of cachedModels) addOpt(m.name, m.path);
       if (cur && !seenValues.has(cur)) {

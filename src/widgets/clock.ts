@@ -1,4 +1,13 @@
-import { addPinMenu, appWin, loadRecord, makeBar, removeSelf, saveRecord, watchPluginEnabled, type WidgetRecord } from "./lib";
+import {
+  addPinMenu,
+  appWin,
+  loadRecord,
+  makeBar,
+  removeSelf,
+  saveRecord,
+  watchPluginEnabled,
+  type WidgetRecord,
+} from "./lib";
 import { floatie } from "./floatie";
 import type { FloatyPlugin } from "./plugin";
 
@@ -6,7 +15,9 @@ const DEFAULT_FOCUS_S = 25 * 60;
 const DEFAULT_BREAK_S = 5 * 60;
 
 function fmt(total: number): string {
-  const m = Math.floor(total / 60).toString().padStart(2, "0");
+  const m = Math.floor(total / 60)
+    .toString()
+    .padStart(2, "0");
   const s = (total % 60).toString().padStart(2, "0");
   return `${m}:${s}`;
 }
@@ -59,7 +70,11 @@ export function mountClock(root: HTMLElement, id: string): void {
   const tickClock = () => {
     const now = new Date();
     time.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    date.textContent = now.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    date.textContent = now.toLocaleDateString([], {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
   };
   tickClock();
   window.setInterval(tickClock, 5000);
@@ -81,7 +96,8 @@ export function mountClock(root: HTMLElement, id: string): void {
     const pct = 100 - Math.round((left / total) * 100);
     ring.style.setProperty("--pct", `${pct}%`);
     startBtn.textContent = running ? "pause" : "start";
-    cycles.textContent = done === 0 ? "no rounds yet" : `${done} round${done === 1 ? "" : "s"} done`;
+    cycles.textContent =
+      done === 0 ? "no rounds yet" : `${done} round${done === 1 ? "" : "s"} done`;
   };
 
   const step = () => {
@@ -194,12 +210,14 @@ export function mountClock(root: HTMLElement, id: string): void {
     addPinMenu(wrap, () => rec);
     recRef = rec;
     // restore saved timer lengths (seconds, clamped to 1m..3h)
-    const fs = typeof rec.data["focus_s"] === "number"
-      ? Math.min(10800, Math.max(60, Math.round(rec.data["focus_s"] as number)))
-      : 0;
-    const bs = typeof rec.data["break_s"] === "number"
-      ? Math.min(10800, Math.max(60, Math.round(rec.data["break_s"] as number)))
-      : 0;
+    const fs =
+      typeof rec.data["focus_s"] === "number"
+        ? Math.min(10800, Math.max(60, Math.round(rec.data["focus_s"] as number)))
+        : 0;
+    const bs =
+      typeof rec.data["break_s"] === "number"
+        ? Math.min(10800, Math.max(60, Math.round(rec.data["break_s"] as number)))
+        : 0;
     if (fs > 0) {
       focusS = fs;
       left = fs;

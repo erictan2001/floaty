@@ -59,15 +59,24 @@ const sendDisplayChange = (w, h) => {
     `$l = New-Object System.IntPtr ([int64]((${h} * 65536) + ${w}))`,
     "$wp = New-Object System.UIntPtr ([uint64]32)",
     "$hw = New-Object System.IntPtr ([int64]0xffff)",
-    "Write-Output \"ok=$([FloatyProbe.User32]::SendNotifyMessage($hw, [uint32]0x7E, $wp, $l))\"",
+    'Write-Output "ok=$([FloatyProbe.User32]::SendNotifyMessage($hw, [uint32]0x7E, $wp, $l))"',
   ].join("\n");
   const out = spawnSync(
     "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand",
-     Buffer.from(script, "utf16le").toString("base64")],
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
     { encoding: "utf8" },
   );
-  return { ok: /ok=True/.test(out.stdout ?? ""), stdout: (out.stdout ?? "").trim(), stderr: (out.stderr ?? "").trim().split("\n")[0] };
+  return {
+    ok: /ok=True/.test(out.stdout ?? ""),
+    stdout: (out.stdout ?? "").trim(),
+    stderr: (out.stderr ?? "").trim().split("\n")[0],
+  };
 };
 
 // The shape the desktop is really in, so the message carries the truth: a probe that lies
@@ -80,8 +89,8 @@ console.log(`arrangement: ${monitors.length} monitor(s), desktop ${w}x${h}`);
 
 const before = await app.logLines(400);
 const changesBefore = saying(before, "arrangement changed").length;
-const settledBefore = saying(before, "settled, nothing to bring back").length +
-  saying(before, "brought ").length;
+const settledBefore =
+  saying(before, "settled, nothing to bring back").length + saying(before, "brought ").length;
 
 // One change is one job and the app debounces a burst, so a message sent less than two
 // seconds after the last real change is swallowed — send again rather than reading that as
@@ -89,10 +98,12 @@ const settledBefore = saying(before, "settled, nothing to bring back").length +
 let reported = [];
 for (let attempt = 1; attempt <= 3 && !reported.length; attempt += 1) {
   const sent = sendDisplayChange(w, h);
-  if (!sent.ok) skip(`could not send WM_DISPLAYCHANGE (${sent.stderr || sent.stdout || "no output"})`);
+  if (!sent.ok)
+    skip(`could not send WM_DISPLAYCHANGE (${sent.stderr || sent.stdout || "no output"})`);
   await app
-    .until("the app to report the arrangement change", async () =>
-      saying(await app.logLines(400), "arrangement changed")[changesBefore] ?? null,
+    .until(
+      "the app to report the arrangement change",
+      async () => saying(await app.logLines(400), "arrangement changed")[changesBefore] ?? null,
       { timeout: 4, every: 100 },
     )
     .then((line) => {
@@ -121,13 +132,17 @@ if (refit && reported[0]) {
 // and found whole" read exactly like "never looked at".
 let settled = null;
 await app
-  .until("the desktop to be rearranged for the settled shape", async () => {
-    const lines = await app.logLines(400);
-    const said = saying(lines, "settled, nothing to bring back")
-      .concat(saying(lines, "brought "))
-      .filter((l) => (stamp(l) ?? 0) >= (stamp(reported[0]) ?? 0));
-    return said[0] ?? null;
-  }, { timeout: (SETTLE_MS + TICK_SLACK_MS + 6000) / 1000, every: 200 })
+  .until(
+    "the desktop to be rearranged for the settled shape",
+    async () => {
+      const lines = await app.logLines(400);
+      const said = saying(lines, "settled, nothing to bring back")
+        .concat(saying(lines, "brought "))
+        .filter((l) => (stamp(l) ?? 0) >= (stamp(reported[0]) ?? 0));
+      return said[0] ?? null;
+    },
+    { timeout: (SETTLE_MS + TICK_SLACK_MS + 6000) / 1000, every: 200 },
+  )
   .then((line) => {
     settled = line;
   })
@@ -146,8 +161,9 @@ if (settled && reported[0]) {
 
 // The floaties themselves: whatever the log says, nothing may have been moved by this. The
 // desktop was already the shape it is in, so a rearrangement over it has no work to do.
-const moved = saying(await app.logLines(400), "brought ")
-  .filter((l) => (stamp(l) ?? 0) >= (stamp(reported[0]) ?? 0));
+const moved = saying(await app.logLines(400), "brought ").filter(
+  (l) => (stamp(l) ?? 0) >= (stamp(reported[0]) ?? 0),
+);
 if (moved.length) {
   console.log(`  note: the rearrangement moved floaties — ${moved[moved.length - 1].trim()}`);
   console.log("        (legitimate if the desktop really did have something off a screen)");

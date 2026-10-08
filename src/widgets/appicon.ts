@@ -163,7 +163,11 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     }
     last = performance.now();
     startLayoutPolling();
-    void monitorArea().then((m) => { mon = m; }).catch(() => undefined);
+    void monitorArea()
+      .then((m) => {
+        mon = m;
+      })
+      .catch(() => undefined);
     rafId = requestAnimationFrame(frame);
   };
 
@@ -182,9 +186,10 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       wrap.remove();
       return;
     }
-    const nm = typeof rec.data["name"] === "string" && rec.data["name"]
-      ? (rec.data["name"] as string)
-      : "app";
+    const nm =
+      typeof rec.data["name"] === "string" && rec.data["name"]
+        ? (rec.data["name"] as string)
+        : "app";
     const ch = (nm.trim()[0] ?? "?").toUpperCase();
     letter.textContent = ch;
     nameEl.textContent = displayName(nm);
@@ -255,7 +260,12 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     listen<string>("floaty-icon-refreshed", (e) => {
       if (e.payload === id) {
         void loadRecord(id).then((r) => {
-          if (r && typeof r.data["icon"] === "string" && r.data["icon"] && r.data["icon"] !== "none") {
+          if (
+            r &&
+            typeof r.data["icon"] === "string" &&
+            r.data["icon"] &&
+            r.data["icon"] !== "none"
+          ) {
             if (rec) rec.data["icon"] = r.data["icon"];
             applyIcon(r.data["icon"] as string);
           }
@@ -404,8 +414,9 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     clickTimer = window.setTimeout(() => {
       const a = currentSettings().single_click;
       if (a === "hop") doHop();
-      else if (a === "nothing") { /* stay put */ }
-      else doDrop();
+      else if (a === "nothing") {
+        /* stay put */
+      } else doDrop();
     }, 260);
   });
   wrap.addEventListener("dblclick", (e) => {

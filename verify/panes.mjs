@@ -30,10 +30,15 @@ const shiny = process.argv.includes("--shot");
 const only = process.argv.slice(3).filter((a) => !a.startsWith("--"));
 
 /** The panes a run covers; `npm run verify:panes -- http://localhost:1420 desktop`. */
-export const PANES = ["desktop", "apps", "files", "motion", "plugins", "general", "diagnostics"].filter(
-  (pane) => only.length === 0 || only.includes(pane),
-);
-
+export const PANES = [
+  "desktop",
+  "apps",
+  "files",
+  "motion",
+  "plugins",
+  "general",
+  "diagnostics",
+].filter((pane) => only.length === 0 || only.includes(pane));
 
 /**
  * The stub. Keep it honest about *shape*: a field a real command returns but this
@@ -267,7 +272,8 @@ for (const r of results) {
       `buttons=${r.buttons.length} rows=${r.rows.length} overflow=${r.horizontalOverflow}`,
   );
   if (r.errors.length) for (const e of r.errors) console.log(`       ${e}`);
-  if (r.horizontalOverflow > 0) console.log(`       ${r.horizontalOverflow}px wider than the window`);
+  if (r.horizontalOverflow > 0)
+    console.log(`       ${r.horizontalOverflow}px wider than the window`);
   if (r.groups.length === 0) console.log(`       drew nothing: ${JSON.stringify(r.calls)}`);
 }
 if (process.argv.includes("--json")) console.log(JSON.stringify(results, null, 2));

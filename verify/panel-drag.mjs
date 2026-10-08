@@ -89,7 +89,10 @@ check(
   elsewhere(before, during),
   `the record followed the pointer during the drag (${JSON.stringify(before)} -> ${JSON.stringify(during)})`,
 );
-check(samples.every((s) => s !== null), "the record survived the release");
+check(
+  samples.every((s) => s !== null),
+  "the record survived the release",
+);
 
 // Which sample was the last one that changed anything: that is when it settled. Printed and
 // not asserted, because the answer belongs to the machine — a probe that demanded a
