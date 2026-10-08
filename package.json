@@ -28,6 +28,8 @@
     "build": "node scripts/check-plugins.mjs && node scripts/check-examples.mjs && tsc --noEmit && vite build",
     "format:check": "prettier --check \"src/**/*.{ts,css,html}\" \"scripts/**/*.mjs\" \"verify/**/*.mjs\"",
     "format:write": "prettier --write \"src/**/*.{ts,css,html}\" \"scripts/**/*.mjs\" \"verify/**/*.mjs\"",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run format:check && npm run check:plugins && npm run typecheck",
     "check:plugins": "node scripts/check-plugins.mjs",
     "preview": "vite preview",
     "tauri": "tauri",

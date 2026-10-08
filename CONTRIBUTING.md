@@ -48,9 +48,8 @@ This project adheres to the Contributor Covenant Code of Conduct. By participati
 Before submitting any Pull Request, ensure all automated quality gates pass:
 
 ```powershell
-# 1. Run plugin integrity and type checks
-npm run check:plugins
-npx tsc --noEmit
+# 1. Run frontend lint, formatting, plugin integrity, and type checks
+npm run lint
 
 # 2. Run TypeScript unit tests (Vitest)
 npm test

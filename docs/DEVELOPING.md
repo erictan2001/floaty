@@ -39,11 +39,12 @@ Two things worth knowing before they cost you an afternoon:
 ## Checks
 
 ```powershell
-npm run build              # plugin id check + tsc --noEmit + vite build
-npm run check:plugins      # only the backend/frontend plugin id agreement
-npm test                   # vitest: the pure logic in src/widgets/lib.ts
-cargo test                 # 80 backend tests, run from src-tauri
-cargo check
+npm run lint               # format check + plugin check + tsc --noEmit
+npm run format:write       # auto-format with Prettier
+npm test                   # vitest: pure frontend widget logic
+cargo test                 # 128 backend tests, run from src-tauri
+cargo fmt --check          # rustfmt formatting check (in src-tauri)
+cargo clippy -- -D warnings # Clippy linter checks (in src-tauri)
 npm run verify:panes       # render every settings pane headlessly (needs npm run dev)
 npm run verify:app         # check the running app over its debug port
 ```
@@ -72,8 +73,9 @@ locks the executable the test link step needs.)
 
 Two tiers.
 
-**Pull requests** (`.github/workflows/ci.yml`) run the fast gates: `check:plugins`,
-`tsc --noEmit`, `npm run build`, `cargo test --lib`, and the two page probes that need
+**Pull requests** (`.github/workflows/ci.yml`) run the fast gates: `format:check`,
+`check:plugins`, `tsc --noEmit`, `npm test`, `npm run build`, `cargo fmt --check`,
+`cargo clippy -- -D warnings`, `cargo test --lib`, and the two page probes that need
 nothing but a dev server — `verify:panes` and `verify:palette`. `verify:app` is
 deliberately absent: it talks to a *running* floaty over its debug port, and a
 pull-request runner has no desktop to put one on.

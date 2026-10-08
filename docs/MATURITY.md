@@ -59,8 +59,8 @@ clean-machine check above, and is carried as debt in [the backlog](BACKLOG.md#pr
 - **No telemetry, no crash reporting, no support SLA, no cloud dependency** — the constraint
   the target was chosen under ([ADR 0001](adr/0001-strangers-depend-on-this.md)). Anything
   that needs an endpoint to stay alive is out, which is also why the updater has no kill
-  switch, only withdrawal.
-- **Nothing for contributors yet**: no CONTRIBUTING, no issue templates, until the guards
-  and the release path are done. The [backlog](BACKLOG.md) is the list, not a tracker.
+- **Contributor community governance established**: [CONTRIBUTING](../CONTRIBUTING.md),
+  [Code of Conduct](../CODE_OF_CONDUCT.md), issue templates, PR templates, and CI quality gates
+  are now active. The [backlog](BACKLOG.md) tracks feature and technical debts.
 - **No major-version chasing.** A pixi 6 to 8 migration is a week this project does not
   have; a security patch is not negotiable.

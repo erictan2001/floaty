@@ -67,6 +67,9 @@ monitor, so the GPU cost tracks the overlay, not the number of widgets.
 | use or write a widget | [Widgets, plugins and settings](docs/WIDGETS.md) |
 | build it, run it, check it | [Working on Floaty](docs/DEVELOPING.md) |
 | write a plugin | [docs/PLUGINS.md](docs/PLUGINS.md) |
+| contribute to Floaty | [Contributing Guidelines](CONTRIBUTING.md) |
+| report a security vulnerability | [Security Policy](SECURITY.md) |
+| see what changed in each release | [Changelog](CHANGELOG.md) |
 | publish a version | [Shipping a release](docs/RELEASING.md) |
 
 ![The General settings tab](screenshots/settings-general.png)
