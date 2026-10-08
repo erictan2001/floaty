@@ -9,7 +9,31 @@ The plugin API version is a different number with a policy of its own — see
 
 ## 0.2.3 - 2026-10-07
 
+### Added
+
+- Multi-probe nightly CI workflow that runs the complete test suite and headless probes.
+
+### Fixed
+
+- **Icons:** Image floatie tiles preserve their own picture and aspect ratio (verified with `verify:image-thumbnail`).
+- **Monitors:** Display change events debounce until monitor arrangement stabilizes before triggering rearrangements.
+- **Trail Plugin:** Stretched slots during mouse interactions no longer overwrite the recorded panel dimensions.
+
 ## 0.2.2 - 2026-09-27
+
+### Added
+
+- Headless CDP test fixture runtime (`verify/runtime.mjs`) enabling independent probe execution with mock profiles and isolated data stores.
+
+### Changed
+
+- **Architecture:** Unified placement logic under single ownership model (`src/widgets/placement.ts`).
+- **Session Refactor:** Unified session ownership for floatie coordinate calculations, dimensions, and drag gestures (`src/widgets/floatie.ts`).
+- **Plugin Contract:** Unified plugin manifest validator ensuring consistency across backend registry and frontend modules.
+
+### Fixed
+
+- Isolated test runs preventing state leakage across probe executions.
 
 ## 0.2.1 - 2026-09-24
 
