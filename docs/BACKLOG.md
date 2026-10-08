@@ -12,12 +12,6 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
   theirs, and popping it would damage the thing the probe exists to protect. Unwinding only
   the steps this probe pushed needs the stack to say whose they are.
 
-- The Rust tests write their fixtures into the system temp folder and never remove them:
-  thousands of directories accumulated from repeated `cargo test` runs (`floaty-plugin-*`,
-  `floaty-icons-*`, `floaty-shellops-restore-*`). Individually tiny, collectively a mess a
-  person sees when they look at `%TEMP%`. A `Drop` guard would fix it; the verify side has
-  the same shape and now sweeps its own stale folders (`launchChrome`).
-
 - A fresh widget is born where the backend's cascade puts it (`140 + (n*47 % 480)`,
   `140 + (n*31 % 320)`), which knows nothing about the desktop, and the overlay's nudge only
   runs for a record with no place of its own — so a new note or clock can land on top of an
@@ -54,7 +48,6 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
   probe that samples once instead is still wrong. That is also the shape of the older
   "`app-ready` times out even when the app is up" report, which has not reproduced since the
   liveness check moved into `attach()`.
-- No `.gitattributes`: the tree is CRLF and mixed endings churn diffs.
 - `tauri-plugin-single-instance` (`src-tauri/src/lib.rs:93`) means a *second* floaty exits before `setup`
   and never opens its debug port, so a fixture probe (`verify/redo.mjs`, `drag.mjs`, `presence.mjs`) cannot
   run while the user's app is up: it fails with "the app never came up". Its own Vite and its own cargo

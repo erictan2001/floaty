@@ -281,8 +281,14 @@ impl InstalledPlugin {
         if !self.resizable {
             return self.default_size;
         }
-        let w = data.get("w").and_then(|v| v.as_f64()).unwrap_or(self.default_size.0);
-        let h = data.get("h").and_then(|v| v.as_f64()).unwrap_or(self.default_size.1);
+        let w = data
+            .get("w")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(self.default_size.0);
+        let h = data
+            .get("h")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(self.default_size.1);
         let min = self.min_size.unwrap_or((80.0, 60.0));
         let max = self.max_size.unwrap_or((2000.0, 2000.0));
         (w.clamp(min.0, max.0), h.clamp(min.1, max.1))
@@ -292,7 +298,12 @@ impl InstalledPlugin {
 static INSTALLED: std::sync::RwLock<Vec<InstalledPlugin>> = std::sync::RwLock::new(Vec::new());
 
 fn installed(kind: &str) -> Option<InstalledPlugin> {
-    INSTALLED.read().ok()?.iter().find(|p| p.id == kind).cloned()
+    INSTALLED
+        .read()
+        .ok()?
+        .iter()
+        .find(|p| p.id == kind)
+        .cloned()
 }
 
 /// The plugins the user has installed, as loaded at startup.
@@ -325,7 +336,9 @@ pub fn is_desktop_item(kind: &str) -> bool {
     if let Some(p) = installed(kind) {
         return p.desktop_item.is_some();
     }
-    find(kind).map(|p| p.desktop_item.is_some()).unwrap_or(false)
+    find(kind)
+        .map(|p| p.desktop_item.is_some())
+        .unwrap_or(false)
 }
 
 /// The record key a desktop item keeps its path in, or None for other kinds.
@@ -403,7 +416,9 @@ fn validate_plugin_id(json: &serde_json::Value) -> Result<String, String> {
         .trim()
         .to_ascii_lowercase();
     if !valid_id(&id) {
-        return Err(format!("id {id:?} must be 2-32 chars of a-z, 0-9, '-' or '_'"));
+        return Err(format!(
+            "id {id:?} must be 2-32 chars of a-z, 0-9, '-' or '_'"
+        ));
     }
     if find(&id).is_some() {
         return Err(format!("id {id:?} is a built-in plugin"));
@@ -458,8 +473,14 @@ fn validate_plugin_sizes(json: &serde_json::Value) -> Result<PluginSizes, String
     Ok(((w, h), min_size, max_size))
 }
 
-fn validate_entry_path(dir: &std::path::Path, json: &serde_json::Value) -> Result<std::path::PathBuf, String> {
-    let entry_rel = json.get("entry").and_then(|v| v.as_str()).unwrap_or("index.js");
+fn validate_entry_path(
+    dir: &std::path::Path,
+    json: &serde_json::Value,
+) -> Result<std::path::PathBuf, String> {
+    let entry_rel = json
+        .get("entry")
+        .and_then(|v| v.as_str())
+        .unwrap_or("index.js");
     let entry_rel_path = std::path::Path::new(entry_rel);
     if entry_rel_path.is_absolute()
         || entry_rel_path.components().any(|c| {
@@ -475,7 +496,9 @@ fn validate_entry_path(dir: &std::path::Path, json: &serde_json::Value) -> Resul
     }
     let entry = dir.join(entry_rel_path);
     if !entry.is_file() {
-        return Err(format!("entry {entry_rel:?} does not exist in the plugin folder"));
+        return Err(format!(
+            "entry {entry_rel:?} does not exist in the plugin folder"
+        ));
     }
     Ok(entry)
 }
@@ -561,14 +584,17 @@ pub fn version_relation(installed: Option<&str>, incoming: &str) -> &'static str
 /// id, the API version, the entry path staying inside the folder, the sizes.
 pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
     let manifest_path = dir.join("plugin.json");
-    let text =
-        std::fs::read_to_string(&manifest_path).map_err(|e| format!("plugin.json unreadable: {e}"))?;
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("plugin.json unreadable: {e}"))?;
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("plugin.json is not valid JSON: {e}"))?;
 
     let id = validate_plugin_id(&json)?;
 
-    let api = json.get("apiVersion").and_then(|v| v.as_u64()).unwrap_or_default() as u32;
+    let api = json
+        .get("apiVersion")
+        .and_then(|v| v.as_u64())
+        .unwrap_or_default() as u32;
     // A range, not an equality: the format is additive, so every older apiVersion
     // still loads with the surface it was written against, and only a *newer*
     // manifest (or a missing/garbage one) is refused.
@@ -607,16 +633,30 @@ pub fn read_plugin(dir: &std::path::Path) -> Result<InstalledPlugin, String> {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
-        version: json.get("version").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-        author: json.get("author").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        version: json
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        author: json
+            .get("author")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
         api_version: api,
         default_size,
-        resizable: json.get("resizable").and_then(|v| v.as_bool()).unwrap_or(false),
+        resizable: json
+            .get("resizable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         min_size,
         max_size,
         default_data,
         desktop_item,
-        add_label: json.get("addLabel").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        add_label: json
+            .get("addLabel")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         layout_priority: json
             .get("layoutPriority")
             .and_then(|v| v.as_i64())
@@ -909,15 +949,24 @@ mod tests {
 
     // ---------- user-installed plugins ----------
 
-    fn fixture(name: &str, manifest: &str, entry: Option<&str>) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("floaty-plugin-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("plugin.json"), manifest).unwrap();
-        if let Some(source) = entry {
-            std::fs::write(dir.join("index.js"), source).unwrap();
+    struct TestDir(tempfile::TempDir);
+    impl std::ops::Deref for TestDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            self.0.path()
         }
-        dir
+    }
+
+    fn fixture(name: &str, manifest: &str, entry: Option<&str>) -> TestDir {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("floaty-plugin-{name}-"))
+            .tempdir()
+            .unwrap();
+        std::fs::write(dir.path().join("plugin.json"), manifest).unwrap();
+        if let Some(source) = entry {
+            std::fs::write(dir.path().join("index.js"), source).unwrap();
+        }
+        TestDir(dir)
     }
 
     const GOOD: &str = r#"{
@@ -943,7 +992,11 @@ mod tests {
         // examples in `examples/plugins`.
         for version in [PLUGIN_API_MIN, PLUGIN_API_VERSION] {
             let manifest = GOOD.replace("\"apiVersion\": 1", &format!("\"apiVersion\": {version}"));
-            let dir = fixture(&format!("api{version}"), &manifest, Some("export default {};"));
+            let dir = fixture(
+                &format!("api{version}"),
+                &manifest,
+                Some("export default {};"),
+            );
             let plugin = read_plugin(&dir).unwrap_or_else(|e| panic!("apiVersion {version}: {e}"));
             assert_eq!(plugin.api_version, version);
         }
@@ -980,32 +1033,109 @@ mod tests {
         assert!(p.entry.is_file());
         // the size a record gets: the stored w/h inside the clamp
         assert_eq!(p.size(&serde_json::json!({})), (240.0, 140.0));
-        assert_eq!(p.size(&serde_json::json!({ "w": 5000.0, "h": 10.0 })), (600.0, 100.0));
+        assert_eq!(
+            p.size(&serde_json::json!({ "w": 5000.0, "h": 10.0 })),
+            (600.0, 100.0)
+        );
         // a fixed-size plugin ignores the record
-        let fixed = fixture("fixed", &GOOD.replace("\"resizable\": true", "\"resizable\": false"), Some("x"));
-        assert_eq!(read_plugin(&fixed).unwrap().size(&serde_json::json!({ "w": 999.0 })), (240.0, 140.0));
+        let fixed = fixture(
+            "fixed",
+            &GOOD.replace("\"resizable\": true", "\"resizable\": false"),
+            Some("x"),
+        );
+        assert_eq!(
+            read_plugin(&fixed)
+                .unwrap()
+                .size(&serde_json::json!({ "w": 999.0 })),
+            (240.0, 140.0)
+        );
     }
 
     #[test]
     fn broken_plugin_folders_are_rejected_with_a_reason() {
         let cases: [(&str, &str, Option<&str>, &str); 13] = [
-            ("no-id", r#"{ "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "id"),
-            ("bad-id", r#"{ "id": "Bad Id", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "id"),
-            ("builtin-id", r#"{ "id": "note", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "built-in"),
+            (
+                "no-id",
+                r#"{ "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#,
+                Some("x"),
+                "id",
+            ),
+            (
+                "bad-id",
+                r#"{ "id": "Bad Id", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#,
+                Some("x"),
+                "id",
+            ),
+            (
+                "builtin-id",
+                r#"{ "id": "note", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#,
+                Some("x"),
+                "built-in",
+            ),
             // a *newer* apiVersion than this build speaks is the refusal; an older
             // one is not (see `a_manifest_may_speak_an_older_api_version_...`)
-            ("new-api", r#"{ "id": "sample", "name": "x", "apiVersion": 99, "size": {"w":100,"h":100} }"#, Some("x"), "not supported"),
-            ("no-name", r#"{ "id": "sample", "apiVersion": 1, "size": {"w":100,"h":100} }"#, Some("x"), "name is required"),
-            ("no-size", r#"{ "id": "sample", "name": "x", "apiVersion": 1 }"#, Some("x"), "size"),
-            ("tiny-size", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":10,"h":4000} }"#, Some("x"), "outside"),
-            ("min-over-max", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":200,"h":200}, "minSize": {"w":300,"h":100}, "maxSize": {"w":200,"h":200} }"#, Some("x"), "minSize"),
-            ("no-entry-file", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#, None, "does not exist"),
-            ("escaping-entry", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "entry": "../evil.js" }"#, Some("x"), "relative path"),
-            ("bad-data", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "defaultData": 7 }"#, Some("x"), "defaultData"),
+            (
+                "new-api",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 99, "size": {"w":100,"h":100} }"#,
+                Some("x"),
+                "not supported",
+            ),
+            (
+                "no-name",
+                r#"{ "id": "sample", "apiVersion": 1, "size": {"w":100,"h":100} }"#,
+                Some("x"),
+                "name is required",
+            ),
+            (
+                "no-size",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1 }"#,
+                Some("x"),
+                "size",
+            ),
+            (
+                "tiny-size",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":10,"h":4000} }"#,
+                Some("x"),
+                "outside",
+            ),
+            (
+                "min-over-max",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":200,"h":200}, "minSize": {"w":300,"h":100}, "maxSize": {"w":200,"h":200} }"#,
+                Some("x"),
+                "minSize",
+            ),
+            (
+                "no-entry-file",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100} }"#,
+                None,
+                "does not exist",
+            ),
+            (
+                "escaping-entry",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "entry": "../evil.js" }"#,
+                Some("x"),
+                "relative path",
+            ),
+            (
+                "bad-data",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "defaultData": 7 }"#,
+                Some("x"),
+                "defaultData",
+            ),
             // A manifest that contradicts itself: the default has to be a size the same
             // manifest allows, or a fresh widget is not born at its own declared default.
-            ("size-under-min", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "minSize": {"w":200,"h":200} }"#, Some("x"), "smaller than minSize"),
-            ("size-over-max", r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":300,"h":300}, "maxSize": {"w":200,"h":200} }"#, Some("x"), "larger than maxSize"),
+            (
+                "size-under-min",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":100,"h":100}, "minSize": {"w":200,"h":200} }"#,
+                Some("x"),
+                "smaller than minSize",
+            ),
+            (
+                "size-over-max",
+                r#"{ "id": "sample", "name": "x", "apiVersion": 1, "size": {"w":300,"h":300}, "maxSize": {"w":200,"h":200} }"#,
+                Some("x"),
+                "larger than maxSize",
+            ),
         ];
         for (name, manifest, entry, expected) in cases {
             let dir = fixture(name, manifest, entry);
@@ -1031,20 +1161,37 @@ mod tests {
             "size": { "w": 200, "h": 200 },
             "desktopItem": { "group": true, "noun": "shelf floatie" }
         }"#;
-        let dir = fixture("group-no-key", group, Some("export default { mount() {} };"));
+        let dir = fixture(
+            "group-no-key",
+            group,
+            Some("export default { mount() {} };"),
+        );
         let err = read_plugin(&dir).unwrap_err();
-        assert!(err.contains("pathKey"), "the refusal has to name the field: {err}");
+        assert!(
+            err.contains("pathKey"),
+            "the refusal has to name the field: {err}"
+        );
 
         // Naming one is fine, and the flag survives the read.
         let named = group.replace("\"group\": true", "\"group\": true, \"pathKey\": \"path\"");
         let dir = fixture("group-key", &named, Some("export default { mount() {} };"));
-        let d = read_plugin(&dir).unwrap().desktop_item.expect("a desktop item");
+        let d = read_plugin(&dir)
+            .unwrap()
+            .desktop_item
+            .expect("a desktop item");
         assert_eq!((d.path_key.as_str(), d.group), ("path", true));
 
         // And a plain item may still leave it out: "target" is what that convention means.
         let plain = group.replace("\"group\": true, ", "");
-        let dir = fixture("plain-no-key", &plain, Some("export default { mount() {} };"));
-        let d = read_plugin(&dir).unwrap().desktop_item.expect("a desktop item");
+        let dir = fixture(
+            "plain-no-key",
+            &plain,
+            Some("export default { mount() {} };"),
+        );
+        let d = read_plugin(&dir)
+            .unwrap()
+            .desktop_item
+            .expect("a desktop item");
         assert_eq!((d.path_key.as_str(), d.group), ("target", false));
     }
 
@@ -1079,15 +1226,14 @@ mod tests {
 
     #[test]
     fn install_from_keeps_the_good_folders_and_names_the_bad_ones() {
-        let root = std::env::temp_dir().join(format!("floaty-plugins-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("countdown")).unwrap();
-        std::fs::write(root.join("countdown/plugin.json"), GOOD).unwrap();
-        std::fs::write(root.join("countdown/index.js"), "export default {};").unwrap();
-        std::fs::create_dir_all(root.join("broken")).unwrap();
-        std::fs::write(root.join("broken/plugin.json"), "{ not json").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("countdown")).unwrap();
+        std::fs::write(root.path().join("countdown/plugin.json"), GOOD).unwrap();
+        std::fs::write(root.path().join("countdown/index.js"), "export default {};").unwrap();
+        std::fs::create_dir_all(root.path().join("broken")).unwrap();
+        std::fs::write(root.path().join("broken/plugin.json"), "{ not json").unwrap();
 
-        let (accepted, rejected) = install_from(&root);
+        let (accepted, rejected) = install_from(root.path());
         // the data is data — an id is an id, and the line a log shows is derived from it
         assert_eq!(labels(&accepted), vec!["countdown v1.2.0"]);
         assert_eq!(accepted[0].id, "countdown");
@@ -1121,8 +1267,7 @@ mod tests {
         assert!(!entry.trusted, "nobody approved this one");
 
         // unloading leaves the built-ins alone
-        let _ = install_from(&root.join("empty"));
+        let _ = install_from(&root.path().join("empty"));
         assert!(!exists("countdown") && exists("note"));
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

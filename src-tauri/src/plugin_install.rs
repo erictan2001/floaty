@@ -46,7 +46,8 @@ pub fn folder_fingerprint(dir: &Path) -> Result<String, String> {
     paths.sort();
     let mut stream: Vec<u8> = Vec::new();
     for rel in &paths {
-        let bytes = std::fs::read(dir.join(rel)).map_err(|e| format!("{rel} could not be read: {e}"))?;
+        let bytes =
+            std::fs::read(dir.join(rel)).map_err(|e| format!("{rel} could not be read: {e}"))?;
         stream.extend_from_slice(rel.as_bytes());
         stream.push(0);
         stream.extend_from_slice(&bytes);
@@ -57,7 +58,8 @@ pub fn folder_fingerprint(dir: &Path) -> Result<String, String> {
 
 /// Relative paths of every file under `dir`, one level or many.
 fn collect_files(dir: &Path, into: &mut Vec<String>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("{} could not be read: {e}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("{} could not be read: {e}", dir.display()))?;
     for entry in entries.filter_map(|e| e.ok()) {
         let rel = entry.file_name().to_string_lossy().to_string();
         let kind = entry.file_type().map_err(|e| e.to_string())?;
@@ -154,7 +156,8 @@ fn install_into(
     let files = copy_dir(&found, &staged)?;
 
     let dest = plugins_dir.join(&plugin.id);
-    std::fs::create_dir_all(plugins_dir).map_err(|e| format!("cannot use the plugins folder: {e}"))?;
+    std::fs::create_dir_all(plugins_dir)
+        .map_err(|e| format!("cannot use the plugins folder: {e}"))?;
     let backup = scratch.join(format!("{}.old", plugin.id));
     let had_previous = dest.exists();
     if had_previous {
@@ -386,7 +389,11 @@ fn extract_zip(zip: &Path, into: &Path) -> Result<(), String> {
             let err = err.trim();
             return Err(format!(
                 "the archive could not be unpacked: {}",
-                if err.is_empty() { "unknown reason" } else { err }
+                if err.is_empty() {
+                    "unknown reason"
+                } else {
+                    err
+                }
             ));
         }
         refuse_traversal(into)?;
@@ -467,8 +474,7 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<usize, String> {
             if bytes > MAX_BYTES {
                 return Err("this plugin is larger than a plugin should be".to_string());
             }
-            std::fs::copy(&from, &to)
-                .map_err(|e| format!("{}: {e}", to.display()))?;
+            std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", to.display()))?;
             files += 1;
             if files > MAX_FILES {
                 return Err("this plugin has more files than a plugin should have".to_string());
@@ -494,7 +500,10 @@ fn scratch_dir() -> Result<PathBuf, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let dir = std::env::temp_dir().join(format!("floaty-plugin-install-{}-{stamp}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "floaty-plugin-install-{}-{stamp}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).map_err(|e| format!("no scratch folder: {e}"))?;
     Ok(dir)
 }
@@ -510,18 +519,25 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "floaty-install-test-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    struct TestDir(tempfile::TempDir);
+    impl std::ops::Deref for TestDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+    impl AsRef<Path> for TestDir {
+        fn as_ref(&self) -> &Path {
+            self.0.path()
+        }
+    }
+
+    fn temp(name: &str) -> TestDir {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("floaty-install-test-{name}-"))
+            .tempdir()
+            .unwrap();
+        TestDir(dir)
     }
 
     fn manifest(id: &str, version: &str) -> String {
@@ -612,7 +628,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n != "countdown")
             .collect();
-        assert!(stray.is_empty(), "only the plugin itself is in there: {stray:?}");
+        assert!(
+            stray.is_empty(),
+            "only the plugin itself is in there: {stray:?}"
+        );
 
         // and a folder that is not a plugin is refused before anything is copied
         let junk = dir.join("junk");
@@ -657,7 +676,10 @@ mod tests {
         assert!(report.size_bytes > 0);
         assert_eq!(report.relation, "new");
         assert!(report.installed_version.is_none());
-        assert!(!plugins.join("countdown").exists(), "inspecting installs nothing");
+        assert!(
+            !plugins.join("countdown").exists(),
+            "inspecting installs nothing"
+        );
 
         install_archive(&source, &plugins, false).unwrap();
         let same = inspect_archive(&source, &plugins).unwrap();

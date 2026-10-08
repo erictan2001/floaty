@@ -431,14 +431,25 @@ mod tests {
         format!("data:image/png;base64,{}", base64_encode(bytes))
     }
 
+    struct TestDir {
+        _dir: tempfile::TempDir,
+        _guard: MutexGuard<'static, ()>,
+    }
+
     /// A fresh icons folder for one test, and the lock that goes with it.
-    fn use_dir(name: &str) -> (PathBuf, MutexGuard<'static, ()>) {
+    /// Cleaned up automatically on drop.
+    fn use_dir(_name: &str) -> (PathBuf, TestDir) {
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = std::env::temp_dir().join(format!("floaty-icons-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        set_dir(dir.clone());
-        (dir, guard)
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().to_path_buf();
+        set_dir(path.clone());
+        (
+            path,
+            TestDir {
+                _dir: temp,
+                _guard: guard,
+            },
+        )
     }
 
     #[test]
@@ -449,7 +460,10 @@ mod tests {
             assert_eq!(base64_decode(&text).unwrap(), raw, "{text}");
         }
         // whitespace (PowerShell line wrapping) must not break a decode
-        assert_eq!(base64_decode("aGVs\nbG8g\nd29y bGQ=").unwrap(), b"hello world");
+        assert_eq!(
+            base64_decode("aGVs\nbG8g\nd29y bGQ=").unwrap(),
+            b"hello world"
+        );
         assert!(base64_decode("not base64!!").is_none());
     }
 
@@ -463,7 +477,9 @@ mod tests {
         );
         // and it decodes back to the same path, which is what the handler does
         assert_eq!(path_from_url(&url).unwrap(), path.to_path_buf());
-        assert!(asset_url(Path::new("/tmp/a b.png")).unwrap().contains("%20"));
+        assert!(asset_url(Path::new("/tmp/a b.png"))
+            .unwrap()
+            .contains("%20"));
     }
 
     #[test]
@@ -498,14 +514,21 @@ mod tests {
         let bytes = png_bytes(256, 256);
         let legacy = data_url(&bytes);
         let stored = store_url(&legacy);
-        assert!(is_stored_url(&stored), "a png data url becomes a file: {stored}");
+        assert!(
+            is_stored_url(&stored),
+            "a png data url becomes a file: {stored}"
+        );
         assert_eq!(read(&stored).unwrap(), bytes);
         // idempotent, and it never drops something it cannot store
         assert_eq!(store_url(&stored), stored);
         assert_eq!(store_url("none"), "none");
         assert_eq!(store_url(""), "");
         let svg = "data:image/svg+xml;base64,PHN2Zy8+";
-        assert_eq!(store_url(svg), svg, "only PNGs are stored; anything else is left as it is");
+        assert_eq!(
+            store_url(svg),
+            svg,
+            "only PNGs are stored; anything else is left as it is"
+        );
     }
 
     #[test]

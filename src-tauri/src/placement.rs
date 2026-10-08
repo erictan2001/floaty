@@ -99,7 +99,9 @@ pub(crate) fn rename_in_place(from: &Path, new_name: &str) -> Result<PathBuf, St
 /// Do these two paths name the same item, differing only in the case of the last part?
 fn same_name_other_case(a: &Path, b: &Path) -> bool {
     match (a.file_name(), b.file_name()) {
-        (Some(a), Some(b)) => a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()),
+        (Some(a), Some(b)) => a
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy()),
         _ => false,
     }
 }
@@ -152,11 +154,25 @@ pub(crate) fn create_new_folder(dir: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("floaty-placement-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    struct TestDir(tempfile::TempDir);
+    impl std::ops::Deref for TestDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+    impl AsRef<std::path::Path> for TestDir {
+        fn as_ref(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+
+    fn scratch(name: &str) -> TestDir {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("floaty-placement-{name}-"))
+            .tempdir()
+            .unwrap();
+        TestDir(dir)
     }
 
     #[test]
