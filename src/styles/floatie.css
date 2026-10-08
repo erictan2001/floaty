@@ -1,0 +1,798 @@
+/* ---------- gravity app launchers ---------- */
+.launcher {
+  width: 92px;
+  height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  cursor: grab;
+  position: relative;
+  transition: opacity 0.25s;
+}
+.launcher:active {
+  cursor: grabbing;
+}
+.launcher.idle-hidden {
+  opacity: 0;
+}
+.launcher-x {
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(20, 16, 40, 0.65);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 2;
+}
+.launcher:hover .launcher-x {
+  opacity: 1;
+}
+.tile {
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  box-shadow:
+    var(--tile-shadow),
+    inset 0 1px 2px rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  /* the merge preview stacks a second icon in the free corner of the tile */
+  position: relative;
+}
+.tile span {
+  font-size: 30px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+.tile-icon {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  pointer-events: none;
+  image-rendering: -webkit-optimize-contrast;
+}
+/* real app icon: no colored bubble behind it, natural desktop icon size */
+.tile.real {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.tile.real .tile-icon {
+  width: 52px;
+  height: 52px;
+}
+.tile.squash {
+  animation: tilesquash 0.35s ease;
+}
+@keyframes tilesquash {
+  0% {
+    transform: scale(1, 1);
+  }
+  35% {
+    transform: scale(1.18, 0.78);
+  }
+  70% {
+    transform: scale(0.92, 1.1);
+  }
+  100% {
+    transform: scale(1, 1);
+  }
+}
+.tile.launching {
+  animation: launchpop 0.6s ease;
+}
+@keyframes launchpop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.25);
+    filter: brightness(1.3);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.tile.shake {
+  animation: tileshake 0.45s ease;
+}
+@keyframes tileshake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-6px);
+  }
+  50% {
+    transform: translateX(6px);
+  }
+  75% {
+    transform: translateX(-4px);
+  }
+}
+.launcher.held .tile {
+  filter: brightness(1.12);
+  transform: scale(1.06);
+}
+
+/* ---------- merge preview: the folder a drop would make ---------- */
+
+/* The tile the dragged icon is over turns into the folder it is about to be:
+   a plate with room for the two icons, its own shrinking into one corner while
+   the dragged one flies into the other — Android's folder, which is the shape
+   people already read as "these are about to become a folder". */
+.overlay-slot.merge-armed .tile,
+.overlay-slot.merge-armed .ftile {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: rgba(255, 255, 255, 0.62);
+  border-radius: 16px;
+  box-shadow: var(--tile-shadow);
+  /* a frosted plate reads as a container rather than a solid icon, and growing
+     slightly is the folder "opening" to receive what is coming */
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+  scale: 1.06;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    scale 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.25);
+}
+.overlay-slot.merge-armed .launcher-name {
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+}
+
+/* A ring that pulses once as the preview opens. It lives on its own element
+   rather than in the tile's box-shadow because the animation modes pin the
+   tile's own `animation`/`transform` with !important. */
+.merge-ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 16px;
+  border: 3px solid rgba(236, 233, 255, 0.5);
+  pointer-events: none;
+  z-index: 4;
+  animation: merge-ring-pulse 0.6s ease;
+}
+@keyframes merge-ring-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(236, 233, 255, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(236, 233, 255, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(236, 233, 255, 0);
+  }
+}
+
+/* its own artwork steps out of the middle, into the top-left cell of the same
+   2x2 grid a folder's minis use — so the plate that forms is read as the folder
+   it is about to become, not as an icon with something pasted onto it */
+.overlay-slot.merge-two.merge-armed .tile > .tile-icon,
+.overlay-slot.merge-two.merge-armed .tile > span {
+  transform: translate(-12px, -12px) scale(0.38);
+  transition: transform 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.25);
+}
+/* a folder keeps its 2x2 preview and just makes room */
+.overlay-slot.merge-armed .ftile > .fminis {
+  transform: scale(0.92);
+  transition: transform 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.25);
+}
+
+/* the incoming icon: it starts out where the dragged tile was, so the eye can
+   follow it into the folder instead of seeing it appear */
+.merge-ghost {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 5;
+  opacity: 0;
+  transform: translate(var(--from-x, 0px), var(--from-y, 0px)) scale(0.62);
+  transition:
+    transform 0.26s cubic-bezier(0.2, 0.9, 0.3, 1.2),
+    opacity 0.18s ease;
+}
+.overlay-slot.merge-armed .merge-ghost {
+  opacity: 1;
+  transform: translate(0, 0) scale(1);
+}
+.merge-ghost img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+}
+.merge-ghost .ffolder,
+.merge-ghost .fmini-letter {
+  transform: scale(0.9);
+}
+/* the four cells of a folder's own preview grid (`.fminis` is 44px of 20px
+   minis, 3px apart, centred in the 58px tile) */
+.merge-ghost.slot-0 {
+  left: 7px;
+  top: 7px;
+}
+.merge-ghost.slot-1 {
+  right: 7px;
+  top: 7px;
+}
+.merge-ghost.slot-2 {
+  left: 7px;
+  bottom: 7px;
+}
+.merge-ghost.slot-3 {
+  right: 7px;
+  bottom: 7px;
+}
+
+/* The tile in hand says "this is going in": it shrinks and fades right down, so
+   the icon the user is holding appears exactly once — inside the preview — and
+   the two do not read as a duplicate.
+   `scale` rather than `transform`, because the animation modes pin `transform`
+   (`!important` in static mode, keyframes in wave/gentle/sync) and the
+   independent property composes with both instead of losing the cascade. */
+.launcher.held.merge-pulling .tile,
+.folder.held.merge-pulling .ftile {
+  scale: 0.72;
+  opacity: 0.32;
+  transition:
+    scale 0.18s ease,
+    opacity 0.18s ease;
+}
+.launcher-name {
+  margin-top: 5px;
+  max-width: 88px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #fff;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 5px rgba(0, 0, 0, 0.35);
+}
+/* ---------- floatie animation modes ---------- */
+.anim-static.launcher .tile,
+.anim-static.folder .ftile {
+  animation: none !important;
+  transform: translate3d(0, 0, 0) !important;
+}
+
+/* One bob, three modes. The bob runs only while an icon is at rest (`.rest`,
+   or a folder that is closed), the travel is `--bob-amp` in every mode, and
+   `--bob-cycle` is the seconds per bob in every mode — a mode changes the
+   *pattern*, never the height or the speed the sliders asked for:
+
+     wave    this hop, each icon offset by `--bob-delay` — the ripple travels
+     sync    this hop, no offset — everything moves together
+     gentle  a continuous drift (see below), no rest interval
+     static  nothing
+
+   Two rules of the cascade are load-bearing here:
+
+   1. `animation-delay: var(--bob-delay, 0s)` comes *after* the `animation`
+      shorthand in the same block. A shorthand resets `animation-delay` to 0s
+      at its own specificity, which is why the old `.phase-N .tile` rules
+      (0,2,0) never applied against `.launcher.anim-wave.rest .tile` (0,4,0):
+      measured on twelve tiles, every one delay=0s, phase-0 and phase-3
+      identical in every sampled frame — "wave" was "sync" under another name.
+   2. The count of a phase is a *place* on the desktop, not an id, so the chip
+      the user sees move is the one nearest the one that just moved.
+
+   The step counts are literal integers on purpose: Chromium silently drops
+   `steps(var(--n))` (falling back to 60fps interpolation), and generating one
+   keyframe stop per step measured 5x the GPU while looking identical. The
+   counts below are tuned for the default 10s cycle: the hop's 0.5-0.6s
+   segments land near 24 steps/s and the continuous drift at 12/s. A smooth
+   curve costs ~60 full-desktop composites a second (~33% of the 3D engine on
+   this desktop) against ~6.9% for the staircase. */
+.launcher.anim-wave.rest .tile,
+.folder.anim-wave:not(.open) .ftile,
+.launcher.anim-sync.rest .tile,
+.folder.anim-sync:not(.open) .ftile,
+.launcher:not(.anim-gentle):not(.anim-static).rest .tile,
+.folder:not(.anim-gentle):not(.anim-static):not(.open) .ftile {
+  will-change: transform;
+  backface-visibility: hidden;
+  animation: restbob-hop var(--bob-cycle, 10s) cubic-bezier(0.37, 0, 0.63, 1) infinite;
+  animation-delay: var(--bob-delay, 0s);
+  transform: translate3d(0, 0, 0);
+}
+
+/* gentle: always moving, never hurrying — a long soft drift with no rest
+   interval, which is what makes it different from `sync` rather than an
+   undocumented 0.6x speed on the same hop. */
+.launcher.anim-gentle.rest .tile,
+.folder.anim-gentle:not(.open) .ftile {
+  will-change: transform;
+  backface-visibility: hidden;
+  animation: restbob-drift var(--bob-cycle, 10s) ease-in-out infinite;
+  animation-delay: var(--bob-delay, 0s);
+  transform: translate3d(0, 0, 0);
+}
+
+/* Rise `--bob-amp`, dip a quarter of it, settle, then hold still for the rest
+   of the cycle: a hop, not a shove. Rising first is what makes the amplitude
+   the number the user typed. */
+@keyframes restbob-hop {
+  0% {
+    transform: translate3d(0, 0, 0);
+    animation-timing-function: steps(12);
+  }
+  5% {
+    transform: translate3d(0, calc(var(--bob-amp, 6px) * -1), 0);
+    animation-timing-function: steps(14);
+  }
+  11% {
+    transform: translate3d(0, calc(var(--bob-amp, 6px) * 0.25), 0);
+    animation-timing-function: steps(12);
+  }
+  16% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes restbob-drift {
+  0% {
+    transform: translate3d(0, 0, 0);
+    animation-timing-function: steps(120);
+  }
+  50% {
+    transform: translate3d(0, calc(var(--bob-amp, 6px) * -1), 0);
+    animation-timing-function: steps(120);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* ---------- folders ---------- */
+.folder {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  cursor: grab;
+  position: relative;
+  overflow: hidden;
+}
+.folder:not(.open) {
+  overflow: visible;
+}
+.folder:active {
+  cursor: grabbing;
+}
+.folder.open {
+  background: rgba(24, 20, 44, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 20px;
+  box-shadow: var(--card-shadow);
+  padding: 10px;
+  align-items: stretch;
+  cursor: default;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.folder.open:active {
+  cursor: default;
+}
+.overlay-slot:has(.folder.open) {
+  z-index: 100;
+}
+.ftile {
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  display: grid;
+  place-items: center;
+  box-shadow:
+    var(--tile-shadow),
+    inset 0 1px 2px rgba(255, 255, 255, 0.35);
+  position: relative;
+  box-sizing: border-box;
+  transition: box-shadow 0.2s ease;
+}
+.folder:hover .ftile {
+  box-shadow:
+    var(--tile-shadow-hover),
+    inset 0 1px 2px rgba(255, 255, 255, 0.45);
+}
+.ffolder {
+  width: 36px;
+  height: 26px;
+  background: linear-gradient(180deg, #fcd34d 0%, #f59e0b 100%);
+  border-radius: 3px 5px 5px 5px;
+  position: relative;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(217, 119, 6, 0.7);
+  box-sizing: border-box;
+}
+.ffolder::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -6px;
+  width: 16px;
+  height: 7px;
+  background: #f59e0b;
+  border-radius: 3px 3px 0 0;
+  border-top: 1px solid rgba(217, 119, 6, 0.7);
+  border-left: 1px solid rgba(217, 119, 6, 0.7);
+  border-right: 1px solid rgba(217, 119, 6, 0.7);
+  box-sizing: border-box;
+}
+.ffolder.fmini-dir {
+  width: 18px;
+  height: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+}
+.ffolder.fmini-dir::before {
+  top: -4px;
+  width: 8px;
+  height: 4px;
+}
+.fbadge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #e11d63;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+  padding: 0 5px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+  z-index: 10;
+  pointer-events: none;
+}
+.folder .launcher-x {
+  top: 4px;
+  left: 8px;
+  right: auto;
+}
+.folder:hover .launcher-x {
+  opacity: 1;
+}
+.fhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.fhead-dot {
+  width: 24px;
+  height: 18px;
+  border-radius: 4px;
+  background: linear-gradient(145deg, #f59e0b, #b45309);
+  flex: 0 0 auto;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.24);
+}
+.fhead-name {
+  flex: 1;
+  color: #fff;
+  font-weight: 800;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 5px rgba(0, 0, 0, 0.35);
+}
+.fshut {
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border-radius: 8px;
+  width: 26px;
+  height: 22px;
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.fshut:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+.fgrid {
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-content: start;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.fgrid::-webkit-scrollbar {
+  width: 6px;
+}
+.fgrid::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+.fgrid::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+}
+.fgrid::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+.fempty {
+  color: #8f88c7;
+  font-size: 12px;
+  text-align: center;
+  grid-column: 1 / -1;
+  padding: 12px 0;
+}
+.fitem {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  padding: 8px 4px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  min-width: 0;
+  font-family: inherit;
+}
+.fitem:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+.fitem img {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  pointer-events: none;
+  image-rendering: -webkit-optimize-contrast;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+}
+.fitem.go {
+  animation: launchpop 0.6s ease;
+}
+.fitem.shake {
+  animation: tileshake 0.45s ease;
+}
+.fitem.dragging-out {
+  opacity: 0.45;
+}
+.floaty-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 72px;
+  pointer-events: none;
+  z-index: 999999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.24));
+  opacity: 0.95;
+  will-change: transform;
+}
+.floaty-drag-ghost img {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 12px;
+  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.28));
+}
+.floaty-drag-ghost .ghost-folder {
+  transform: scale(0.9);
+}
+.floaty-drag-ghost .ghost-letter {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #8b7bff, #5b4bd6);
+  color: #fff;
+  font-weight: 800;
+  font-size: 20px;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.24);
+}
+.floaty-drag-ghost .ghost-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  text-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.7),
+    0 0 5px rgba(0, 0, 0, 0.4);
+  text-align: center;
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fletter {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #8b7bff, #5b4bd6);
+  color: #fff;
+  font-weight: 800;
+  font-size: 18px;
+  display: grid;
+  place-items: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.flabel {
+  max-width: 100%;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #e8e4ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.65),
+    0 0 5px rgba(0, 0, 0, 0.35);
+}
+/* right-click pin menu */
+.pin-menu {
+  position: fixed;
+  z-index: 50;
+  background: rgba(24, 20, 44, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.42);
+  padding: 6px;
+}
+.pin-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #e8e4ff;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.pin-row:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.pin-row input[type="checkbox"] {
+  accent-color: #6c5ce7;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+.pin-btn {
+  font-weight: 500;
+}
+.pin-btn.danger {
+  color: #fda4af;
+}
+.pin-btn.danger:hover {
+  background: rgba(244, 63, 94, 0.18);
+}
+.pin-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.pin-note {
+  font-size: 11px;
+  font-weight: 600;
+  color: #a7f3d0;
+  padding: 4px 10px 2px;
+}
+/* scrolling list inside the menu (the live2d model picker) */
+.pin-list {
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.pin-list .pin-row {
+  display: block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pin-btn.current {
+  color: #a7f3d0;
+}
+.pin-btn.current::after {
+  content: " ✓";
+}
+.pin-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f2f0ff;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  padding: 6px 8px;
+  outline: none;
+}
+.fminis {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  width: 44px;
+  height: 44px;
+  box-sizing: border-box;
+  place-items: center;
+}
+.fminis img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  border-radius: 5px;
+  background: transparent;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+  image-rendering: -webkit-optimize-contrast;
+}
+.fmini-letter {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: linear-gradient(145deg, #8b7bff, #5b4bd6);
+  color: #fff;
+  font-weight: 800;
+  font-size: 10px;
+  display: grid;
+  place-items: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  box-sizing: border-box;
+}
+.fname-edit {
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  outline: none;
+}

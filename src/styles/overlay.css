@@ -1,0 +1,51 @@
+/* ---------- desktop overlay canvas ---------- */
+.overlay-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  overflow: hidden;
+  /* Not `transparent`: a WebView2 starts out painting its own white frame, and
+     Chromium only repaints damage it knows about — so any part of the window
+     this element never covers can keep that white forever, which shows up as
+     bright bands through the translucent tiles sitting on top of it. An
+     invisible wash makes the page cover the surface, so its own paint replaces
+     the white. Opacity is 1/2550: invisible, but a real paint. */
+  background: linear-gradient(rgba(0, 0, 0, 0.0004), rgba(0, 0, 0, 0.0004));
+}
+
+.overlay-slot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: auto;
+}
+
+.overlay-slot:not(:has(.folder.open)):not(:has(.pin-menu)):not([data-kind="live2d"]) {
+  contain: layout style;
+}
+
+.overlay-slot.held {
+  will-change: transform;
+}
+
+.overlay-slot .bubble {
+  height: 100%;
+}
+
+.overlay-slot[data-kind="live2d"] .live2d-wrap {
+  /* follow the slot: the zoom resizes it (see live2d.ts applyZoom) */
+  width: 100%;
+  height: 100%;
+}
+
+.overlay-slot:has(.folder.open),
+.overlay-slot:has(.pin-menu) {
+  z-index: 100;
+}
+
+.overlay-slot:has(.held),
+.overlay-slot:active {
+  z-index: 200;
+}

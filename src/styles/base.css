@@ -1,0 +1,117 @@
+:root {
+  --ink: #2e2a3f;
+  --ink-soft: #8a84a3;
+  --accent: #6c5ce7;
+  --accent-deep: #4a3fb5;
+  --mint: #34d399;
+  --danger: #e11d63;
+  /* The desktop-panel recipe, shared by every widget that draws a card — the
+     system monitor, the visualizer, the countdown example, and the note and
+     clock. A widget floats on the wallpaper, so it is a dark translucent panel
+     with a hairline border and a soft shadow; anything that reads as text sits
+     on --panel-ink, and hierarchy comes from opacity, not from another colour. */
+  --panel-bg: linear-gradient(160deg, rgba(20, 18, 38, 0.84), rgba(28, 24, 52, 0.74));
+  --panel-border: rgba(255, 255, 255, 0.13);
+  --panel-radius: 16px;
+  --panel-hairline: rgba(255, 255, 255, 0.08);
+  --panel-ink: #ece9ff;
+  --panel-ink-soft: rgba(236, 233, 255, 0.55);
+  --panel-ink-faint: rgba(236, 233, 255, 0.42);
+  --panel-track: rgba(255, 255, 255, 0.11);
+  --panel-inset: rgba(255, 255, 255, 0.035);
+  /* Widget chrome sits on the wallpaper, not on a card: a wide dark halo around
+     every tile read as heavy, so keep the depth and drop the spread. */
+  --card-shadow: 0 5px 16px rgba(20, 16, 40, 0.2), 0 1px 3px rgba(20, 16, 40, 0.14);
+  --tile-shadow: 0 2px 6px rgba(20, 16, 40, 0.2);
+  --tile-shadow-hover: 0 3px 9px rgba(20, 16, 40, 0.24);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  font-family:
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  color: var(--ink);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ---------- shared panel (note, clock) ---------- */
+/* Same recipe as the system monitor and the countdown example: a dark
+   translucent card, a hairline border, a caption in letterspaced caps. */
+.bubble {
+  width: 100%;
+  height: 100vh;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--card-shadow);
+  color: var(--panel-ink);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 7px;
+  cursor: grab;
+  border-bottom: 1px solid var(--panel-hairline);
+  flex: 0 0 auto;
+}
+.bar:active {
+  cursor: grabbing;
+}
+
+.bar-title {
+  flex: 1;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--panel-ink-soft);
+}
+
+.icon-btn {
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--panel-ink);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  /* quiet until the widget is under the cursor, like the monitor's × — but not
+     invisible: on the note and the clock this is the way the widget goes away */
+  opacity: 0.6;
+  transition:
+    opacity 0.15s,
+    background 0.15s,
+    transform 0.15s;
+}
+.bubble:hover .icon-btn {
+  opacity: 1;
+}
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.26);
+  transform: scale(1.08);
+}
