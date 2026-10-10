@@ -5,13 +5,6 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
 
 ## Known bugs
 
-- `verify/stranded.mjs` leaves one step on the shared undo stack per run: it pushes two (the
-  placed drag and the pointer drag) and unwinds one. Its own output prints the depth before
-  and after, so the leak is visible. The obvious fix — undo until the depth matches — is the
-  wrong one: the stack is shared with the person using the desktop, so the step on top may be
-  theirs, and popping it would damage the thing the probe exists to protect. Unwinding only
-  the steps this probe pushed needs the stack to say whose they are.
-
 - A fresh widget is born where the backend's cascade puts it (`140 + (n*47 % 480)`,
   `140 + (n*31 % 320)`), which knows nothing about the desktop, and the overlay's nudge only
   runs for a record with no place of its own — so a new note or clock can land on top of an

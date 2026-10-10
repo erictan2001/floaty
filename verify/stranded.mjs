@@ -191,6 +191,41 @@ console.log(
 // *then* places the widget one last time, so a real drag could leave a widget off-screen with
 // the log claiming it had been brought back. Nothing but a real pointer drag exercises that.
 {
+  // Every step this pass pushes, by the depth the stack was at after it. The stack is shared
+  // with the person using the desktop, so this pass cannot pick its own steps out by label or
+  // by what happens to be on top. It counts the depth each of its drags moved, and at the end
+  // undoes exactly those, newest first, and only while the depth still reads what that step
+  // left. A depth that moved in any other way is not attributable, so nothing is undone.
+  const own = [];
+  let at = await depth();
+  let unknown = false;
+  const mark = async () => {
+    const now = await depth();
+    if (now === null || at === null) unknown = true;
+    else if (now === at + 1) own.push(now);
+    else if (now !== at) unknown = true;
+    at = now;
+  };
+  const unwind = async () => {
+    if (unknown) {
+      console.log(
+        "  note: the undo stack moved in a way this pass cannot attribute; nothing undone",
+      );
+      return;
+    }
+    while (own.length) {
+      const top = own.pop();
+      if ((await depth()) !== top) {
+        console.log("  note: the stack moved under the pass's own steps; left the rest in place");
+        return;
+      }
+      const back = await app.tryInvoke("floaty_undo");
+      if (back?.error) {
+        console.log(`  note: a drag's own step would not undo — ${back.error}`);
+        return;
+      }
+    }
+  };
   // The topmost barred panel, so a drag to the top edge has the furthest to travel and the
   // release is a real gesture rather than a one-pixel move.
   const barPanel = (await app.list())
@@ -230,6 +265,7 @@ console.log(
         // A release is a moment, not a reading: wait for the place to change, and read it at
         // the deadline if it never does, so a slow machine is not called a missing widget.
         const landed = await afterStep("the top-edge drag", barPanel, start);
+        await mark();
         // And the app has to say it did the bringing back: ending on a screen edge could also
         // mean the drag never left, which is the false pass this pass exists to avoid.
         const claimed = await said(barPanel, 40);
@@ -250,6 +286,7 @@ console.log(
           }
           await mouse("mouseReleased", edge, now.y, 0);
           const right = await afterStep("the right-edge drag", barPanel, landed);
+          await mark();
           const okBody = Boolean(right && box2 && insideOneScreen(...right, ...box2));
           console.log(
             `  pointer pass: ${barPanel} dragged to the right edge -> ${right} ` +
@@ -277,19 +314,12 @@ console.log(
             okLanded,
             `a real pointer drag left ${barPanel}'s body on the desktop: at ${landed}, body ${landedSize?.[0]}x${landedSize?.[1]}`,
           );
-          if (okLanded) {
-            // Put it back with the step the drag itself pushed — one undo, not a second move, so
-            // the probe leaves the stack no deeper than it found it.
-            const back = await app.tryInvoke("floaty_undo");
-            if (back?.error) {
-              console.log(`  note: the drag's own step would not undo — ${back.error}`);
-            } else {
-              await afterStep("the drag's own undo", barPanel, right);
-            }
-          }
         }
       }
     }
+    // Put the panel back and leave the stack as found: its own steps, newest first. Runs on a
+    // failed check too, so a red run does not also leave a moved widget and a deeper stack.
+    await unwind();
   }
 }
 
