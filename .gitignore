@@ -4,3 +4,6 @@ src-tauri/target/
 src-tauri/gen/
 *.log
 verify/out/
+
+# Large demo recordings: keep on disk, host as release assets instead of in git history.
+demos/**/*.mp4

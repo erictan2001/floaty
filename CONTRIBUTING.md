@@ -74,6 +74,23 @@ See [verify/README.md](verify/README.md) for details on the headless Chrome DevT
 
 ---
 
+## Which checks need a desktop
+
+- **Every PR** (`.github/workflows/ci.yml`, hosted runner, no desktop): the format,
+  plugin-id and `tsc --noEmit` steps (the parts of `npm run lint`), `npm test`,
+  `npm run build`, `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --lib`,
+  `npm run verify:panes` and `npm run verify:palette`.
+- **Nightly only** (`.github/workflows/nightly.yml`): the full `cargo test` (not just
+  `--lib`), `npm run verify:trail-page`, and the probes that drive the running app,
+  including `verify:app` and `verify:drag`. On a hosted runner those report "could not
+  run" and are recorded as skipped, not green.
+- **Needs a live desktop** with the app running and its debug port open on 9222
+  (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222 npm run tauri dev`):
+  `npm run verify:app`, and every other probe that attaches to the running app. `verify:drag`
+  also needs two screens. See [verify/README.md](verify/README.md#checking-the-running-app).
+
+---
+
 ## Guidelines for Changes
 
 ### 1. File & Desktop Safety

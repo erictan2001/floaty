@@ -1,5 +1,9 @@
 # Floaty
 
+[![CI](https://github.com/erictan2001/floaty/actions/workflows/ci.yml/badge.svg)](https://github.com/erictan2001/floaty/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/erictan2001/floaty)](https://github.com/erictan2001/floaty/releases/latest)
+[![License](https://img.shields.io/github/license/erictan2001/floaty)](LICENSE)
+
 Your Windows desktop, but the icons float.
 
 Floaty takes a folder — normally your real Desktop folder — and turns what is in it
@@ -7,6 +11,18 @@ into objects that fall, bounce and pile up on the wallpaper. Shortcuts launch ap
 documents are file icons, subfolders are folders, and dragging one file onto another
 really moves it on disk. Sticky notes, a pomodoro clock, a Live2D
 companion, an audio visualizer and a system monitor float in the same space.
+
+## Start here
+
+Floaty turns a folder (normally your Desktop) into icons that fall, bounce and pile up
+on your wallpaper. It is **Windows 10 and 11 only**.
+
+1. Download the NSIS installer (`Floaty_<version>_<arch>-setup.exe`) from the
+   [latest release](https://github.com/erictan2001/floaty/releases/latest).
+2. Run it. SmartScreen may warn that the app is unsigned: choose _More info_ →
+   _Run anyway_.
+3. On first run, pick the folder Floaty should use as your desktop. Your real Desktop
+   is the usual answer; you can change it later in **Settings → General**.
 
 ![Floaty on a desktop](screenshots/desktop-screenshot.png)
 
