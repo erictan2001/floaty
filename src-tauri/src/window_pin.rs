@@ -598,8 +598,7 @@ pub(crate) mod desktop_pin {
     /// When the last drag activity happened: a `floaty_drag_to` move, or a drag
     /// start. The stuck-drag watchdog reads this — a flag with no moves behind
     /// it and no button down is an orphaned gesture, not a long drag.
-    static DRAG_ALIVE: std::sync::RwLock<Option<std::time::Instant>> =
-        std::sync::RwLock::new(None);
+    static DRAG_ALIVE: std::sync::RwLock<Option<std::time::Instant>> = std::sync::RwLock::new(None);
 
     pub(crate) fn touch_drag_alive() {
         if let Ok(mut guard) = DRAG_ALIVE.write() {
