@@ -55,7 +55,7 @@ A third-party plugin is code that runs with floaty's access. Approval records wh
 ### Approval is a fingerprint, not a sandbox
 
 - An installed plugin is not imported until it is trusted (`plugin_approved` in `plugin_commands.rs`, `loadPlugins` in `plugin.ts`). Built-ins are always trusted.
-- Approving stores `folder_fingerprint(dir)` in `settings.plugin_trust[id]`. The fingerprint covers every file under the folder, sorted by relative path, and is hashed with `icons::fingerprint`. That is a 64-bit FNV-1a with a length suffix. It catches accidental change. It is not cryptographic and does not show that code is safe.
+- Approving stores `folder_fingerprint(dir)` in `settings.plugin_trust[id]`. The fingerprint covers every file under the folder, sorted by relative path, and is hashed with SHA-256 and stored as `sha256:<hex>`. Approvals recorded under the earlier 64-bit FNV format no longer match, so those plugins must be approved again. The hash shows the code is unchanged since approval; it does not show that the code is safe.
 - Installing from a `.zip` is the approval: the install dialog shows what the archive holds. A folder dropped in by hand stays unapproved until you press the Plugins tab button.
 - `plugin_trust` is part of floaty's settings in the app-data folder, which your user account can write. Anything that can write that file can add an approval.
 

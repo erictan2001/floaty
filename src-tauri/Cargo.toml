@@ -27,6 +27,8 @@ tauri-plugin-global-shortcut = "2"
 # updating in place: the updater checks a signed manifest and the process plugin restarts
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# SHA-256 over plugin folders: the fingerprint that plugin approval compares against
+sha2 = "0.10"
 
 # WASAPI loopback capture for the audio visualizer (system output, not the mic)
 [target.'cfg(windows)'.dependencies]

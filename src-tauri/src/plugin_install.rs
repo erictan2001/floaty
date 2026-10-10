@@ -33,7 +33,12 @@ pub struct PluginInstall {
 }
 
 /// A fingerprint of everything in a plugin folder: the sorted relative paths and
-/// their bytes, through the same hash the icon store uses for content addressing.
+/// their bytes, hashed with SHA-256 and returned as `sha256:<64 lowercase hex>`.
+///
+/// SHA-256 rather than the 64-bit FNV-1a the icon store uses: a plugin approval is
+/// a trust decision, and a 64-bit hash can be collided by someone who controls the
+/// folder's contents. The `sha256:` prefix means entries written in the old FNV
+/// format can never match, so earlier approvals are asked for again.
 ///
 /// **This is a change detector, not a signature.** Anything that can write the
 /// folder can also rewrite the settings entry that trusts it, so it cannot stop a
@@ -53,7 +58,16 @@ pub fn folder_fingerprint(dir: &Path) -> Result<String, String> {
         stream.extend_from_slice(&bytes);
         stream.push(0xff);
     }
-    Ok(crate::icons::fingerprint(&stream))
+    Ok(format!("sha256:{}", sha256_hex(&stream)))
+}
+
+/// Lowercase hex SHA-256 of `bytes` (64 characters).
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Relative paths of every file under `dir`, one level or many.
@@ -771,6 +785,25 @@ mod tests {
         let empty = dir.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
         assert!(folder_fingerprint(&empty).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_plugin_fingerprint_is_sha256_with_a_prefix_so_old_entries_never_match() {
+        let dir = temp("fingerprint-format");
+        let plugin = dir.join("countdown");
+        make_plugin(&plugin, "countdown", "1.0.0");
+        let fp = folder_fingerprint(&plugin).unwrap();
+        assert!(fp.starts_with("sha256:"), "got {fp}");
+        assert_eq!(fp.len(), 71, "got {fp}");
+        assert!(fp[7..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // The known SHA-256 of the empty string, to pin the helper itself.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
