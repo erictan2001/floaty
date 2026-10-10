@@ -214,6 +214,11 @@ pub(crate) fn raise_top_layer(app: &AppHandle) {
         if label != TOP_LAYER && !label.starts_with(&format!("{TOP_LAYER}-")) {
             continue;
         }
+        // A layer presence hid for a fullscreen app stays hid: re-raising it on
+        // a timer is what put floaty above the app the user is actually in.
+        if !w.is_visible().unwrap_or(true) {
+            continue;
+        }
         if let Ok(hwnd) = w.hwnd() {
             desktop_pin::raise_above_everything(hwnd.0 as isize);
         }

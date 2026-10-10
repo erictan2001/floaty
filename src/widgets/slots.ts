@@ -122,3 +122,22 @@ export function notifyDragging(dragging: boolean): void {
 export function notifyDragMove(id: string, x: number, y: number): void {
   window.dispatchEvent(new CustomEvent("floaty-drag-move", { detail: { id, x, y } }));
 }
+
+/**
+ * Release an orphaned gesture on focus loss. Called once by the overlay mount —
+ * never at module scope, which unit tests import without a window.
+ *
+ * A gesture orphaned by a focus loss (Alt+Tab mid-drag, the display sleeping
+ * with the button down) never sends its close: without this the backend keeps
+ * the overlay fullscreen-clickable — desktop clicks swallowed, browser menu
+ * on right-click — until the next drag. The session's own release, if it still
+ * arrives, re-sends the same close harmlessly.
+ */
+export function watchDragFocusLoss(): void {
+  window.addEventListener("blur", () => {
+    if (overlayDragging) notifyDragging(false);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && overlayDragging) notifyDragging(false);
+  });
+}

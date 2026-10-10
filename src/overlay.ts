@@ -6,6 +6,7 @@ import {
   beatNow,
   startHeartbeat,
   appWin,
+  isOverlayDragging,
   monitorArea,
   monitorAt,
   onMyScreen,
@@ -13,8 +14,10 @@ import {
   overlaySlots,
   registerOverlaySlot,
   scheduleHitRectsUpdate,
+  syncHitRectsToRust,
   toWindow,
   unregisterOverlaySlot,
+  watchDragFocusLoss,
   watchSettings,
   type OverlaySlot,
   type WidgetRecord,
@@ -810,6 +813,39 @@ function mountDesktop(root: HTMLElement): void {
       popups.forEach((m) => m.remove());
       scheduleHitRectsUpdate();
     }
+  });
+  // An orphaned gesture (focus lost mid-drag) must not leave the overlay
+  // fullscreen-clickable: see `watchDragFocusLoss`.
+  watchDragFocusLoss();
+
+  // Self-healing click-through: any rect update missed between events (a popup
+  // the observer did not see, a DPI change, a drag-end that raced its sync)
+  // otherwise persists until the next mount — as a desktop that swallows clicks.
+  // The key dedup in `syncHitRectsToRust` makes the steady state free.
+  window.setInterval(() => {
+    if (!isOverlayDragging()) syncHitRectsToRust();
+  }, 2000);
+  window.addEventListener("resize", () => scheduleHitRectsUpdate());
+
+  // A right-click that reaches the page on empty canvas is proof the region is
+  // stale: the desktop should have taken it. Never show the browser menu for
+  // one — swallow it, resync, and say so in the log. Widget areas keep their own
+  // menus (their handlers stop propagation before this runs).
+  window.addEventListener("contextmenu", (e) => {
+    const t = e.target as HTMLElement | null;
+    if (!(t instanceof Element)) return;
+    if (t.closest("textarea, input") || (t as HTMLElement).isContentEditable) return;
+    if (
+      t.closest(
+        ".overlay-slot, .pin-menu, .model-menu, .live2d-palette, .live2d-palette-modal, .fname-edit, .first-run-guard",
+      )
+    )
+      return;
+    e.preventDefault();
+    scheduleHitRectsUpdate();
+    void invoke("floaty_log", {
+      msg: `[overlay${top ? ":top" : ""}] right-click hit empty canvas — region resynced`,
+    }).catch(() => undefined);
   });
 
   // Sleep/standby evidence: the backend does the recovery (it gets the display

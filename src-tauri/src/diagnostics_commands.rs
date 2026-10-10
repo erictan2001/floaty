@@ -606,6 +606,9 @@ pub(crate) struct DragOwner {
 
 #[tauri::command]
 pub(crate) fn floaty_drag_to(id: String, x: f64, y: f64, app: AppHandle) -> DragOwner {
+    // Liveness for the stuck-drag watchdog: moves are still arriving, so a set
+    // drag flag is a gesture in progress, not an orphaned one.
+    desktop_pin::touch_drag_alive();
     let owner = drag_record_to(&app, &id, x, y);
     let list = screens(&app);
     DragOwner {

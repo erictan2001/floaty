@@ -579,6 +579,10 @@ export class Floatie {
     this.stopWatch?.();
     this.stopSwallowing();
     this.releaseCapture();
+    // Unmounted mid-gesture (a screen handover drops the old slot while the
+    // button is still down): the release handler lives on, but say so now — a
+    // close that never comes leaves the overlay fullscreen-clickable.
+    if (this.drag?.active) notifyDragging(false);
     this.drag = null;
     sessions.delete(this.rec.id);
   }

@@ -501,8 +501,51 @@ pub(crate) async fn floaty_update_hit_rects(label: String, rects: Vec<desktop_pi
 }
 
 #[tauri::command]
-pub(crate) fn floaty_set_overlay_dragging(label: String, dragging: bool) {
-    desktop_pin::set_dragging(label, dragging);
+pub(crate) fn floaty_set_overlay_dragging(label: String, dragging: bool, app: AppHandle) {
+    desktop_pin::set_dragging(label.clone(), dragging);
+    if !dragging {
+        return;
+    }
+    // A drag that never ends leaves its overlay fullscreen-clickable, swallowing
+    // every desktop click on that screen (and, on the top layer, every app below
+    // it) until the next drag — with the browser menu on right-click as the tell.
+    // The page always closes the gesture, but a lost pointerup or a page
+    // reloaded mid-gesture never sends the close. So watch what owns it: no moves
+    // behind the flag and no button down is an orphaned gesture, not a long drag.
+    // (The frontend also releases on blur/unmount, and resyncs rects on a timer;
+    // this is the backstop for a page that died mid-gesture.)
+    let handle = app.clone();
+    let started = std::time::Instant::now();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        if !desktop_pin::is_dragging(&label) {
+            return;
+        }
+        let quiet_for = desktop_pin::drag_alive_age();
+        if started.elapsed() > std::time::Duration::from_secs(5)
+            && quiet_for > std::time::Duration::from_secs(5)
+            && !desktop_pin::any_button_down()
+        {
+            desktop_pin::set_dragging(label.clone(), false);
+            log_line(
+                &handle,
+                &format!(
+                    "{label}: drag flag stuck (no move for {}s, buttons up) — click-through region restored",
+                    quiet_for.as_secs()
+                ),
+            );
+            return;
+        }
+        // Absolute cap: no real gesture holds the desktop hostage for minutes.
+        if started.elapsed() > std::time::Duration::from_secs(300) {
+            desktop_pin::set_dragging(label.clone(), false);
+            log_line(
+                &handle,
+                &format!("{label}: drag flag still set after 300s — click-through region restored"),
+            );
+            return;
+        }
+    });
 }
 
 /// Create a widget window without blocking the calling (command) thread.

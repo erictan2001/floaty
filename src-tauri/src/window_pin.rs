@@ -162,6 +162,7 @@ pub(crate) mod desktop_pin {
         pub fn SetWindowRgn(hWnd: isize, hRgn: isize, bRedraw: i32) -> i32;
 
         pub fn InvalidateRect(hWnd: isize, lpRect: *const std::ffi::c_void, bErase: i32) -> i32;
+        pub fn GetAsyncKeyState(vKey: i32) -> i16;
         pub fn RedrawWindow(
             hWnd: isize,
             lprcUpdate: *const std::ffi::c_void,
@@ -587,11 +588,48 @@ pub(crate) mod desktop_pin {
             .unwrap_or_default()
     }
 
-    fn is_dragging(label: &str) -> bool {
+    pub(crate) fn is_dragging(label: &str) -> bool {
         OVERLAY_IS_DRAGGING
             .read()
             .map(|g| g.iter().any(|l| l == label))
             .unwrap_or(false)
+    }
+
+    /// When the last drag activity happened: a `floaty_drag_to` move, or a drag
+    /// start. The stuck-drag watchdog reads this — a flag with no moves behind
+    /// it and no button down is an orphaned gesture, not a long drag.
+    static DRAG_ALIVE: std::sync::RwLock<Option<std::time::Instant>> =
+        std::sync::RwLock::new(None);
+
+    pub(crate) fn touch_drag_alive() {
+        if let Ok(mut guard) = DRAG_ALIVE.write() {
+            *guard = Some(std::time::Instant::now());
+        }
+    }
+
+    pub(crate) fn drag_alive_age() -> std::time::Duration {
+        DRAG_ALIVE
+            .read()
+            .ok()
+            .and_then(|g| *g)
+            .map(|t| t.elapsed())
+            .unwrap_or(std::time::Duration::from_secs(3600))
+    }
+
+    /// Whether any mouse button is physically down right now. A drag flag that
+    /// outlives the press — a lost pointerup, a page reloaded mid-gesture — is
+    /// what leaves an overlay fullscreen-clickable, swallowing the desktop (and,
+    /// on the top layer, every app below it); this is how the watchdog tells a
+    /// stuck flag from a gesture that is still going.
+    pub(crate) fn any_button_down() -> bool {
+        const VK_LBUTTON: i32 = 0x01;
+        const VK_RBUTTON: i32 = 0x02;
+        const VK_MBUTTON: i32 = 0x04;
+        unsafe {
+            [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
+                .iter()
+                .any(|&key| (GetAsyncKeyState(key) as u16 & 0x8000) != 0)
+        }
     }
 
     pub fn apply_hit_regions(hwnd: isize, rects: &[HitRect]) {
@@ -658,6 +696,9 @@ pub(crate) mod desktop_pin {
             if dragging {
                 guard.push(label.clone());
             }
+        }
+        if dragging {
+            touch_drag_alive();
         }
         let hwnd = hwnd_for(&label);
         if hwnd != 0 {
@@ -742,6 +783,12 @@ pub(crate) mod desktop_pin {
         if let Ok(guard) = OVERLAY_HIT_RECTS.read() {
             if let Some((_, rects)) = guard.iter().find(|(l, _)| l == label) {
                 apply_hit_regions(hwnd, rects);
+            } else {
+                // Fully click-through until the page reports its first rects: a
+                // fresh window with no region is fullscreen-clickable and would
+                // swallow the desktop (and show the browser menu on right-click)
+                // before the first sync lands.
+                apply_hit_regions(hwnd, &[]);
             }
         }
     }
