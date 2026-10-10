@@ -443,11 +443,10 @@ pub(crate) fn floaty_dropped_inner(
             (px, py)
         };
         (px + w / 2, py + h / 2)
-    } else if let Some(me) = app.get_webview_window(&widget_label(&id)) {
+    } else {
+        let me = app.get_webview_window(&widget_label(&id))?;
         let (mp, ms) = (me.outer_position().ok()?, me.inner_size().ok()?);
         (mp.x + ms.width as i32 / 2, mp.y + ms.height as i32 / 2)
-    } else {
-        return None;
     };
 
     // candidate targets (snapshot under the lock, probe windows after release)

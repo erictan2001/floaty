@@ -316,8 +316,10 @@ fn parse_recycled_metadata(bytes: &[u8]) -> Option<(String, std::time::SystemTim
         let end = start.checked_add(units.checked_mul(2)?)?;
         let raw = bytes.get(start..end)?;
         let mut utf16: Vec<u16> = raw
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect();
         while utf16.last() == Some(&0) {
             utf16.pop();

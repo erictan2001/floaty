@@ -394,8 +394,10 @@ fn parse_notification_entry(
     let name_start = offset + HEADER;
     let name_end = (name_start + name_bytes).min(end);
     let u16_chars: Vec<u16> = buffer[name_start.min(end)..name_end]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let name = String::from_utf16_lossy(&u16_chars);
     Some((next, action, name))
