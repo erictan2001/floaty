@@ -7,6 +7,20 @@ Notable changes to Floaty, newest first. The format follows
 The plugin API version is a different number with a policy of its own — see
 [Plugins](docs/PLUGINS.md#the-plugin-api-version).
 
+## Unreleased
+
+### Changed
+
+- **Plugin API version 3 (planned, not yet in this build).** `api.settings()` no longer
+  carries `pet_speed`: the pet widget and its setting were removed in 0.2.0, and a plugin
+  that read that field now gets `undefined`. This is the break the plugin API policy
+  requires a bump for. The bump to `PLUGIN_API_VERSION = 3` ships with the next app release,
+  together with a one-release window in which a manifest declaring `2` still loads.
+- Plugin trust fingerprints are now SHA-256 (`sha256:<hex>`). Plugins approved under the
+  earlier 64-bit hash must be approved again.
+- Widget size limits have one owner, the backend table. The grip floor for the visualizer is
+  140×70 (was 160×80 in the widget). The trail example's panel is 182 high, matching its floor.
+
 ## 0.2.3 - 2026-10-07
 
 ### Added

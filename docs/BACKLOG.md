@@ -68,11 +68,6 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
 
 ## Process
 
-- `PLUGIN_API_VERSION` is still 2. The pet removal broke the documented `api.settings()`
-  surface in the same week the policy requiring a bump for exactly that was written, so the
-  next release should carry API version 3 and a CHANGELOG line. Bumping it alone would be
-  wrong: a plugin declaring a number the released app does not speak is refused, so the bump
-  has to ride an app release.
 - Nothing before publication installs the built installer and opens the app, so nothing yet
   proves an installer installs and the app opens - the clean-machine check in
   [MATURITY](MATURITY.md) is where that belongs. What the guards do cover, and why the other

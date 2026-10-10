@@ -106,3 +106,5 @@ We follow Conventional Commits format:
 3. Ensure all tests and format checks pass.
 4. Push to your fork and submit a Pull Request against the `main` branch.
 5. Provide a clear description of the problem solved, testing methodology, and any UX changes.
+
+Maintainers: see [docs/BRANCH-PROTECTION.md](docs/BRANCH-PROTECTION.md) for how `main` is protected.
