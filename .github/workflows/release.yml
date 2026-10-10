@@ -35,7 +35,7 @@ name: release
 # for Windows: `TAURI_SIGNING_PRIVATE_KEY` (a repository secret) minisigns `latest.json`
 # and the updater archives, and the public key in `src-tauri/tauri.conf.json` is what
 # the running copy checks them against. SmartScreen still warns on first run until an
-# Authenticode certificate is wired in (see "Signing" in the README — the thumbprint is
+# Authenticode certificate is wired in (see "Signing it" in docs/RELEASING.md — the thumbprint is
 # per-machine, so it belongs in a secret, not in this file).
 #
 # Nothing in this file publishes anything. The release is created as a *draft*, the feed

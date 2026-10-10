@@ -1,0 +1,12 @@
+# Every change is reviewed by the maintainer.
+*                       @erictan2001
+
+# Trust-sensitive areas: anything touching disk operations, plugin approval,
+# the updater, or the release pipeline needs the maintainer's explicit review.
+/src-tauri/src/disk_drag.rs     @erictan2001
+/src-tauri/src/plugin_install.rs @erictan2001
+/src-tauri/src/plugins.rs       @erictan2001
+/src-tauri/tauri.conf.json      @erictan2001
+/src-tauri/capabilities/        @erictan2001
+/.github/workflows/             @erictan2001
+/SECURITY.md                    @erictan2001
