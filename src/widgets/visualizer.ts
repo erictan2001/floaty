@@ -256,7 +256,7 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
       e.stopPropagation();
       void removeSelf(rec!);
     });
-    floatie(rec).resizeHandle(wrap, 160, 80);
+    floatie(rec).resizeHandle(wrap);
     // no title bar: the whole surface drags, and a click still cycles the mode
     floatie(rec).attachDrag(wrap);
     floatie(rec).watch();

@@ -41,7 +41,7 @@ export function mountNote(root: HTMLElement, id: string): void {
         /* keep default size */
       }
     }
-    floatie(rec).resizeHandle(wrap, 180, 140);
+    floatie(rec).resizeHandle(wrap);
     area.value = typeof rec.data["text"] === "string" ? (rec.data["text"] as string) : "";
     const persist = debounce(() => {
       rec.data["text"] = area.value;

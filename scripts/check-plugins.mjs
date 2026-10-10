@@ -69,6 +69,9 @@ const problems = [];
 // (the Rust side asserts the same list in `the_payload_carries_the_keys_...`).
 const WIRE_FIELDS = [
   "default_size",
+  "min_size",
+  "max_size",
+  "resizable",
   "desktop_item",
   "path_key",
   "noun",

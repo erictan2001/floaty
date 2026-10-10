@@ -248,7 +248,7 @@ export function mountSysmon(root: HTMLElement, id: string): void {
       e.stopPropagation();
       void removeSelf(rec!);
     });
-    floatie(rec).resizeHandle(wrap, 180, 110);
+    floatie(rec).resizeHandle(wrap);
     // no title bar: the whole surface drags, and a click still cycles the graph
     floatie(rec).attachDrag(wrap);
     floatie(rec).watch();

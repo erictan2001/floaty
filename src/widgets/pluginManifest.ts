@@ -26,6 +26,9 @@ export interface PluginManifestEntry {
   enabled: boolean;
   /** Fresh-widget size, `[w, h]`. */
   default_size: [number, number];
+  /** The range a record's w/h is clamped to, `[w, h]`; the resize grip stops here. */
+  min_size: [number, number];
+  max_size: [number, number];
   resizable: boolean;
   /** Set for kinds that stand for something on disk. */
   desktop_item: PluginDesktopItem | null;
@@ -62,6 +65,8 @@ export interface Size {
 
 /** Size for a record whose kind this build does not know. */
 const FALLBACK_SIZE: Size = { w: 100, h: 100 };
+/** Smallest a resized record may get when the manifest has not answered: the backend's own floor. */
+const FALLBACK_MIN_SIZE: Size = { w: 80, h: 60 };
 
 const entries = new Map<string, PluginManifestEntry>();
 let pending: Promise<void> | undefined;
@@ -147,6 +152,18 @@ export function pathOf(rec: WidgetRecord): string {
   if (arrived) return "";
   const value = rec.data["target"] ?? rec.data["path"];
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * The smallest a resized record of this kind may be: the backend's `min_size`, which
+ * is also the floor it clamps saved sizes to. The resize grip reads it here so the
+ * grip and the saved record can never disagree.
+ */
+export function minSizeFor(kind: string): Size {
+  const min = entries.get(kind)?.min_size;
+  return Array.isArray(min) && min.length === 2 && min.every((n) => num(n) !== undefined)
+    ? { w: min[0], h: min[1] }
+    : FALLBACK_MIN_SIZE;
 }
 
 /**

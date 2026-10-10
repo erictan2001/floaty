@@ -95,8 +95,8 @@ export interface WidgetApi {
     getRec: () => WidgetRecord | undefined,
     options?: PinMenuOptions,
   ) => void;
-  /** Bottom-right drag grip that resizes and persists the record. */
-  addResizeHandle: (wrap: HTMLElement, rec: WidgetRecord, minW: number, minH: number) => void;
+  /** Bottom-right drag grip that resizes and persists the record; its floor is the kind's `min_size`. */
+  addResizeHandle: (wrap: HTMLElement, rec: WidgetRecord) => void;
   /** Remove the widget (asks first when the user enabled confirmation). */
   removeSelf: (rec: WidgetRecord) => Promise<void>;
   /** Current global settings. */
@@ -351,9 +351,9 @@ export const widgetApi: WidgetApi = {
     floaty.setWidgetSize(id, w, h, 1);
   },
   addPinMenu: floaty.addPinMenu,
-  addResizeHandle: (wrap, rec, minW, minH) => {
+  addResizeHandle: (wrap, rec) => {
     held.set(rec.id, rec);
-    floatie(rec).resizeHandle(wrap, minW, minH);
+    floatie(rec).resizeHandle(wrap);
   },
   removeSelf: floaty.removeSelf,
   settings: floaty.currentSettings,

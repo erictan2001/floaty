@@ -202,7 +202,7 @@ own modules: this surface stays stable, floaty's internals do not.
 | `api.setPos(id, x, y, {transient})` | Move the widget (keeps the desktop's hit rects in step). The widget's own position is written to its record, so a later `record.save` is not needed to make it stick; another floatie's id is the low-level move instead, and that one *does* need the save. `transient: true` says the move is scaffolding — see below. |
 | `api.setSize(id, w, h, {transient})` | Resize the widget's slot. The widget's own size is written to its record; another floatie's is the low-level resize. `transient: true` for a stretch to catch the mouse — see below. |
 | `api.addPinMenu(wrap, getRec, opts?)` | The standard right-click menu for this widget. `opts.rows(api)` adds the plugin's own rows above the standard ones — `row`, `run`, `divider`, `note`, `close`, and `swap` to draw a list in place of the commands (how the live2d model picker works). |
-| `api.addResizeHandle(wrap, rec, minW, minH)` | Bottom-right grip that resizes and saves the record. |
+| `api.addResizeHandle(wrap, rec)` | Bottom-right grip that resizes and saves the record. Its floor is the manifest's `minSize` (or the built-in kind's limit); nothing to pass. |
 | `api.removeSelf(rec)` | Remove the widget, asking first when the user enabled confirmation. |
 | `api.settings()` | Current global settings (`gravity`, `bounce`, …). |
 | `api.onSettings(cb)` | Run `cb` on every settings change, and once when the settings are first loaded. This is how a widget follows a setting — see [the note above](#indexjs). |
@@ -426,7 +426,7 @@ Same contract, but shipped inside floaty. Adding one is three edits:
        watchPluginEnabled("counter");
        const rec = await loadRecord(id);
        // ... build the DOM, then addPinMenu(root, () => rec)
-       if (rec) floatie(rec).resizeHandle(root, 180, 140);
+       if (rec) floatie(rec).resizeHandle(root);
      },
      describe: (rec) => `count: ${String(rec.data["count"] ?? 0)}`,
    };
@@ -471,7 +471,7 @@ through `api`):
   `monitorArea`, `overlaySlots`, `isOverlayMode`, `isTopLayer` and `enforceDesktopLayer` are
   still here.
 - **Interaction** — `floatie(rec).attachDrag(el, opts)` and
-  `floatie(rec).resizeHandle(el, minW, minH)` in `floatie.ts`; `addPinMenu`, `removeSelf`,
+  `floatie(rec).resizeHandle(el)` in `floatie.ts`; `addPinMenu`, `removeSelf`,
   `confirmRemoveDialog`, `describeForConfirm`, `makeBar`, and `notifyDragging` +
   `notifyDragMove`, which arm the desktop's drop and merge preview while an icon is dragged
   by hand.

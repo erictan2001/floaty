@@ -210,7 +210,7 @@ export default {
     // enableDrag is threshold-based, so the tap-to-edit above still works.
     api.enableDrag(wrap, rec);
     api.addPinMenu(wrap, () => rec);
-    api.addResizeHandle(wrap, rec, 170, 96);
+    api.addResizeHandle(wrap, rec);
   },
 
   describe(rec) {

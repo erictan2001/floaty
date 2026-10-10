@@ -26,7 +26,7 @@
  * here", which is also why the arrangement survives a restart.
  */
 
-const PANEL = { w: 268, h: 146 };
+const PANEL = { w: 268, h: 182 };
 /** Shorter than this is a slip of the hand, not a path. */
 const MIN_STROKE = 140;
 /** How long the icons take to walk to their places. */
@@ -67,7 +67,7 @@ export default {
       .tr-close:hover{opacity:1;background:rgba(255,255,255,.12)}
       .tr-body{padding:2px 12px 12px;display:flex;flex-direction:column;gap:7px}
       /* the hint takes the slack, so the buttons sit on the panel's bottom padding
-         instead of running past it — the box is only 146px tall and a three-line
+         instead of running past it — the box is only 182px tall and a three-line
          hint pushed the row 4px out of the bottom */
       .tr-hint{margin:0;opacity:.72;flex:1}
       .tr-count{margin:0;opacity:.55;font-variant-numeric:tabular-nums}

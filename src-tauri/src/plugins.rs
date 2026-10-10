@@ -43,8 +43,8 @@ pub struct PluginDef {
     pub resizable: bool,
     /// Record data a fresh widget of this kind starts with.
     pub default_data: fn() -> serde_json::Value,
-    /// Per-record size, e.g. the stored w/h clamped to what the widget allows.
-    pub custom_size: Option<CustomSize>,
+    /// The range a record's own w/h is clamped to. None for a fixed-size kind.
+    pub limits: Option<SizeLimits>,
     /// Set for kinds that stand for something on disk.
     pub desktop_item: Option<DesktopItem>,
     /// Quick-add button label in "+ New floatie".
@@ -57,10 +57,14 @@ impl PluginDef {
     /// The size a record of this kind occupies on screen. Kinds with a clamp
     /// read the record's own w/h, the rest are fixed.
     pub fn size(&self, data: &serde_json::Value) -> (f64, f64) {
-        match self.custom_size {
-            Some(calc) => calc(self.default_size, data),
-            None => self.default_size,
-        }
+        clamp_wh(self.default_size, data, self.size_range())
+    }
+
+    /// The size range this kind's records may take: the grip stops here and the
+    /// backend clamps to it. A fixed-size kind is its default, both ways.
+    pub fn size_range(&self) -> SizeLimits {
+        self.limits
+            .unwrap_or_else(|| SizeLimits::new(self.default_size, self.default_size))
     }
 
     /// Record data a fresh widget of this kind starts with.
@@ -76,12 +80,15 @@ impl PluginDef {
 
     /// The frontend payload for this kind.
     pub fn info(&self, disabled: &[String]) -> PluginInfo {
+        let range = self.size_range();
         PluginInfo {
             id: self.id.to_string(),
             name: self.name.to_string(),
             description: self.description.to_string(),
             enabled: !disabled.iter().any(|d| d == self.id),
             default_size: [self.default_size.0, self.default_size.1],
+            min_size: [range.min.0, range.min.1],
+            max_size: [range.max.0, range.max.1],
             resizable: self.resizable,
             desktop_item: self.desktop_item.as_ref().map(|d| PluginDesktopItem {
                 path_key: d.path_key.to_string(),
@@ -118,15 +125,29 @@ pub fn size(kind: &str, data: &serde_json::Value) -> (f64, f64) {
     }
 }
 
-fn size_from_wh(
-    base: (f64, f64),
-    data: &serde_json::Value,
-    min: (f64, f64),
-    max: (f64, f64),
-) -> (f64, f64) {
+/// The `(min, max)` a kind's record may take, as width/height pairs. This is the
+/// one owner of a kind's size limits: the backend clamps to it and the wire
+/// carries it to the frontend, which sizes the resize grip from it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SizeLimits {
+    pub min: (f64, f64),
+    pub max: (f64, f64),
+}
+
+impl SizeLimits {
+    pub const fn new(min: (f64, f64), max: (f64, f64)) -> Self {
+        Self { min, max }
+    }
+}
+
+/// The record's own w/h (or `base` where it has none), clamped to `limits`.
+fn clamp_wh(base: (f64, f64), data: &serde_json::Value, limits: SizeLimits) -> (f64, f64) {
     let w = data.get("w").and_then(|v| v.as_f64()).unwrap_or(base.0);
     let h = data.get("h").and_then(|v| v.as_f64()).unwrap_or(base.1);
-    (w.clamp(min.0, max.0), h.clamp(min.1, max.1))
+    (
+        w.clamp(limits.min.0, limits.max.0),
+        h.clamp(limits.min.1, limits.max.1),
+    )
 }
 
 pub const PLUGINS: &[PluginDef] = &[
@@ -137,7 +158,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (300.0, 330.0),
         resizable: true,
         default_data: || serde_json::json!({ "text": "" }),
-        custom_size: Some(|base, data| size_from_wh(base, data, (180.0, 140.0), (1400.0, 1400.0))),
+        limits: Some(SizeLimits::new((180.0, 140.0), (1400.0, 1400.0))),
         desktop_item: None,
         add_label: Some("+ note"),
         layout_priority: 2,
@@ -149,7 +170,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (250.0, 330.0),
         resizable: true,
         default_data: || serde_json::json!({}),
-        custom_size: Some(|base, data| size_from_wh(base, data, (200.0, 260.0), (1400.0, 1400.0))),
+        limits: Some(SizeLimits::new((200.0, 260.0), (1400.0, 1400.0))),
         desktop_item: None,
         add_label: Some("+ clock"),
         layout_priority: 3,
@@ -161,7 +182,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (92.0, 112.0),
         resizable: false,
         default_data: || serde_json::json!({ "name": "app", "target": "" }),
-        custom_size: None,
+        limits: None,
         desktop_item: Some(DesktopItem { path_key: "target", noun: "app floatie", group: false }),
         add_label: None,
         layout_priority: 10,
@@ -173,7 +194,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (92.0, 112.0),
         resizable: false,
         default_data: || serde_json::json!({ "name": "file", "target": "" }),
-        custom_size: None,
+        limits: None,
         desktop_item: Some(DesktopItem { path_key: "target", noun: "file floatie", group: false }),
         add_label: None,
         layout_priority: 10,
@@ -185,7 +206,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (92.0, 112.0),
         resizable: false,
         default_data: || serde_json::json!({ "name": "Folder", "items": [] }),
-        custom_size: None,
+        limits: None,
         desktop_item: Some(DesktopItem { path_key: "path", noun: "folder floatie", group: true }),
         add_label: Some("+ folder"),
         layout_priority: 10,
@@ -199,7 +220,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_data: || serde_json::json!({ "name": "Live2D" }),
         // The zoom grows the widget box with the model (the frontend also clamps
         // it to the desktop), so the record's w/h is the source of truth.
-        custom_size: Some(|base, data| size_from_wh(base, data, (150.0, 200.0), (900.0, 1200.0))),
+        limits: Some(SizeLimits::new((150.0, 200.0), (900.0, 1200.0))),
         desktop_item: None,
         add_label: Some("+ live2d"),
         layout_priority: 1,
@@ -211,7 +232,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (280.0, 130.0),
         resizable: true,
         default_data: || serde_json::json!({ "name": "Visualizer", "mode": "bars" }),
-        custom_size: Some(|base, data| size_from_wh(base, data, (140.0, 70.0), (1400.0, 900.0))),
+        limits: Some(SizeLimits::new((140.0, 70.0), (1400.0, 900.0))),
         desktop_item: None,
         add_label: Some("+ visualizer"),
         layout_priority: 5,
@@ -223,7 +244,7 @@ pub const PLUGINS: &[PluginDef] = &[
         default_size: (250.0, 170.0),
         resizable: true,
         default_data: || serde_json::json!({ "name": "System monitor", "graph": "gpu" }),
-        custom_size: Some(|base, data| size_from_wh(base, data, (180.0, 110.0), (900.0, 700.0))),
+        limits: Some(SizeLimits::new((180.0, 110.0), (900.0, 700.0))),
         desktop_item: None,
         add_label: Some("+ system monitor"),
         layout_priority: 5,
@@ -278,20 +299,18 @@ pub struct InstalledPlugin {
 
 impl InstalledPlugin {
     pub fn size(&self, data: &serde_json::Value) -> (f64, f64) {
+        clamp_wh(self.default_size, data, self.size_range())
+    }
+
+    /// The range this plugin's records may take. A fixed-size plugin is its default.
+    pub fn size_range(&self) -> SizeLimits {
         if !self.resizable {
-            return self.default_size;
+            return SizeLimits::new(self.default_size, self.default_size);
         }
-        let w = data
-            .get("w")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(self.default_size.0);
-        let h = data
-            .get("h")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(self.default_size.1);
-        let min = self.min_size.unwrap_or((80.0, 60.0));
-        let max = self.max_size.unwrap_or((2000.0, 2000.0));
-        (w.clamp(min.0, max.0), h.clamp(min.1, max.1))
+        SizeLimits::new(
+            self.min_size.unwrap_or((80.0, 60.0)),
+            self.max_size.unwrap_or((2000.0, 2000.0)),
+        )
     }
 }
 
@@ -371,12 +390,15 @@ pub fn default_data(kind: &str) -> serde_json::Value {
 pub fn manifest(disabled: &[String], approved: impl Fn(&str) -> bool) -> Vec<PluginInfo> {
     let mut out: Vec<PluginInfo> = PLUGINS.iter().map(|p| p.info(disabled)).collect();
     for p in installed_plugins() {
+        let range = p.size_range();
         out.push(PluginInfo {
             id: p.id.clone(),
             name: p.name.clone(),
             description: p.description.clone(),
             enabled: !disabled.iter().any(|d| d == &p.id),
             default_size: [p.default_size.0, p.default_size.1],
+            min_size: [range.min.0, range.min.1],
+            max_size: [range.max.0, range.max.1],
             resizable: p.resizable,
             desktop_item: p.desktop_item.clone(),
             add_label: p.add_label.clone(),
@@ -426,8 +448,6 @@ fn validate_plugin_id(json: &serde_json::Value) -> Result<String, String> {
     Ok(id)
 }
 
-/// Where a widget kind answers with its own size: width, height, and the min/max it allows.
-type CustomSize = fn((f64, f64), &serde_json::Value) -> (f64, f64);
 /// `(default, min, max)` as a plugin manifest declares them, before the kind's own rules apply.
 type PluginSizes = ((f64, f64), Option<(f64, f64)>, Option<(f64, f64)>);
 
@@ -763,6 +783,9 @@ pub struct PluginInfo {
     pub enabled: bool,
     /// Fresh-widget size, so the frontend never repeats the numbers.
     pub default_size: [f64; 2],
+    /// The range a record's w/h is clamped to; the resize grip stops at `min_size`.
+    pub min_size: [f64; 2],
+    pub max_size: [f64; 2],
     pub resizable: bool,
     pub desktop_item: Option<PluginDesktopItem>,
     /// Quick-add button label, or null for "no button in + New floatie".
@@ -931,6 +954,8 @@ mod tests {
         assert_eq!(folder["id"], "folder");
         assert_eq!(folder["default_size"], serde_json::json!([92.0, 112.0]));
         assert_eq!(folder["resizable"], false);
+        assert_eq!(folder["min_size"], folder["default_size"]);
+        assert_eq!(folder["max_size"], folder["default_size"]);
         assert_eq!(folder["desktop_item"]["path_key"], "path");
         assert_eq!(folder["desktop_item"]["noun"], "folder floatie");
         assert_eq!(folder["desktop_item"]["group"], true);
@@ -943,6 +968,8 @@ mod tests {
         assert_eq!(note["enabled"], false);
         assert_eq!(note["add_label"], "+ note");
         assert_eq!(note["layout_priority"], 2);
+        assert_eq!(note["min_size"], serde_json::json!([180.0, 140.0]));
+        assert_eq!(note["max_size"], serde_json::json!([1400.0, 1400.0]));
         assert_eq!(note["source"], "builtin");
         assert!(note["entry"].is_null());
     }

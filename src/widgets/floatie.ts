@@ -42,6 +42,7 @@ import {
   setWidgetSize,
   type WidgetRecord,
 } from "./lib";
+import { minSizeFor } from "./pluginManifest";
 
 /** A pointer event, in whichever space this page reads it. */
 interface PointerAt {
@@ -515,8 +516,11 @@ export class Floatie {
     notifyDragMove(this.rec.id, x, y);
   }
 
-  /** The bottom-right corner grip: a resize is a gesture like a drag. */
-  resizeHandle(el: HTMLElement, minW: number, minH: number): void {
+  /**
+   * The bottom-right corner grip: a resize is a gesture like a drag. The floor is the
+   * kind's `min_size` from the backend, read when the grip is pressed.
+   */
+  resizeHandle(el: HTMLElement): void {
     el.style.position = "relative";
     const grip = document.createElement("div");
     grip.className = "resize-handle";
@@ -526,6 +530,7 @@ export class Floatie {
       if (e.button !== 0) return;
       e.stopPropagation();
       e.preventDefault();
+      const min = minSizeFor(this.rec.kind);
       notifyDragging(true);
       // a resize is a gesture like a drag: snapshot the record before the first move
       void invoke("floaty_gesture_begin", { label: "resize", ids: [this.rec.id] }).catch(
@@ -555,7 +560,7 @@ export class Floatie {
         };
         const onMove = (ev: PointerEvent) => {
           const at = pointerAt(ev);
-          const { w, h } = resizedTo(state, at.x, at.y, minW, minH);
+          const { w, h } = resizedTo(state, at.x, at.y, min.w, min.h);
           setWidgetSize(this.rec.id, w, h, scale);
         };
         const onUp = () => {

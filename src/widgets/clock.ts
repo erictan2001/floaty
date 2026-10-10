@@ -237,7 +237,7 @@ export function mountClock(root: HTMLElement, id: string): void {
         /* keep default size */
       }
     }
-    floatie(rec).resizeHandle(wrap, 200, 260);
+    floatie(rec).resizeHandle(wrap);
     floatie(rec).watch();
   })();
 }
