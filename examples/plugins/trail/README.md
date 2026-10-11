@@ -6,8 +6,7 @@ still there tomorrow.
 
 ![Trail on a desktop](../../../screenshots/trails/desktop-screenshot.png)
 
-Demo video: [`demos/trails/trails-demo.mp4`](../../../demos/trails/trails-demo.mp4)
-(1440×960). This is the example to read if you want a plugin that *acts on the
+This is the example to read if you want a plugin that *acts on the
 desktop* rather than sitting on it; for a plain widget, read
 [countdown](../countdown) first.
 
