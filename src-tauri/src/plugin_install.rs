@@ -334,12 +334,82 @@ fn unpack(archive: &Path, scratch: &Path) -> Result<PathBuf, String> {
     let source = if archive.is_dir() {
         archive.to_path_buf()
     } else {
+        check_zip_budget(archive)?;
         let unpacked = scratch.join("unpacked");
         std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
         extract_zip(archive, &unpacked)?;
         unpacked
     };
     find_plugin_dir(&source)
+}
+
+/// A plugin is small; refuse an archive that decompresses past the budget
+/// *before* Expand-Archive writes it. The cap in `copy_dir` runs after the disk
+/// has already been filled.
+fn check_zip_budget(zip: &Path) -> Result<(), String> {
+    let extension = zip
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if extension != "zip" {
+        return Ok(()); // extract_zip gives the "not a .zip" message
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const NO_WINDOW: u32 = 0x08000000;
+        let script = "$ErrorActionPreference = 'Stop'\n\
+                      Add-Type -AssemblyName System.IO.Compression.FileSystem\n\
+                      $z = [IO.Compression.ZipFile]::OpenRead($env:FLOATY_ZIP)\n\
+                      try {\n\
+                        $count = $z.Entries.Count\n\
+                        $sum = ($z.Entries | Measure-Object Length -Sum).Sum\n\
+                        if ($null -eq $sum) { $sum = 0 }\n\
+                        Write-Output \"$count $sum\"\n\
+                      } finally { $z.Dispose() }\n";
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ])
+            .env("FLOATY_ZIP", zip)
+            .creation_flags(NO_WINDOW)
+            .output()
+            .map_err(|e| format!("could not inspect the archive: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "the archive could not be inspected: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut parts = text.split_whitespace();
+        let files: usize = parts
+            .next()
+            .and_then(|n| n.parse().ok())
+            .ok_or("the archive reported no file count")?;
+        let bytes: u64 = parts
+            .next()
+            .and_then(|n| n.parse().ok())
+            .ok_or("the archive reported no size")?;
+        if files > MAX_FILES || bytes > MAX_BYTES {
+            return Err(format!(
+                "the archive holds {files} files / {bytes} bytes; the limit is {MAX_FILES} / {MAX_BYTES}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = zip;
+        Err("installing a plugin from an archive is Windows-only for now".to_string())
+    }
 }
 
 /// The folder inside an unpacked archive that holds `plugin.json`: the root
