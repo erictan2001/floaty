@@ -21,6 +21,15 @@ The plugin API version is a different number with a policy of its own — see
 - Widget size limits have one owner, the backend table. The grip floor for the visualizer is
   140×70 (was 160×80 in the widget). The trail example's panel is 182 high, matching its floor.
 
+## 0.2.4 - 2026-10-26
+
+### Fixed
+
+- **Desktop layer:** Floaty stays below ordinary windows. The overlay is created
+  without focus, restored without activation, and every z-order change is forced
+  back to the bottom, including the raise Windows sends after activation. The
+  drag region follows the tile instead of clearing the whole screen.
+
 ## 0.2.3 - 2026-10-07
 
 ### Added
