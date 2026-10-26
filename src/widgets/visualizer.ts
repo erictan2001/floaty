@@ -36,9 +36,11 @@ type VizMode = (typeof MODES)[number];
  * reports silence — a desktop full of widgets should not pay for a visualizer
  * nobody is feeding.
  */
-export function mountVisualizer(root: HTMLElement, id: string): void {
+export function mountVisualizer(root: HTMLElement, id: string): () => void {
   watchSettings();
   watchPluginEnabled("visualizer");
+  let cleanup: (() => void) | undefined;
+  let disposed = false;
 
   const wrap = document.createElement("div");
   wrap.className = "viz-wrap";
@@ -261,9 +263,10 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     // no title bar: the whole surface drags, and a click still cycles the mode
     floatie(rec).attachDrag(wrap);
     floatie(rec).watch();
-    window.addEventListener("beforeunload", () => {
+    const onBeforeUnload = () => {
       void invoke("floaty_audio_stop").catch(() => undefined);
-    });
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
     addPinMenu(wrap, () => rec);
 
     // Capture is what costs while nothing is happening, so quiet stops it — and this is
@@ -276,13 +279,14 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
         void invoke("floaty_audio_start", { fps: fps() }).catch(() => undefined);
       }
     };
-    window.addEventListener("floaty-presence", syncCapture);
+    const onPresence = () => syncCapture();
+    window.addEventListener("floaty-presence", onPresence);
     if (!presenceIsQuiet()) {
       await invoke("floaty_audio_start", { fps: fps() }).catch(() => undefined);
     }
     // if nothing arrives and capture is not running, say why instead of looking
     // like a broken flat line (loopback capture needs a default render device)
-    window.setTimeout(() => {
+    const probe = window.setTimeout(() => {
       if (lastEvent) return;
       void invoke<boolean>("floaty_audio_status")
         .then((running) => {
@@ -290,7 +294,7 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
         })
         .catch(() => undefined);
     }, 2500);
-    onSettings(() => {
+    const offSettings = onSettings(() => {
       void invoke("floaty_audio_set_fps", { fps: fps() }).catch(() => undefined);
     });
 
@@ -298,7 +302,20 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     if (!isOverlayMode()) void appWin.show().catch(() => undefined);
     // paint one idle frame so the widget is never a blank hole on screen
     draw();
+    cleanup = () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("floaty-presence", onPresence);
+      window.clearTimeout(probe);
+      offSettings();
+      void invoke("floaty_audio_stop").catch(() => undefined);
+    };
+    if (disposed) cleanup();
   })();
+
+  return () => {
+    disposed = true;
+    cleanup?.();
+  };
 }
 
 export const visualizerPlugin: FloatyPlugin = {

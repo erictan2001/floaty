@@ -156,9 +156,12 @@ export function currentSettings(): FloatSettings {
   return settingsCache;
 }
 
-export function onSettings(cb: () => void): void {
+export function onSettings(cb: () => void): () => void {
   settingsConsumers.add(cb);
   if (settingsReady) cb();
+  return () => {
+    settingsConsumers.delete(cb);
+  };
 }
 
 function applySettings(): void {

@@ -48,7 +48,11 @@ function gradientFor(name: string): [string, string] {
   return GRADIENTS[h % GRADIENTS.length] as [string, string];
 }
 
-export function mountLauncher(root: HTMLElement, id: string, kind: string = "app"): void {
+export function mountLauncher(
+  root: HTMLElement,
+  id: string,
+  kind: string = "app",
+): () => void {
   watchSettings();
   watchPluginEnabled(kind);
   const wrap = document.createElement("div");
@@ -95,7 +99,10 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
   const syncFloat = syncAnim;
   // one consumer instead of a second settings listener: this runs after the
   // cached settings are updated, and once as soon as the first fetch lands
-  onSettings(syncAnim);
+  const offSettings = onSettings(syncAnim);
+  let unlistenIcon: (() => void) | undefined;
+  let cleanup: (() => void) | undefined;
+  let disposed = false;
 
   const squash = () => {
     tile.classList.remove("squash");
@@ -257,7 +264,7 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
         .catch(() => undefined);
     }
 
-    listen<string>("floaty-icon-refreshed", (e) => {
+    void listen<string>("floaty-icon-refreshed", (e) => {
       if (e.payload === id) {
         void loadRecord(id).then((r) => {
           if (
@@ -271,7 +278,11 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
           }
         });
       }
-    }).catch(() => undefined);
+    })
+      .then((unlisten) => {
+        unlistenIcon = unlisten;
+      })
+      .catch(() => undefined);
     // desktop layer (with the builder flag): icons live under real apps. In an
     // overlay the window's z-order is the layer's, so this only applies when a
     // widget has a window of its own.
@@ -354,15 +365,29 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       startAnimation();
     }
 
-    window.addEventListener("beforeunload", () => persist());
-    document.addEventListener("visibilitychange", () => {
+    const onBeforeUnload = () => persist();
+    const onVisibility = () => {
       if (document.hidden) {
         persist();
         if (animating) stopAnimation();
       } else if (!settled) {
         startAnimation();
       }
-    });
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onVisibility);
+    cleanup = () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onVisibility);
+      unlistenIcon?.();
+      stopAnimation();
+      stopSupportWatch();
+      if (clickTimer !== undefined) {
+        window.clearTimeout(clickTimer);
+        clickTimer = undefined;
+      }
+    };
+    if (disposed) cleanup();
   })();
 
   wrap.querySelector(".launcher-x")?.addEventListener("pointerdown", (e) => e.stopPropagation());
@@ -525,6 +550,12 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
     if (animating) {
       rafId = requestAnimationFrame(frame);
     }
+  };
+
+  return () => {
+    disposed = true;
+    offSettings();
+    cleanup?.();
   };
 }
 

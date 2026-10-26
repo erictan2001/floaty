@@ -32,7 +32,7 @@ interface FolderItem {
 
 const CELL = 84;
 
-export function mountFolder(root: HTMLElement, id: string): void {
+export function mountFolder(root: HTMLElement, id: string): () => void {
   watchPluginEnabled("folder");
   const wrap = document.createElement("div");
   wrap.className = "folder";
@@ -58,7 +58,10 @@ export function mountFolder(root: HTMLElement, id: string): void {
     applyFloatieAnimation(wrap, id, { x: px, y: py });
   };
   const syncFloat = syncAnim;
-  onSettings(syncAnim);
+  const offSettings = onSettings(syncAnim);
+  let unlistenFolder: (() => void) | undefined;
+  let cleanup: (() => void) | undefined;
+  let disposed = false;
 
   /**
    * Persist where the folder is. The place is already the record's (the session wrote it
@@ -539,14 +542,26 @@ export function mountFolder(root: HTMLElement, id: string): void {
         },
       });
     }
-    window.addEventListener("beforeunload", () => persist());
-    document.addEventListener("visibilitychange", () => {
+    const onBeforeUnload = () => persist();
+    const onVisibility = () => {
       if (document.hidden) persist();
-    });
-    await listen<string>("floaty-folder-changed", (e) => {
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onVisibility);
+    void listen<string>("floaty-folder-changed", (e) => {
       if (e.payload === id) void reload();
-    }).catch(() => undefined);
+    })
+      .then((unlisten) => {
+        unlistenFolder = unlisten;
+      })
+      .catch(() => undefined);
     if (!isOverlayMode()) void appWin.show().catch(() => undefined);
+    cleanup = () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onVisibility);
+      unlistenFolder?.();
+    };
+    if (disposed) cleanup();
   })();
 
   wrap.addEventListener("click", (e) => {
@@ -558,6 +573,12 @@ export function mountFolder(root: HTMLElement, id: string): void {
     void expandFolder();
   });
   wrap.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  return () => {
+    disposed = true;
+    offSettings();
+    cleanup?.();
+  };
 }
 
 export const folderPlugin: FloatyPlugin = {

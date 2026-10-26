@@ -45,9 +45,11 @@ const gb = (mb: number): string => (mb / 1024).toFixed(1);
  * full of widgets that makes it the cheapest thing on screen while still
  * showing what everything else is costing.
  */
-export function mountSysmon(root: HTMLElement, id: string): void {
+export function mountSysmon(root: HTMLElement, id: string): () => void {
   watchSettings();
   watchPluginEnabled("sysmon");
+  let cleanup: (() => void) | undefined;
+  let disposed = false;
 
   const wrap = document.createElement("div");
   wrap.className = "sysmon-wrap";
@@ -254,14 +256,15 @@ export function mountSysmon(root: HTMLElement, id: string): void {
     floatie(rec).attachDrag(wrap);
     floatie(rec).watch();
     addPinMenu(wrap, () => rec);
-    window.addEventListener("beforeunload", () => {
+    const onBeforeUnload = () => {
       void invoke("floaty_sysmon_stop").catch(() => undefined);
-    });
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
 
     await invoke("floaty_sysmon_start", { intervalMs: interval() }).catch(() => undefined);
     // if no sample lands and the backend says it is not sampling, say so rather
     // than showing dashes forever (GPU performance counters can be unavailable)
-    window.setTimeout(
+    const probe = window.setTimeout(
       () => {
         if (latest) return;
         void invoke<boolean>("floaty_sysmon_status")
@@ -272,13 +275,25 @@ export function mountSysmon(root: HTMLElement, id: string): void {
       },
       Math.max(1500, interval() * 3),
     );
-    onSettings(() => {
+    const offSettings = onSettings(() => {
       void invoke("floaty_sysmon_set_interval", { ms: interval() }).catch(() => undefined);
     });
 
     scheduleRedraw();
     if (!isOverlayMode()) void appWin.show().catch(() => undefined);
+    cleanup = () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.clearTimeout(probe);
+      offSettings();
+      void invoke("floaty_sysmon_stop").catch(() => undefined);
+    };
+    if (disposed) cleanup();
   })();
+
+  return () => {
+    disposed = true;
+    cleanup?.();
+  };
 }
 
 export const sysmonPlugin: FloatyPlugin = {

@@ -360,6 +360,8 @@ function mountDesktop(root: HTMLElement): void {
   root.append(canvas);
 
   const mountedSlots = new Set<string>();
+  /** One cleanup per widget, from the mount result. */
+  const disposers = new Map<string, () => void>();
 
   /* ---------- merge preview: the folder a drop would make ---------- */
 
@@ -593,11 +595,18 @@ function mountDesktop(root: HTMLElement): void {
     // rejection has to be caught on the promise: a throw alone used to lose the
     // only clue a third-party plugin left behind.
     try {
-      void Promise.resolve(plugin.mount(slot, rec.id, pluginApi(rec.kind))).catch((e: unknown) => {
-        invoke("floaty_log", { msg: `[overlay] mount ${rec.id} failed: ${String(e)}` }).catch(
-          () => undefined,
-        );
-      });
+      void Promise.resolve(plugin.mount(slot, rec.id, pluginApi(rec.kind)))
+        .then((cleanup) => {
+          if (typeof cleanup !== "function") return;
+          // A mount that finishes after the slot was removed must clean itself.
+          if (mountedSlots.has(rec.id)) disposers.set(rec.id, cleanup);
+          else cleanup();
+        })
+        .catch((e: unknown) => {
+          invoke("floaty_log", { msg: `[overlay] mount ${rec.id} failed: ${String(e)}` }).catch(
+            () => undefined,
+          );
+        });
     } catch (e) {
       invoke("floaty_log", { msg: `[overlay] failed to mount ${rec.id}: ${String(e)}` }).catch(
         () => undefined,
@@ -607,6 +616,15 @@ function mountDesktop(root: HTMLElement): void {
 
   const unmountWidget = (id: string) => {
     if (!mountedSlots.has(id)) return;
+    const cleanup = disposers.get(id);
+    disposers.delete(id);
+    if (cleanup) {
+      try {
+        cleanup();
+      } catch {
+        /* a broken cleanup must not strand the slot */
+      }
+    }
     // The widget is going away, so everything it started goes with it: a plugin's
     // timers and event listeners are keyed by the widget that owns them, and this
     // is the one place every removal path (removed, remounted, kind switched off)

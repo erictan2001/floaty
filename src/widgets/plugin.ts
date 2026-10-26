@@ -110,7 +110,7 @@ export interface WidgetApi {
    * floaty's cache updater and your handler are then two listeners on one event,
    * and yours can run with the values from before the change.
    */
-  onSettings: (cb: () => void) => void;
+  onSettings: (cb: () => void) => () => void;
   /** Load the settings once if nothing has yet. Not needed before `settings()`
    *  — that reads whatever is cached — and it tells you nothing about changes. */
   watchSettings: () => void;
@@ -287,7 +287,11 @@ export interface FloatyPlugin {
    * the supported surface for talking to floaty; built-ins may also import
    * `./lib` directly, third-party plugins should not.
    */
-  mount: (root: HTMLElement, id: string, api: WidgetApi) => void | Promise<void>;
+  mount: (
+    root: HTMLElement,
+    id: string,
+    api: WidgetApi,
+  ) => void | (() => void) | Promise<void | (() => void)>;
   /** Detail summary shown in the "On your desktop" list (or undefined for just the ID) */
   describe?: (rec: PluginRecord) => string | undefined;
   /** Optional custom controls to insert into the widget's card in "On your desktop" */
