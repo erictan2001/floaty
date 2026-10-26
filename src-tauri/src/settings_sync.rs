@@ -7,6 +7,11 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
+/// Set when the settings file exists but cannot be read. A save must not replace
+/// it with defaults before the user can get the file back.
+static SETTINGS_READ_ONLY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Returns the directory path that should be allowed in the asset protocol scope.
 ///
 /// If `p` is a file (or has a file extension such as `.model3.json`), its parent directory
@@ -408,10 +413,29 @@ pub(crate) fn settings_file(app: &AppHandle) -> std::path::PathBuf {
 
 /// Write the settings the way the settings pane does — pretty JSON, written
 /// atomically — for the few commands that change them on their own.
+///
+/// The previous good copy is kept as `floaty-settings.bak` after a successful
+/// write. `read_json_with_backup` already knows how to read that name; before
+/// this, nothing ever wrote it, so one wrong-typed field reset every setting.
 pub(crate) fn write_settings(app: &AppHandle, settings: &FloatSettings) {
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        write_text_atomic(&settings_file(app), &json);
+    if SETTINGS_READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
+        log_line(
+            app,
+            "settings: not writing — the existing file could not be read",
+        );
+        return;
     }
+    let Some(json) = serde_json::to_string_pretty(settings).ok() else {
+        return;
+    };
+    let path = settings_file(app);
+    if !write_text_atomic(&path, &json) {
+        log_line(app, "settings: write failed");
+        return;
+    }
+    // The .bak is the last *successful* settings file, not whatever malformed
+    // text the main file held before this save.
+    let _ = std::fs::copy(&path, path.with_extension("bak"));
 }
 
 /// Fold the settings a file written before the float sliders were made honest.
@@ -1257,6 +1281,16 @@ pub(crate) fn floaty_presence(app: AppHandle) -> PresenceReport {
 
 pub(crate) fn load_settings(app: &AppHandle) -> FloatSettings {
     let path = settings_file(app);
+    // An unreadable file is not a settings file with defaults: writing the
+    // defaults would replace the values the app could not read. Keep the file
+    // and stay read-only until the next launch.
+    if path.exists() && std::fs::read_to_string(&path).is_err() {
+        SETTINGS_READ_ONLY.store(true, std::sync::atomic::Ordering::SeqCst);
+        log_line(
+            app,
+            "settings: the existing file could not be read; using defaults read-only",
+        );
+    }
     // Read through `Value` first so an old file can be migrated; anything that
     // is not an object falls back to the plain typed read below.
     let parsed: Option<FloatSettings> = read_json_with_backup::<serde_json::Value>(&path)
