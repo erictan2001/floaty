@@ -887,7 +887,7 @@ mod tests {
     /// has an opinion about position: what a re-home does is permanent by construction. That
     /// is what makes a two-second lie about the screen shape into a permanently wrong
     /// layout.
-
+    ///
     /// One screen, in the space records are stored in.
     fn screen(w: f64, h: f64) -> screens::Screen {
         screens::Screen {

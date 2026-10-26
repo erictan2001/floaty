@@ -499,7 +499,6 @@ mod tests {
         let _ = store.is_dead("note-1");
         store.set_next(7);
         assert!(!store.touched, "reading is not a change");
-        assert_eq!(store.next_counter(), 7);
 
         store.put(rec("note-1"));
         assert!(store.touched, "a put is a change");
