@@ -24,6 +24,58 @@ static SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ---------- putting dragged items on disk ----------
 
+/// Compare two paths as text, case-insensitively and with either separator.
+/// Used only for removing mirror records after a root change; it never decides
+/// whether a file may be deleted.
+fn path_under_text(root: &str, path: &str) -> bool {
+    let root = root
+        .trim()
+        .trim_end_matches(['\\', '/'])
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    if root.is_empty() {
+        return false;
+    }
+    let path = path.replace('/', "\\").to_ascii_lowercase();
+    path == root || path.starts_with(&format!("{root}\\"))
+}
+
+/// Take off the desktop the mirror records that belonged to the old root and
+/// are not under the new one. Their files are untouched.
+pub(crate) fn purge_root_records(app: &AppHandle, old_root: &str, new_root: &str) -> usize {
+    if old_root.trim().is_empty() {
+        return 0;
+    }
+    let ids: Vec<String> = store::with(app, |s| {
+        s.iter()
+            .filter(|rec| {
+                let Some(path) = record_path(rec) else {
+                    return false;
+                };
+                let under_old = is_under_root(old_root, &path) || path_under_text(old_root, &path);
+                let under_new = !new_root.trim().is_empty()
+                    && (is_under_root(new_root, &path) || path_under_text(new_root, &path));
+                under_old && !under_new
+            })
+            .map(|rec| rec.id.clone())
+            .collect()
+    });
+    for id in &ids {
+        store::with(app, |s| s.remove(id));
+        hide_widget(app, id);
+    }
+    if !ids.is_empty() {
+        log_line(
+            app,
+            &format!(
+                "root: took {} old-root floatie(s) off the desktop",
+                ids.len()
+            ),
+        );
+    }
+    ids.len()
+}
+
 /// The pointed root: the directory the floaties mirror. `None` when nothing is
 /// pointed at (or the pointer went stale), which is the callers' cue to keep
 /// their no-directory behaviour instead of inventing a location.
@@ -959,6 +1011,7 @@ pub(crate) fn sync_root(
 ) -> Result<FilesSyncResult, String> {
     let _sync = SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let started = std::time::Instant::now();
+    let previous_root = load_settings(&app).files_root;
     let target_root = match root {
         Some(r) if !r.trim().is_empty() => {
             let mut s = load_settings(&app);
@@ -982,7 +1035,13 @@ pub(crate) fn sync_root(
 
     let base_path = std::path::PathBuf::from(&target_root);
     if !base_path.is_dir() {
+        // The root may be a removable/cloud folder that is not mounted yet. Arm
+        // the watcher anyway; it waits and reconciles when the folder appears.
+        fs_watch::retarget(Some(target_root.clone()), app.clone());
         return Err(format!("'{}' is not a valid directory", target_root));
+    }
+    if previous_root != target_root {
+        purge_root_records(&app, &previous_root, &target_root);
     }
     allow_asset_path(&app, &target_root);
 

@@ -1388,6 +1388,7 @@ pub(crate) fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> Fl
     // icons need re-resolving); the settings UI does not know about it, so keep
     // whatever is already on disk instead of letting a save reset it to 0.
     let stored = load_settings(&app);
+    let previous_root = stored.files_root.clone();
     let stored_pipeline = stored.icon_pipeline;
     let mut s = FloatSettings {
         gravity: settings.gravity.clamp(0.0, 8000.0),
@@ -1445,6 +1446,9 @@ pub(crate) fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> Fl
         s.start_on_boot = stored.start_on_boot;
     }
     write_settings(&app, &s);
+    if previous_root != s.files_root {
+        purge_root_records(&app, &previous_root, &s.files_root);
+    }
     if !s.files_root.trim().is_empty() {
         allow_asset_path(&app, &s.files_root);
     }

@@ -164,10 +164,16 @@ fn watch_dir_session(
                 }
                 Err(err) => {
                     log(&format!("watch: read failed ({err}) — re-arming"));
+                    // Do not lose what this session already saw. The sink
+                    // reconciles the whole root so a missed notification while
+                    // the watch was down cannot leave a stale tile.
+                    renames.clear();
+                    sink(Vec::new(), true);
                     return false;
                 }
             }
             if dir.issue().is_err() {
+                sink(Vec::new(), true);
                 return false;
             }
         }
@@ -202,8 +208,14 @@ fn watch_loop(
         }
         let mut dir = match DirWatch::open(std::path::Path::new(root)) {
             Ok(dir) => {
+                let recovered = reported_missing;
                 log(&format!("watch: following '{root}'"));
                 reported_missing = false;
+                if recovered {
+                    // The folder was missing when the watch started; changes
+                    // made while it was away were never queued, so reconcile now.
+                    sink(Vec::new(), true);
+                }
                 dir
             }
             Err(err) => {
