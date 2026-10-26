@@ -128,7 +128,6 @@ pub fn run() {
         // key that checks both lives in `tauri.conf.json`. The private key is the user's
         // (see the README) — nothing here can sign anything.
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         // The launcher hotkey. Registered and handled in Rust, so the palette page
         // needs no plugin permission to use it — and a press only shows a window,
         // which cannot fail in a way worth telling anyone about.
