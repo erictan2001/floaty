@@ -97,9 +97,8 @@ export function notifyDragging(dragging: boolean): void {
     if (!dragging) {
       syncHitRectsToRust();
     }
-    // per overlay layer: the drag only clears the region of the window being
-    // dragged in, or the other layer loses its clicks for the duration
-    invoke("floaty_set_overlay_dragging", { label: appWin.label, dragging }).catch(() => undefined);
+    // The region follows the tile's moves; the release resyncs once in case the
+    // last move and the drop raced.
     if (!dragging) {
       scheduleHitRectsUpdate();
     }
@@ -128,10 +127,10 @@ export function notifyDragMove(id: string, x: number, y: number): void {
  * never at module scope, which unit tests import without a window.
  *
  * A gesture orphaned by a focus loss (Alt+Tab mid-drag, the display sleeping
- * with the button down) never sends its close: without this the backend keeps
- * the overlay fullscreen-clickable — desktop clicks swallowed, browser menu
- * on right-click — until the next drag. The session's own release, if it still
- * arrives, re-sends the same close harmlessly.
+ * with the button down) never sends its close: without this the page stays in
+ * drag state, the region self-heal keeps skipping, and the merge preview never
+ * leaves the target tile. The session's own release, if it still arrives,
+ * re-sends the same close harmlessly.
  */
 export function watchDragFocusLoss(): void {
   window.addEventListener("blur", () => {

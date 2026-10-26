@@ -509,7 +509,6 @@ pub fn run() {
             floaty_rename_folder_dir,
             floaty_resolve_folder_icons,
             floaty_update_hit_rects,
-            floaty_set_overlay_dragging,
             floaty_set_on_top,
             floaty_log,
             floaty_heartbeat,
@@ -728,10 +727,26 @@ mod tests {
     #[test]
     fn the_desktop_layer_is_the_overlays_and_the_floatie_windows() {
         assert!(is_desktop_layer_label("desktop-overlay"));
+        assert!(is_desktop_layer_label("desktop-overlay-1"));
         assert!(is_desktop_layer_label("top-overlay"));
+        assert!(is_desktop_layer_label("top-overlay-2"));
         assert!(is_desktop_layer_label("widget-app-1"));
         assert!(!is_desktop_layer_label("settings"));
         assert!(!is_desktop_layer_label("manager"));
+    }
+
+    /// Only the full-screen bottom overlays get the z-order rule. A per-widget
+    /// floatie is a desktop-layer window but not an overlay; a top overlay is
+    /// the other band.
+    #[test]
+    fn only_the_bottom_overlays_are_in_the_bottom_band() {
+        assert!(is_desktop_overlay_label("desktop-overlay"));
+        assert!(is_desktop_overlay_label("desktop-overlay-3"));
+        assert!(!is_desktop_overlay_label("top-overlay-1"));
+        assert!(!is_desktop_overlay_label("widget-app-1"));
+        assert!(is_top_overlay_label("top-overlay"));
+        assert!(is_top_overlay_label("top-overlay-1"));
+        assert!(!is_top_overlay_label("desktop-overlay-1"));
     }
 
     /// This decides whether a floatie may be taken off the desktop, so it has to

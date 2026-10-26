@@ -50,6 +50,15 @@ pub(crate) mod desktop_pin {
     const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_HIDEWINDOW: u32 = 0x0080;
     const HWND_TOPMOST: isize = -1;
+    const HWND_BOTTOM: isize = 1;
+
+    const SW_SHOWNOACTIVATE: i32 = 4;
+    const WM_ACTIVATE: u32 = 0x0006;
+    const WA_ACTIVE: usize = 1;
+    const WA_CLICKACTIVE: usize = 2;
+    /// Private message: lower the bottom overlay again after Windows has
+    /// finished the z-order change that came with activation.
+    const WM_APP_LOWER_BOTTOM: u32 = 0x8001;
 
     const WM_SYSCOMMAND: u32 = 0x0112;
     const SC_MINIMIZE: usize = 0xF020;
@@ -132,6 +141,7 @@ pub(crate) mod desktop_pin {
             uFlags: u32,
         ) -> isize;
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        pub fn PostMessageW(hWnd: isize, Msg: u32, wParam: usize, lParam: isize) -> i32;
         pub fn IsWindowVisible(hWnd: isize) -> i32;
         pub fn SetWindowSubclass(
             hWnd: isize,
@@ -162,7 +172,6 @@ pub(crate) mod desktop_pin {
         pub fn SetWindowRgn(hWnd: isize, hRgn: isize, bRedraw: i32) -> i32;
 
         pub fn InvalidateRect(hWnd: isize, lpRect: *const std::ffi::c_void, bErase: i32) -> i32;
-        pub fn GetAsyncKeyState(vKey: i32) -> i16;
         pub fn RedrawWindow(
             hWnd: isize,
             lprcUpdate: *const std::ffi::c_void,
@@ -373,6 +382,9 @@ pub(crate) mod desktop_pin {
     /// `ref_data` for windows the desktop-layer policy applies to. Ordinary
     /// windows get `0` and the policy leaves them alone.
     const DESKTOP_LAYER_REF: usize = 1;
+    /// The bottom overlay also gets the z-order policy: activation must not
+    /// leave it above ordinary windows.
+    const BOTTOM_OVERLAY_REF: usize = 2;
 
     unsafe extern "system" fn widget_subclass_proc(
         hwnd: isize,
@@ -387,7 +399,7 @@ pub(crate) mod desktop_pin {
         // window it is the "settings is broken" bug: the first drag step stripped
         // its taskbar button (this runs on every WM_WINDOWPOSCHANGING, and a move
         // is a stream of them) and the minimize button did nothing.
-        let desktop_layer = ref_data == DESKTOP_LAYER_REF;
+        let desktop_layer = ref_data != 0;
 
         // Enforce WS_EX_TOOLWINDOW is preserved so taskbar never shows the window
         if desktop_layer && msg == WM_WINDOWPOSCHANGING {
@@ -399,6 +411,37 @@ pub(crate) mod desktop_pin {
                     (ex_style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW,
                 );
             }
+        }
+
+        // Every z-order change for the bottom overlay is forced to the bottom
+        // here. Windows can raise an activated window after WM_ACTIVATE has been
+        // handled, so lowering only in that message is not enough; this is the
+        // one place every raise passes through. Clearing SWP_NOZORDER also
+        // repairs a window that is already out of the band.
+        if ref_data == BOTTOM_OVERLAY_REF && msg == WM_WINDOWPOSCHANGING && lparam != 0 {
+            let wp = &mut *(lparam as *mut WINDOWPOS);
+            // The bottom overlay is the one window that must never be raised
+            // above an ordinary window, not even briefly while active.
+            wp.hwnd_insert_after = HWND_BOTTOM;
+            wp.flags &= !SWP_NOZORDER;
+        }
+        // A click on the bottom layer activates it, and Windows raises an
+        // activated window. Lower it now, and post one more for the raise that
+        // may arrive after this message. Activation is what focuses the page
+        // (typing keeps working), not what decides its band.
+        if ref_data == BOTTOM_OVERLAY_REF
+            && msg == WM_ACTIVATE
+            && ((wparam & 0xFFFF) == WA_ACTIVE || (wparam & 0xFFFF) == WA_CLICKACTIVE)
+        {
+            lower_to_bottom(hwnd);
+            // Activation can change the z-order after WM_ACTIVATE returns.
+            unsafe {
+                PostMessageW(hwnd, WM_APP_LOWER_BOTTOM, 0, 0);
+            }
+        }
+        if ref_data == BOTTOM_OVERLAY_REF && msg == WM_APP_LOWER_BOTTOM {
+            lower_to_bottom(hwnd);
+            return 0;
         }
 
         // Sleep/resume lands here: the webview is never told, so the app has to
@@ -486,39 +529,43 @@ pub(crate) mod desktop_pin {
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
-    /// Install the window procedure that blocks minimize/show-desktop tricks and
-    /// answers the sleep/resume messages. Idempotent.
+    /// Install the window procedure that blocks minimize/show-desktop tricks,
+    /// answers the sleep/resume messages, and keeps the bottom overlay in its
+    /// band. Idempotent.
     ///
     /// Timing matters: a window's procedure can still be replaced while the
     /// webview is being created, which drops an earlier subclass out of the
     /// chain — and then the display-state notification is delivered into
     /// nothing. Installing it again once the window is up (the first heartbeat)
     /// is what makes the wake-up recovery reliable.
-    /// Arm the window procedure on a window. `desktop_layer` decides which
-    /// policy the procedure enforces for it: `true` keeps the tool-window style
-    /// on and swallows minimize (the overlays, the one-window-per-widget
-    /// floaties), `false` leaves an ordinary window alone.
-    pub fn install_subclass(hwnd: isize, desktop_layer: bool) {
-        if hwnd != 0 {
-            unsafe {
-                SetWindowSubclass(
-                    hwnd,
-                    widget_subclass_proc,
-                    SUBCLASS_ID,
-                    if desktop_layer { DESKTOP_LAYER_REF } else { 0 },
-                );
-            }
+    ///
+    /// The label decides which policy the procedure enforces: the bottom overlay
+    /// also gets the z-order rule, every other desktop-layer window keeps the
+    /// tool-window/minimize policy, and an ordinary window is left alone.
+    pub fn install_subclass(hwnd: isize, label: &str) {
+        if hwnd == 0 {
+            return;
+        }
+        let ref_data = if crate::is_desktop_overlay_label(label) {
+            BOTTOM_OVERLAY_REF
+        } else if crate::is_desktop_layer_label(label) {
+            DESKTOP_LAYER_REF
+        } else {
+            0
+        };
+        unsafe {
+            SetWindowSubclass(hwnd, widget_subclass_proc, SUBCLASS_ID, ref_data);
         }
     }
 
-    pub fn apply_desktop_pin(hwnd: isize, stay_on_desktop: bool) {
+    pub fn apply_desktop_pin(label: &str, hwnd: isize, stay_on_desktop: bool) {
         unsafe {
             remove_from_taskbar(hwnd);
             // one window takes the display-state notification for the process
             crate::watch_display_state(hwnd);
 
             // Register subclass (idempotent if already registered)
-            install_subclass(hwnd, true);
+            install_subclass(hwnd, label);
 
             if stay_on_desktop {
                 let desktop_hwnd = get_desktop_shell_hwnd();
@@ -561,7 +608,6 @@ pub(crate) mod desktop_pin {
         std::sync::RwLock::new(Vec::new());
     static OVERLAY_HIT_RECTS: std::sync::RwLock<Vec<(String, Vec<HitRect>)>> =
         std::sync::RwLock::new(Vec::new());
-    static OVERLAY_IS_DRAGGING: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
 
     fn remember_hwnd(label: &str, hwnd: isize) {
         if let Ok(mut guard) = OVERLAY_HWNDS.write() {
@@ -578,57 +624,6 @@ pub(crate) mod desktop_pin {
             .ok()
             .and_then(|g| g.iter().find(|(l, _)| l == label).map(|(_, h)| *h))
             .unwrap_or(0)
-    }
-
-    fn rects_for(label: &str) -> Vec<HitRect> {
-        OVERLAY_HIT_RECTS
-            .read()
-            .ok()
-            .and_then(|g| g.iter().find(|(l, _)| l == label).map(|(_, r)| r.clone()))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn is_dragging(label: &str) -> bool {
-        OVERLAY_IS_DRAGGING
-            .read()
-            .map(|g| g.iter().any(|l| l == label))
-            .unwrap_or(false)
-    }
-
-    /// When the last drag activity happened: a `floaty_drag_to` move, or a drag
-    /// start. The stuck-drag watchdog reads this — a flag with no moves behind
-    /// it and no button down is an orphaned gesture, not a long drag.
-    static DRAG_ALIVE: std::sync::RwLock<Option<std::time::Instant>> = std::sync::RwLock::new(None);
-
-    pub(crate) fn touch_drag_alive() {
-        if let Ok(mut guard) = DRAG_ALIVE.write() {
-            *guard = Some(std::time::Instant::now());
-        }
-    }
-
-    pub(crate) fn drag_alive_age() -> std::time::Duration {
-        DRAG_ALIVE
-            .read()
-            .ok()
-            .and_then(|g| *g)
-            .map(|t| t.elapsed())
-            .unwrap_or(std::time::Duration::from_secs(3600))
-    }
-
-    /// Whether any mouse button is physically down right now. A drag flag that
-    /// outlives the press — a lost pointerup, a page reloaded mid-gesture — is
-    /// what leaves an overlay fullscreen-clickable, swallowing the desktop (and,
-    /// on the top layer, every app below it); this is how the watchdog tells a
-    /// stuck flag from a gesture that is still going.
-    pub(crate) fn any_button_down() -> bool {
-        const VK_LBUTTON: i32 = 0x01;
-        const VK_RBUTTON: i32 = 0x02;
-        const VK_MBUTTON: i32 = 0x04;
-        unsafe {
-            [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
-                .iter()
-                .any(|&key| (GetAsyncKeyState(key) as u16 & 0x8000) != 0)
-        }
     }
 
     pub fn apply_hit_regions(hwnd: isize, rects: &[HitRect]) {
@@ -684,31 +679,11 @@ pub(crate) mod desktop_pin {
             false
         };
         let hwnd = hwnd_for(&label);
-        if changed && !is_dragging(&label) && hwnd != 0 {
+        // A drag updates the tile's rects on every move. Applying them keeps the
+        // region on the tile while the pointer is captured; clearing the region
+        // instead is what made the whole screen swallow clicks mid-drag.
+        if changed && hwnd != 0 {
             apply_hit_regions(hwnd, &rects);
-        }
-    }
-
-    pub fn set_dragging(label: String, dragging: bool) {
-        if let Ok(mut guard) = OVERLAY_IS_DRAGGING.write() {
-            guard.retain(|l| *l != label);
-            if dragging {
-                guard.push(label.clone());
-            }
-        }
-        if dragging {
-            touch_drag_alive();
-        }
-        let hwnd = hwnd_for(&label);
-        if hwnd != 0 {
-            if dragging {
-                // Clear the window region during dragging so the entire desktop can receive drag events
-                unsafe {
-                    SetWindowRgn(hwnd, 0, 0);
-                }
-            } else {
-                apply_hit_regions(hwnd, &rects_for(&label));
-            }
         }
     }
 
@@ -742,10 +717,51 @@ pub(crate) mod desktop_pin {
         }
     }
 
+    /// Put a bottom-layer overlay at the bottom of the normal band: above the
+    /// desktop, below every ordinary window.
+    ///
+    /// `HWND_BOTTOM` also clears a topmost flag, so one call is enough. Asking
+    /// for `HWND_NOTOPMOST` first would raise the window above every ordinary
+    /// window before the second call puts it back — a visible flash, and a
+    /// window for the activation raise to leave it there.
+    /// `SWP_NOACTIVATE` keeps the user's focus and typing where they were.
+    pub fn lower_to_bottom(hwnd: isize) {
+        if hwnd == 0 {
+            return;
+        }
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    /// Show a window without activating or raising it. `SW_SHOW` is what
+    /// `show()` uses, and that activation is what put the bottom overlay back on
+    /// top after a fullscreen app closed. A bottom overlay also returns to its
+    /// band; the top layer is already there.
+    pub fn show_without_activating(hwnd: isize, bottom: bool) {
+        if hwnd == 0 {
+            return;
+        }
+        unsafe {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        if bottom {
+            lower_to_bottom(hwnd);
+        }
+    }
+
     /// Style an overlay window and remember it under its label, so the regions
     /// its page sends land on the right window.
     pub fn apply_overlay_desktop_pin(label: &str, hwnd: isize, stay_on_desktop: bool) {
-        apply_desktop_pin(hwnd, stay_on_desktop);
+        apply_desktop_pin(label, hwnd, stay_on_desktop);
         remember_hwnd(label, hwnd);
         unsafe {
             // Remove WS_EX_TRANSPARENT so the shaped regions receive clicks normally
@@ -789,6 +805,9 @@ pub(crate) mod desktop_pin {
                 // before the first sync lands.
                 apply_hit_regions(hwnd, &[]);
             }
+        }
+        if crate::is_desktop_overlay_label(label) {
+            lower_to_bottom(hwnd);
         }
     }
 }

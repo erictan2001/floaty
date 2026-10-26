@@ -22,11 +22,18 @@ pub(crate) fn widget_label(id: &str) -> String {
 /// say so, or it turns the settings window into a taskbar-less tool window that
 /// cannot be minimized back or moved properly.
 pub(crate) fn is_desktop_layer_label(label: &str) -> bool {
-    label == DESKTOP_LAYER
-        || label == TOP_LAYER
-        || label.starts_with(&format!("{DESKTOP_LAYER}-"))
-        || label.starts_with(&format!("{TOP_LAYER}-"))
-        || label.starts_with("widget-")
+    label.starts_with("widget-") || is_desktop_overlay_label(label) || is_top_overlay_label(label)
+}
+
+/// The bottom overlay, on any screen. Screen 0 keeps the plain label; later
+/// screens get `-<index>` (see `overlay_label`).
+pub(crate) fn is_desktop_overlay_label(label: &str) -> bool {
+    label == DESKTOP_LAYER || label.starts_with(&format!("{DESKTOP_LAYER}-"))
+}
+
+/// The always-on-top overlay, on any screen.
+pub(crate) fn is_top_overlay_label(label: &str) -> bool {
+    label == TOP_LAYER || label.starts_with(&format!("{TOP_LAYER}-"))
 }
 
 /// The screen an overlay window belongs to, read from its label: `desktop-overlay`
@@ -290,6 +297,9 @@ pub(crate) fn spawn_desktop_overlay(
         .resizable(false)
         .skip_taskbar(true)
         .always_on_top(false)
+        // creating a window is an activation unless it is told not to be; the
+        // desktop layer must not take the foreground from the app the user is in
+        .focused(false)
         .build()?;
 
     place_on_screen(app, &win, screen);
@@ -500,54 +510,6 @@ pub(crate) async fn floaty_update_hit_rects(label: String, rects: Vec<desktop_pi
     desktop_pin::set_hit_rects(label, rects);
 }
 
-#[tauri::command]
-pub(crate) fn floaty_set_overlay_dragging(label: String, dragging: bool, app: AppHandle) {
-    desktop_pin::set_dragging(label.clone(), dragging);
-    if !dragging {
-        return;
-    }
-    // A drag that never ends leaves its overlay fullscreen-clickable, swallowing
-    // every desktop click on that screen (and, on the top layer, every app below
-    // it) until the next drag — with the browser menu on right-click as the tell.
-    // The page always closes the gesture, but a lost pointerup or a page
-    // reloaded mid-gesture never sends the close. So watch what owns it: no moves
-    // behind the flag and no button down is an orphaned gesture, not a long drag.
-    // (The frontend also releases on blur/unmount, and resyncs rects on a timer;
-    // this is the backstop for a page that died mid-gesture.)
-    let handle = app.clone();
-    let started = std::time::Instant::now();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        if !desktop_pin::is_dragging(&label) {
-            return;
-        }
-        let quiet_for = desktop_pin::drag_alive_age();
-        if started.elapsed() > std::time::Duration::from_secs(5)
-            && quiet_for > std::time::Duration::from_secs(5)
-            && !desktop_pin::any_button_down()
-        {
-            desktop_pin::set_dragging(label.clone(), false);
-            log_line(
-                &handle,
-                &format!(
-                    "{label}: drag flag stuck (no move for {}s, buttons up) — click-through region restored",
-                    quiet_for.as_secs()
-                ),
-            );
-            return;
-        }
-        // Absolute cap: no real gesture holds the desktop hostage for minutes.
-        if started.elapsed() > std::time::Duration::from_secs(300) {
-            desktop_pin::set_dragging(label.clone(), false);
-            log_line(
-                &handle,
-                &format!("{label}: drag flag still set after 300s — click-through region restored"),
-            );
-            return;
-        }
-    });
-}
-
 /// Create a widget window without blocking the calling (command) thread.
 /// Window creation must run on the main thread; blocking a command thread on
 /// that dispatch wedged the settings UI whenever the main loop was slow to
@@ -594,7 +556,7 @@ pub(crate) fn spawn_widget(app: &AppHandle, rec: &WidgetRecord) -> tauri::Result
     {
         let stay = load_settings(app).stay_on_desktop;
         if let Ok(hwnd) = win.hwnd() {
-            desktop_pin::apply_desktop_pin(hwnd.0 as isize, stay);
+            desktop_pin::apply_desktop_pin(&label, hwnd.0 as isize, stay);
         }
     }
     Ok(())

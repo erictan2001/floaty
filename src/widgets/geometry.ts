@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { currentMonitor, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { onScreen, screenAt } from "./placement";
 import { appWin, isOverlayMode } from "./windowState";
-import { isOverlayDragging, overlaySlots, scheduleHitRectsUpdate } from "./slots";
+import { overlaySlots, scheduleHitRectsUpdate } from "./slots";
 
 export interface MonitorArea {
   x: number;
@@ -344,9 +344,10 @@ export function setWidgetPos(id: string, x: number, y: number, scale = 1): void 
       slot.y = y;
       const at = toWindow(x, y);
       slot.element.style.transform = `translate3d(${at.x}px, ${at.y}px, 0)`;
-      if (!isOverlayDragging()) {
-        scheduleHitRectsUpdate();
-      }
+      // The region follows the tile while the pointer is captured. The old
+      // guard skipped this for the whole drag, so the region stayed at the
+      // tile's pre-drag position until the drop.
+      scheduleHitRectsUpdate();
     }
   } else {
     void appWin

@@ -814,8 +814,8 @@ function mountDesktop(root: HTMLElement): void {
       scheduleHitRectsUpdate();
     }
   });
-  // An orphaned gesture (focus lost mid-drag) must not leave the overlay
-  // fullscreen-clickable: see `watchDragFocusLoss`.
+  // An orphaned gesture (focus lost mid-drag) must still end its drag state
+  // and take the merge preview off the target tile: see `watchDragFocusLoss`.
   watchDragFocusLoss();
 
   // Self-healing click-through: any rect update missed between events (a popup

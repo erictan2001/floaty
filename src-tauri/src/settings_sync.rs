@@ -1099,6 +1099,26 @@ pub(crate) fn presence_states(
     (states, summary)
 }
 
+/// Show a window that presence hid.
+///
+/// `window.show()` is `SW_SHOW`: it activates and raises, which steals the
+/// foreground from the app the user is in and puts the bottom layer back above
+/// ordinary windows. The desktop layer comes back with `SW_SHOWNOACTIVATE`;
+/// everything except the top layer also returns to the bottom band.
+fn show_presence_window(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    if is_desktop_layer_label(window.label()) {
+        if let Ok(hwnd) = window.hwnd() {
+            desktop_pin::show_without_activating(
+                hwnd.0 as isize,
+                !is_top_overlay_label(window.label()),
+            );
+            return;
+        }
+    }
+    let _ = window.show();
+}
+
 /// Put the desktop where the decision says it should be, and say so once.
 pub(crate) fn apply_presence(
     app: &AppHandle,
@@ -1128,7 +1148,7 @@ pub(crate) fn apply_presence(
             if state.hidden {
                 let _ = window.hide();
             } else {
-                let _ = window.show();
+                show_presence_window(&window);
             }
             // To this window only, and with its own state: the desktop layers are separate
             // windows, and a page must not act on another screen's verdict. A broadcast
@@ -1370,32 +1390,20 @@ pub(crate) fn floaty_set_settings(settings: FloatSettings, app: AppHandle) -> Fl
     }
     #[cfg(windows)]
     {
-        if let Some(win) = app.get_webview_window("desktop-overlay") {
-            if let Ok(hwnd) = win.hwnd() {
-                desktop_pin::apply_overlay_desktop_pin(
-                    "desktop-overlay",
-                    hwnd.0 as isize,
-                    s.stay_on_desktop,
-                );
-            }
-        }
-        if let Some(win) = app.get_webview_window("top-overlay") {
-            // the always-on-top layer is never parented into the desktop
-            if let Ok(hwnd) = win.hwnd() {
-                desktop_pin::apply_overlay_desktop_pin("top-overlay", hwnd.0 as isize, false);
-            }
-        }
+        // The window procedure reads this flag on every minimize/show-desktop
+        // message; a save is what makes the toggle take effect without a restart.
+        desktop_pin::set_stay_on_desktop_global(s.stay_on_desktop);
         for (label, win) in app.webview_windows() {
-            // the overlays were handled above, and they are pinned through
-            // `apply_overlay_desktop_pin` (which is also what registers their
-            // click-through region)
-            if label == "desktop-overlay" || label == "top-overlay" {
-                continue;
-            }
             if let Ok(hwnd) = win.hwnd() {
-                if is_desktop_layer_label(&label) {
-                    desktop_pin::apply_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
-                } else if desktop_pin::restore_ordinary_window(hwnd.0 as isize) {
+                let hwnd = hwnd.0 as isize;
+                if is_top_overlay_label(&label) {
+                    // the always-on-top layer is never parented into the desktop
+                    desktop_pin::apply_overlay_desktop_pin(&label, hwnd, false);
+                } else if is_desktop_overlay_label(&label) {
+                    desktop_pin::apply_overlay_desktop_pin(&label, hwnd, s.stay_on_desktop);
+                } else if is_desktop_layer_label(&label) {
+                    desktop_pin::apply_desktop_pin(&label, hwnd, s.stay_on_desktop);
+                } else if desktop_pin::restore_ordinary_window(hwnd) {
                     // settings, the manager: ordinary windows. A settings save is
                     // frequent enough to repair one that an earlier pass pinned,
                     // and saying so is what makes the repair visible in the log.

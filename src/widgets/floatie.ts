@@ -586,7 +586,8 @@ export class Floatie {
     this.releaseCapture();
     // Unmounted mid-gesture (a screen handover drops the old slot while the
     // button is still down): the release handler lives on, but say so now — a
-    // close that never comes leaves the overlay fullscreen-clickable.
+    // close that never comes leaves the page in drag state and the merge
+    // preview on screen.
     if (this.drag?.active) notifyDragging(false);
     this.drag = null;
     sessions.delete(this.rec.id);

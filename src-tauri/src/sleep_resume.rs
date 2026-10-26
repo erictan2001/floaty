@@ -211,7 +211,7 @@ pub(crate) fn raise_top_layer(app: &AppHandle) {
     // one layer per screen: a pinned widget on the second screen needs its own window
     // in front, not the first screen's
     for (label, w) in app.webview_windows() {
-        if label != TOP_LAYER && !label.starts_with(&format!("{TOP_LAYER}-")) {
+        if !is_top_overlay_label(&label) {
             continue;
         }
         // A layer presence hid for a fullscreen app stays hid: re-raising it on
@@ -337,14 +337,16 @@ pub(crate) fn recover_windows(reason: &str) {
     let mut suspects: Vec<String> = Vec::new();
     for (label, w) in &windows {
         if let Ok(hwnd) = w.hwnd() {
-            if label == "desktop-overlay" {
-                desktop_pin::apply_overlay_desktop_pin(label, hwnd.0 as isize, s.stay_on_desktop);
-            } else if label == "top-overlay" {
+            if is_top_overlay_label(label) {
                 desktop_pin::apply_overlay_desktop_pin(label, hwnd.0 as isize, false);
                 // a wake-up can leave it buried under other topmost windows
                 raise_top_layer(&app);
+            } else if is_desktop_overlay_label(label) {
+                // every screen's bottom overlay: re-applying the pin also puts it
+                // back in its band after the display came on
+                desktop_pin::apply_overlay_desktop_pin(label, hwnd.0 as isize, s.stay_on_desktop);
             } else if is_desktop_layer_label(label) {
-                desktop_pin::apply_desktop_pin(hwnd.0 as isize, s.stay_on_desktop);
+                desktop_pin::apply_desktop_pin(label, hwnd.0 as isize, s.stay_on_desktop);
             } else if desktop_pin::restore_ordinary_window(hwnd.0 as isize) {
                 // The settings window is a normal window and has to stay one:
                 // this pass used to desktop-pin *every* label it did not
@@ -601,7 +603,7 @@ pub(crate) fn floaty_heartbeat(label: String, visibility: Option<String>, app: A
         // nothing and stripped its taskbar button on the first drag.
         for (label, w) in app.webview_windows() {
             if let Ok(hwnd) = w.hwnd() {
-                desktop_pin::install_subclass(hwnd.0 as isize, is_desktop_layer_label(&label));
+                desktop_pin::install_subclass(hwnd.0 as isize, &label);
                 watch_display_state(hwnd.0 as isize);
             }
         }
@@ -694,7 +696,7 @@ pub(crate) fn recreate_window(app: &AppHandle, label: &str) {
                 continue;
             }
             // "top-overlay" and "top-overlay-2" are both the top layer
-            let again = if label.starts_with(TOP_LAYER) {
+            let again = if is_top_overlay_label(label) {
                 // only if something is still pinned: nothing pinned means the
                 // layer is meant to be gone
                 sync_top_overlay(app);
@@ -757,5 +759,5 @@ pub(crate) const TOP_LAYER: &str = "top-overlay";
 pub(crate) fn is_overlay_running(app: &AppHandle) -> bool {
     app.webview_windows()
         .keys()
-        .any(|label| label == DESKTOP_LAYER || label.starts_with(&format!("{DESKTOP_LAYER}-")))
+        .any(|label| is_desktop_overlay_label(label))
 }

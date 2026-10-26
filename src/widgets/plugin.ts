@@ -446,7 +446,6 @@ export const ALLOWED_PLUGIN_COMMANDS: ReadonlySet<string> = new Set([
   "floaty_screens",
   "floaty_overlay_area",
   "floaty_update_hit_rects",
-  "floaty_set_overlay_dragging",
   "floaty_heartbeat",
 ]);
 
