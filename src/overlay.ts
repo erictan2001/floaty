@@ -890,14 +890,16 @@ function mountDesktop(root: HTMLElement): void {
   const tidyDesktop = async (): Promise<number> => {
     const records = await invoke<WidgetRecord[]>("floaty_list");
     const mon = await monitorArea();
-    const mine = records.filter((rec) => isDesktopItem(rec.kind) && isPinned(rec) === top);
+    const mine = records.filter(
+      (rec) => isDesktopItem(rec.kind) && isPinned(rec) === top && onMyScreen(rec.x, rec.y),
+    );
     if (mine.length === 0) return 0;
     await invoke("floaty_undo_checkpoint", {
       label: "tidy",
       restore: mine.map((rec) => ({ id: rec.id, record: JSON.parse(JSON.stringify(rec)) })),
     }).catch(() => undefined);
-    const layout = plan(records, { area: mon, top, tidy: true });
-    applyPlan(records, layout);
+    const layout = plan(mine, { area: mon, top, tidy: true });
+    applyPlan(mine, layout);
     if (layout.moves.length > 0) {
       await invoke("floaty_refresh", { ids: layout.moves.map((m) => m.id) }).catch(() => undefined);
     }

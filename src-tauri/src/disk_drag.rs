@@ -1006,9 +1006,24 @@ pub(crate) fn sync_root(
         (occupied, map)
     });
 
+    let mut min_x = 0.0;
+    let mut min_y = 0.0;
+    let mut max_x = 1440.0;
+    let mut max_y = 960.0;
+    if let Some(screen) = screens(&app).into_iter().find(|s| s.primary) {
+        min_x = screen.logical.x;
+        min_y = screen.logical.y;
+        max_x = screen.logical.x + screen.logical.w;
+        max_y = screen.logical.y + screen.logical.h;
+    }
     let next_pos = |occupied: &mut Vec<(i32, i32)>| -> (i32, i32) {
-        let mut cur_x = 80;
-        let mut cur_y = 80;
+        let left = (min_x + 80.0) as i32;
+        let top = (min_y + 80.0) as i32;
+        let right = (max_x - 100.0).max(left as f64) as i32;
+        let bottom = (max_y - 120.0).max(top as f64) as i32;
+        let mut cur_x = left;
+        let mut cur_y = top;
+        let mut tries = 0;
         loop {
             let collision = occupied
                 .iter()
@@ -1018,9 +1033,20 @@ pub(crate) fn sync_root(
                 return (cur_x, cur_y);
             }
             cur_y += 115;
-            if cur_y > 800 {
-                cur_y = 80;
+            if cur_y > bottom {
+                cur_y = top;
                 cur_x += 105;
+            }
+            if cur_x > right {
+                // A packed desktop cannot fit another non-overlapping tile. Put
+                // it back at the start rather than off the screen; a later tidy
+                // (or the user) can separate it.
+                cur_x = left;
+                cur_y = top;
+            }
+            tries += 1;
+            if tries > 200 {
+                return (cur_x, cur_y);
             }
         }
     };
@@ -1218,6 +1244,11 @@ pub(crate) fn sync_root(
         // The settings window lists the same floaties; tell it they moved.
         app.emit("floaty-widgets-changed", ()).ok();
     }
+
+    // A root change can leave records at coordinates no screen covers; the
+    // startup pass ran before the async sync, so run it again after new records
+    // have been added.
+    rehome_stranded(&app, "sync");
 
     // From here on the folder is followed rather than read once: the watcher
     // re-runs this reconcile whenever it changes. `retarget` no-ops when this is

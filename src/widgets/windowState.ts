@@ -17,10 +17,20 @@ if (appWin.label.startsWith("widget-")) {
 export const DESKTOP_LAYER = "desktop-overlay";
 export const TOP_LAYER = "top-overlay";
 
+/** A layer label, with the optional `-<screen>` suffix. */
+function isLayerLabel(label: string, base: string): boolean {
+  return label === base || label.startsWith(`${base}-`);
+}
+
+/** Whether this is an always-on-top overlay, on any screen. */
+export function isTopOverlayLabel(label: string): boolean {
+  return isLayerLabel(label, TOP_LAYER);
+}
+
 export function isOverlayMode(): boolean {
   return (
-    appWin.label === DESKTOP_LAYER ||
-    appWin.label === TOP_LAYER ||
+    isLayerLabel(appWin.label, DESKTOP_LAYER) ||
+    isTopOverlayLabel(appWin.label) ||
     window.location.hash.startsWith("#/overlay")
   );
 }
@@ -31,5 +41,5 @@ export function isOverlayMode(): boolean {
  * same mount code; they differ in which records they draw.
  */
 export function isTopLayer(): boolean {
-  return appWin.label === TOP_LAYER;
+  return isTopOverlayLabel(appWin.label);
 }

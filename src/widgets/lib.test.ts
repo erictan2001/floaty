@@ -375,3 +375,14 @@ describe("presenceIsQuiet", () => {
     expect(lib.presenceIsQuiet()).toBe(false);
   });
 });
+
+describe("isTopOverlayLabel", () => {
+  it("recognises the first screen and every later screen", async () => {
+    const lib = await boot();
+    expect(lib.isTopOverlayLabel("top-overlay")).toBe(true);
+    expect(lib.isTopOverlayLabel("top-overlay-1")).toBe(true);
+    expect(lib.isTopOverlayLabel("top-overlay-12")).toBe(true);
+    expect(lib.isTopOverlayLabel("desktop-overlay-1")).toBe(false);
+    expect(lib.isTopOverlayLabel("top-overlayish")).toBe(false);
+  });
+});
