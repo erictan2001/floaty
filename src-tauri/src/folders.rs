@@ -21,7 +21,13 @@ pub(crate) struct FolderItem {
 pub(crate) fn folder_items(rec: &WidgetRecord) -> Vec<FolderItem> {
     rec.data
         .get("items")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 

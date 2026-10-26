@@ -1202,6 +1202,7 @@ mod tests {
         assert_eq!(items[0].name, "sub_folder");
         assert!(!items[1].is_dir);
         assert_eq!(items[1].name, "a.txt");
+        assert!(try_scan_folder_items(&temp_dir.join("missing")).is_err());
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

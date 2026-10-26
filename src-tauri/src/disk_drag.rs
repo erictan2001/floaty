@@ -275,30 +275,36 @@ pub(crate) fn carry_icons_by_name(old: &[FolderItem], items: &mut [FolderItem]) 
 }
 
 pub(crate) fn scan_folder_items(dir_path: &std::path::Path) -> Vec<FolderItem> {
+    try_scan_folder_items(dir_path).unwrap_or_default()
+}
+
+/// The same scan, but a folder that could not be read is an error rather than
+/// an empty folder. A transient lock must not be persisted as "no items".
+pub(crate) fn try_scan_folder_items(dir_path: &std::path::Path) -> Result<Vec<FolderItem>, String> {
     if !dir_path.is_dir() {
-        return Vec::new();
+        return Err(format!("{} is not a folder", dir_path.display()));
     }
     let mut items = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.starts_with('.')
-                || file_name.eq_ignore_ascii_case("desktop.ini")
-                || file_name.eq_ignore_ascii_case("thumbs.db")
-            {
-                continue;
-            }
-            let is_dir = path.is_dir();
-            let target = path.to_string_lossy().to_string();
-            let icon = String::new();
-            items.push(FolderItem {
-                name: file_name,
-                target,
-                icon,
-                is_dir,
-            });
+    let entries =
+        std::fs::read_dir(dir_path).map_err(|e| format!("{}: {e}", dir_path.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", dir_path.display()))?;
+        let path = entry.path();
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if file_name.starts_with('.')
+            || file_name.eq_ignore_ascii_case("desktop.ini")
+            || file_name.eq_ignore_ascii_case("thumbs.db")
+        {
+            continue;
         }
+        let is_dir = path.is_dir();
+        let target = path.to_string_lossy().to_string();
+        items.push(FolderItem {
+            name: file_name,
+            target,
+            icon: String::new(),
+            is_dir,
+        });
     }
     items.sort_by(|a, b| {
         if a.is_dir != b.is_dir {
@@ -307,7 +313,7 @@ pub(crate) fn scan_folder_items(dir_path: &std::path::Path) -> Vec<FolderItem> {
             a.name.to_lowercase().cmp(&b.name.to_lowercase())
         }
     });
-    items
+    Ok(items)
 }
 
 /// Close a widget window off the command thread (same reason as creation).
@@ -898,7 +904,12 @@ pub(crate) fn floaty_rename_folder_dir(
                 );
             }
             let old_items = folder_items(rec);
-            let mut items = scan_folder_items(&dest);
+            let Some(mut items) = try_scan_folder_items(&dest)
+                .map_err(|e| log_line(&app, &format!("rename: folder not rescanned: {e}")))
+                .ok()
+            else {
+                return;
+            };
             carry_icons_by_name(&old_items, &mut items);
             set_folder_items(rec, &items);
         });
@@ -1080,7 +1091,18 @@ pub(crate) fn sync_root(
             let path_str = path.to_string_lossy().to_string();
             on_disk.insert(path_str.to_ascii_lowercase());
             if path.is_dir() {
-                let mut items = scan_folder_items(&path);
+                let Ok(mut items) = try_scan_folder_items(&path) else {
+                    if !quiet {
+                        log_line(
+                            &app,
+                            &format!(
+                                "sync: {} could not be read; keeping its items",
+                                path.display()
+                            ),
+                        );
+                    }
+                    continue;
+                };
                 match existing_map.get(&path_str) {
                     Some((fid, kind)) if kind == "folder" => {
                         let mut refreshed = true;
