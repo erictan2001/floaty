@@ -584,7 +584,8 @@ export function mountFolder(root: HTMLElement, id: string): () => void {
       if (e.payload === id) void reload();
     })
       .then((unlisten) => {
-        unlistenFolder = unlisten;
+        if (disposed) unlisten();
+        else unlistenFolder = unlisten;
       })
       .catch(() => undefined);
     if (!isOverlayMode()) void appWin.show().catch(() => undefined);

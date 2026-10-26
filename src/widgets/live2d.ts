@@ -674,7 +674,8 @@ export function mountLive2D(root: HTMLElement, id: string): () => void {
       })();
     })
       .then((unlisten) => {
-        unlistenLive = unlisten;
+        if (disposed) unlisten();
+        else unlistenLive = unlisten;
       })
       .catch(() => undefined);
     if (!isOverlayMode()) void appWin.show().catch(() => undefined);

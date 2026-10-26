@@ -276,7 +276,8 @@ export function mountLauncher(root: HTMLElement, id: string, kind: string = "app
       }
     })
       .then((unlisten) => {
-        unlistenIcon = unlisten;
+        if (disposed) unlisten();
+        else unlistenIcon = unlisten;
       })
       .catch(() => undefined);
     // desktop layer (with the builder flag): icons live under real apps. In an
