@@ -38,10 +38,22 @@ pub(crate) fn files_root_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
 /// Menu shortcut — is carried in as a shortcut file instead: a plain move there
 /// would take the program out of its install directory.
 pub(crate) fn can_move_into_folder(root: Option<&std::path::Path>, src: &std::path::Path) -> bool {
-    match root {
-        Some(r) => src.starts_with(r),
-        None => false,
+    let Some(r) = root else {
+        return false;
+    };
+    // A `..` component is outside the folder however the text starts.
+    if src
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
     }
+    // Real paths get the full check (symlinks and junctions included); the
+    // lexical fallback keeps the pure callers and their fixture paths working.
+    if let (Ok(root), Ok(src)) = (r.canonicalize(), src.canonicalize()) {
+        return src != root && src.starts_with(root);
+    }
+    src.starts_with(r)
 }
 
 /// A usable file name for the shortcut built from an item's label.
@@ -217,7 +229,7 @@ pub(crate) fn app_into_root(app: &AppHandle, name: &str, path: &str) -> (String,
         return unchanged();
     };
     let src = std::path::Path::new(path);
-    if src.starts_with(&root) || !src.exists() {
+    if crate::is_under_root(&root.to_string_lossy(), path) || !src.exists() {
         return unchanged();
     }
     match shortcut_into_root(&root, name, path) {
@@ -328,22 +340,8 @@ pub(crate) fn close_widget_async(app: &AppHandle, id: &str) {
 }
 
 pub(crate) fn launch_target(app: &AppHandle, target: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW avoids a console flash; `start` resolves exe/lnk/urls
-        const NO_WINDOW: u32 = 0x08000000;
-        const DETACHED: u32 = 0x00000008;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", target])
-            .creation_flags(NO_WINDOW | DETACHED)
-            .spawn()
-            .map_err(|e| {
-                log_line(app, &format!("launch FAILED: {e}"));
-                e.to_string()
-            })?;
-    }
-    Ok(())
+    log_line(app, &format!("launch -> {target}"));
+    shell_ops::open_default(target)
 }
 
 #[tauri::command]

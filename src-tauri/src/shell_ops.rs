@@ -164,6 +164,32 @@ pub fn properties(_path: &str) -> Result<(), String> {
     Err("properties sheet is windows-only".into())
 }
 
+/// Open a file, folder, shortcut or URL with its default handler.
+///
+/// Deliberately not `cmd /C start`: a file name is data, and cmd.exe treats
+/// `&`, `|` and `^` in it as syntax. The shell's `open` verb takes the path as
+/// one value.
+#[cfg(windows)]
+pub fn open_default(path: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW};
+
+    let verb = wide("open");
+    let file = wide(path);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        lpVerb: windows::core::PCWSTR(verb.as_ptr()),
+        lpFile: windows::core::PCWSTR(file.as_ptr()),
+        nShow: 1, // SW_SHOWNORMAL
+        ..Default::default()
+    };
+    unsafe { ShellExecuteExW(&mut info) }.map_err(|e| format!("open failed: {e}"))
+}
+
+#[cfg(not(windows))]
+pub fn open_default(_path: &str) -> Result<(), String> {
+    Err("opening a path is windows-only".into())
+}
+
 #[cfg(windows)]
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()

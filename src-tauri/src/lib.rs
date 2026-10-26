@@ -568,6 +568,38 @@ mod tests {
 
         let desktop_dir = std::path::Path::new("D:\\CustomDesktop");
         assert_eq!(scope_target_for_path(desktop_dir), desktop_dir);
+
+        // A directory whose name contains a dot is still the scope, not a file
+        // whose parent is the scope.
+        let temp = tempfile::tempdir().unwrap();
+        let dotted = temp.path().join("acme.2026");
+        std::fs::create_dir(&dotted).unwrap();
+        assert_eq!(scope_target_for_path(&dotted), dotted.as_path());
+    }
+
+    #[test]
+    fn a_path_is_under_the_root_only_after_resolving_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&outside, b"x").unwrap();
+        let child = root.join("inside.txt");
+        std::fs::write(&child, b"x").unwrap();
+
+        assert!(is_under_root(
+            &root.to_string_lossy(),
+            &child.to_string_lossy()
+        ));
+        assert!(!is_under_root(
+            &root.to_string_lossy(),
+            &root.to_string_lossy()
+        ));
+        let escaped = root.join("..").join("outside.txt");
+        assert!(!is_under_root(
+            &root.to_string_lossy(),
+            &escaped.to_string_lossy()
+        ));
     }
 
     #[test]
@@ -1018,6 +1050,11 @@ mod tests {
         assert!(!can_move_into_folder(
             None,
             Path::new(r"C:\Users\e\Desktop\notes.txt")
+        ));
+        // `..` is outside the folder even when the text starts with it
+        assert!(!can_move_into_folder(
+            Some(root),
+            Path::new(r"C:\Users\e\Desktop\floaty-root\..\notes.txt")
         ));
     }
 

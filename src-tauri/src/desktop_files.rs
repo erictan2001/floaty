@@ -26,17 +26,36 @@ pub(crate) fn widget_path(app: &AppHandle, id: &str) -> Result<(String, String),
     })
 }
 
+/// True when `path` is a real descendant of `root`, after resolving `..`,
+/// symlinks and junctions. A lexical `starts_with` is not enough: a record or a
+/// drop can say `C:\root\..\Users\me\secret`, which is outside the root but
+/// still starts with its text.
+pub(crate) fn is_under_root(root: &str, path: &str) -> bool {
+    let (Ok(root), Ok(path)) = (std::fs::canonicalize(root), std::fs::canonicalize(path)) else {
+        return false;
+    };
+    if path == root {
+        return false;
+    }
+    let root = root
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase();
+    let path = path.to_string_lossy().to_ascii_lowercase();
+    path.starts_with(&format!("{root}\\")) || path.starts_with(&format!("{root}/"))
+}
+
 /// True when the path is one this app manages (a desktop item), i.e. deleting
 /// the floatie may delete the file as well. Anything else is left alone —
 /// removing the floatie for an installed program must not uninstall it.
 pub(crate) fn is_desktop_item(app: &AppHandle, path: &str) -> bool {
-    let p = std::path::Path::new(path);
     let root = load_settings(app).files_root;
-    if !root.trim().is_empty() && p.starts_with(&root) {
+    if !root.trim().is_empty() && is_under_root(&root, path) {
         return true;
     }
     if let Ok(home) = std::env::var("USERPROFILE") {
-        if p.starts_with(std::path::Path::new(&home).join("Desktop")) {
+        let desktop = std::path::Path::new(&home).join("Desktop");
+        if is_under_root(&desktop.to_string_lossy(), path) {
             return true;
         }
     }

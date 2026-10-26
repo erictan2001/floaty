@@ -12,6 +12,11 @@ use tauri::{AppHandle, Emitter, Manager};
 /// If `p` is a file (or has a file extension such as `.model3.json`), its parent directory
 /// is returned so that sibling assets (textures, physics, motions) are accessible.
 pub(crate) fn scope_target_for_path(p: &std::path::Path) -> &std::path::Path {
+    // A directory is the scope, even when its name has a dot: `acme.2026` is
+    // not a file, and taking its parent would allow every other client folder.
+    if p.is_dir() {
+        return p;
+    }
     let is_file_like = p.is_file() || p.extension().is_some();
     if is_file_like {
         p.parent().unwrap_or(p)
@@ -519,7 +524,8 @@ pub(crate) fn floaty_drop_paths(
     let mut landed: Vec<String> = Vec::new();
     let mut refused: Vec<String> = Vec::new();
     for path in &incoming {
-        let inside = path.starts_with(&root);
+        let path_text = path.to_string_lossy();
+        let inside = is_under_root(&root.to_string_lossy(), &path_text);
         if inside && !into_a_folder {
             // already here: this drop is a move, not an import
             landed.push(path.to_string_lossy().into_owned());
