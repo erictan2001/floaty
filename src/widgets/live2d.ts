@@ -181,8 +181,10 @@ async function playInteractMotion(
   }
 }
 
-export function mountLive2D(root: HTMLElement, id: string): void {
+export function mountLive2D(root: HTMLElement, id: string): () => void {
   watchPluginEnabled("live2d");
+  let cleanup: (() => void) | undefined;
+  let disposed = false;
   const wrap = document.createElement("div");
   wrap.className = "live2d-wrap";
   const canvas = document.createElement("canvas");
@@ -199,6 +201,9 @@ export function mountLive2D(root: HTMLElement, id: string): void {
   let pixiApp: PIXI.Application | undefined;
   let currentModel: L2DModel | undefined;
   let trackingTimer: number | undefined;
+  let idleTimer: number | undefined;
+  let unlistenLive: (() => void) | undefined;
+  let onVisibility: (() => void) | undefined;
   let modelScale = 1;
   let boxW = BASE_W;
   let boxH = BASE_H;
@@ -477,9 +482,10 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       if (trackingTimer) window.clearInterval(trackingTimer);
       void removeSelf(rec);
     });
-    window.addEventListener("beforeunload", () => {
+    const onBeforeUnload = () => {
       if (trackingTimer) window.clearInterval(trackingTimer);
-    });
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
     addPinMenu(wrap, () => liveRec, {
       // the model picker belongs to the widget: switching a model should not
       // need a trip through the settings window
@@ -629,17 +635,18 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         void pollDesktopCursor();
       }, 120);
 
-      document.addEventListener("visibilitychange", () => {
+      onVisibility = () => {
         if (!pixiApp) return;
         if (document.hidden) {
           pixiApp.stop();
         } else {
           wakeFor(2000);
         }
-      });
+      };
+      document.addEventListener("visibilitychange", onVisibility);
 
       // Periodic natural motion change
-      window.setInterval(() => {
+      idleTimer = window.setInterval(() => {
         if (!currentModel || performance.now() < interactUntil) return;
         // a gesture needs more than the breathing rate, but far less than pointer
         // tracking: every extra frame here is a full-desktop composite
@@ -657,7 +664,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
       );
       failedBox();
     }
-    await listen<string>("floaty-live2d-changed", (e) => {
+    void listen<string>("floaty-live2d-changed", (e) => {
       if (e.payload !== id) return;
       void (async () => {
         const r = await loadRecord(id);
@@ -665,8 +672,23 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         const m = typeof r.data["model"] === "string" ? (r.data["model"] as string) : "";
         await showModel(resolveModelUrl(m)).catch(() => undefined);
       })();
-    }).catch(() => undefined);
+    })
+      .then((unlisten) => {
+        unlistenLive = unlisten;
+      })
+      .catch(() => undefined);
     if (!isOverlayMode()) void appWin.show().catch(() => undefined);
+    cleanup = () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
+      if (trackingTimer) window.clearInterval(trackingTimer);
+      if (idleTimer) window.clearInterval(idleTimer);
+      unlistenLive?.();
+      currentModel = undefined;
+      pixiApp?.destroy(true);
+      pixiApp = undefined;
+    };
+    if (disposed) cleanup();
   })();
 
   // Zoom / scale character with mouse wheel and persist to widget record
@@ -792,6 +814,11 @@ export function mountLive2D(root: HTMLElement, id: string): void {
   });
 
   wrap.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  return () => {
+    disposed = true;
+    cleanup?.();
+  };
 }
 
 if (import.meta.hot) {
