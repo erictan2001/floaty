@@ -15,6 +15,7 @@ import {
   removeSelf,
   saveRecord,
   setWidgetSize,
+  toRecords,
   watchPluginEnabled,
   watchSettings,
   type WidgetRecord,
@@ -349,7 +350,8 @@ export function mountFolder(root: HTMLElement, id: string): () => void {
         }
         const index = items.indexOf(it);
         if (index >= 0) {
-          invoke("floaty_ungroup", { folderId: id, index, x: nx, y: ny })
+          const at = toRecords(nx, ny);
+          invoke("floaty_ungroup", { folderId: id, index, x: at.x, y: at.y })
             .then(() => reload())
             .catch(() => undefined);
         }
