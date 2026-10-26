@@ -734,7 +734,21 @@ pub(crate) fn recreate_window(app: &AppHandle, label: &str) {
         return;
     };
     close_widget_async(app, &rec.id);
-    show_widget(app, &rec);
+    // The close runs on the main thread from another thread, and the respawn is
+    // queued the same way: without waiting for the registry to drop the old
+    // window, the respawn can run first and the queued close then destroys the
+    // *new* window, leaving that widget with none at all.
+    for _ in 0..40 {
+        if app.get_webview_window(label).is_none() {
+            show_widget(app, &rec);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    log_line(
+        app,
+        &format!("power: the old {label} window never came down - leaving it alone"),
+    );
 }
 
 /// The record behind a per-widget window label, if that window has one.
