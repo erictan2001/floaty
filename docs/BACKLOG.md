@@ -25,7 +25,7 @@ do it; it is a promise not to forget it. When something is fixed, delete the lin
   everywhere else: `app_discovery_launch.rs` reads `"target"` at :692 and :745,
   `disk_drag.rs` reads `"path"`/`"target"` at :335, :502, :698, :784, :895
   and :899 (and writes them at :612, :757, :765, :807, :985, :1008), and
-  `settings_sync.rs` tries `["path", "target"]` at :549 and :635. An installed plugin
+  `desktop_actions.rs` tries `["path", "target"]` in the drop path. An installed plugin
   with `pathKey: "where"` therefore works in three places and is invisible in the rest, and the
   readers that guess can hand a non-path value to a shell verb. `plugins::path_key(kind)` is the
   accessor; the writers need the same rule, which is why this is a pass of its own rather than a

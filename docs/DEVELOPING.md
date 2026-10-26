@@ -124,6 +124,12 @@ src-tauri/src/
   palette.rs    the launcher: its window, its hotkey, and how a query is ranked
   screens.rs    the monitors in both spaces (physical and logical) and the mapping
   diagnostics.rs the log (rotation, tail, sizes) and the report the pane renders
+  settings_store.rs the settings type, its file, and the one writer
+  desktop_actions.rs drops, clipboard, the cut list and the global shortcuts
+  presence_rules.rs fullscreen and idle presence
+  updates.rs    the manual update check and install
+  arrangement.rs a display change: fit now, rearrange once the shape settles
+  drag_commands.rs where a dragged floatie is, and who owns the gesture
   icons.rs      stored icons: files named by content, and the urls that point at them
   undo.rs       what the last few changes were, so one press can put them back — and
                 what they left behind, so the next press can replay them

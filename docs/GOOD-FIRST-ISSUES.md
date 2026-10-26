@@ -44,7 +44,7 @@ Labels for all of them: `good first issue`, `help wanted`, plus one area label.
 - **Labels:** `good first issue`, `help wanted`, `area: backend`
 - **Body:**
   - BACKLOG.md, "Known bugs": *Names left behind by the refactor: `floaty_dropped_inner` (`disk_drag.rs:381`) is the whole group/merge path now, not a drop.*
-  - Definition at `src-tauri/src/disk_drag.rs:407`; callers at `:395`; the name is also quoted in a comment at `src-tauri/src/diagnostics_commands.rs:758`.
+  - Definition at `src-tauri/src/disk_drag.rs:407`; callers at `:395`; the name is also quoted in a comment in `src-tauri/src/drag_commands.rs`.
   - Pick a name that says "group/merge" (for example `group_on_drop`), rename the fn and the three references, and fix the doc comment at `:381`.
 - **Acceptance:** `grep -rn floaty_dropped_inner src-tauri` returns nothing; `cargo test --lib` and `cargo clippy -- -D warnings` pass (run from `src-tauri`, with the app closed).
 
@@ -68,7 +68,7 @@ Labels for all of them: `good first issue`, `help wanted`, plus one area label.
 - **Install-button file dialog:** cannot be driven headlessly, so the acceptance check needs a person at a desktop.
 - **Per-core CPU and disk/network rows:** new sampling in `sysmon.rs` plus UI rows.
 - **`store::is_dead` / tombstone rules:** correctness-sensitive store invariants.
-- **Path key in writers (`disk_drag.rs`, `settings_sync.rs`):** a pass of its own, per the backlog.
+- **Path key in writers (`disk_drag.rs`, `desktop_actions.rs`):** a pass of its own, per the backlog.
 - **`verify/panel-drag.mjs` sampling:** needs a desktop run to validate.
 - **Release and signing items:** need repository secrets or a clean machine.
 

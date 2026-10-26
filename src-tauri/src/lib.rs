@@ -27,8 +27,20 @@ pub(crate) use logging::*;
 mod store;
 pub(crate) use store::*;
 
-mod settings_sync;
-pub(crate) use settings_sync::*;
+mod asset_scope;
+pub(crate) use asset_scope::*;
+
+mod settings_store;
+pub(crate) use settings_store::*;
+
+mod desktop_actions;
+pub(crate) use desktop_actions::*;
+
+mod updates;
+pub(crate) use updates::*;
+
+mod presence_rules;
+pub(crate) use presence_rules::*;
 
 mod start_on_boot;
 pub(crate) use start_on_boot::*;
@@ -71,6 +83,12 @@ pub(crate) use desktop_files::*;
 
 mod diagnostics_commands;
 pub(crate) use diagnostics_commands::*;
+
+mod arrangement;
+pub(crate) use arrangement::*;
+
+mod drag_commands;
+pub(crate) use drag_commands::*;
 
 pub(crate) use audio::{
     floaty_audio_set_fps, floaty_audio_start, floaty_audio_status, floaty_audio_stop,
