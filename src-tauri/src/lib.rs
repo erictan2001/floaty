@@ -1057,6 +1057,22 @@ mod tests {
         ));
     }
 
+    /// A watcher event names what changed; only the folder it landed in has to
+    /// be read again. Reading every folder for one file is what one save in one
+    /// folder used to cost.
+    #[test]
+    fn a_watcher_burst_only_reaches_the_folder_it_names() {
+        use std::path::Path;
+        let games = Path::new(r"C:\Desktop\Games");
+        assert!(change_touches(games, &["Games".to_string()]));
+        assert!(change_touches(games, &[r"Games\new.lnk".to_string()]));
+        assert!(change_touches(games, &[r"Games\sub\new.lnk".to_string()]));
+        assert!(change_touches(games, &[r"games\new.lnk".to_string()]));
+        assert!(!change_touches(games, &[r"Apps\new.lnk".to_string()]));
+        assert!(!change_touches(games, &["notes.txt".to_string()]));
+        assert!(!change_touches(games, &[]));
+    }
+
     /// The grouping itself, on disk: the dragged file is *in* the new folder
     /// afterwards, and its floatie points at the new path.
     #[test]

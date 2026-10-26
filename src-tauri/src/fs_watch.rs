@@ -102,13 +102,31 @@ pub fn retarget(root: Option<String>, app: AppHandle) {
     });
 }
 
+/// One debounced batch of changes, from the watcher to the reconcile.
+///
+/// `changes` names every entry that appeared, went away or was renamed,
+/// relative to the watched root. `full` means the names cannot be trusted
+/// (the notification queue overflowed, or the watch had to restart), so every
+/// folder has to be read again.
+#[derive(Default)]
+pub(crate) struct Burst {
+    pub(crate) renames: Renames,
+    pub(crate) changes: Vec<String>,
+    pub(crate) full: bool,
+}
+
 /// The app-facing half of the loop: log what happens, and hand every batch to
 /// the reconcile (`crate::root_changed`).
 fn watch_root(root: String, stop: Arc<AtomicBool>, app: AppHandle) {
     let mut log = |msg: &str| crate::log_line(&app, msg);
-    let mut sink = |renames: Renames, touched: bool| {
-        if touched || !renames.is_empty() {
-            crate::root_changed(&app, &renames);
+    let mut sink = |burst: Burst| {
+        if burst.full || !burst.changes.is_empty() || !burst.renames.is_empty() {
+            let scope = if burst.full {
+                None
+            } else {
+                Some(burst.changes.as_slice())
+            };
+            crate::root_changed(&app, &burst.renames, scope);
         }
     };
     watch_loop(&root, &stop, &mut sink, &mut log);
@@ -131,13 +149,13 @@ fn watch_dir_session(
     dir: &mut DirWatch,
     root: &str,
     stop: &AtomicBool,
-    sink: &mut dyn FnMut(Renames, bool),
+    sink: &mut dyn FnMut(Burst),
     log: &mut dyn FnMut(&str),
 ) -> bool {
     let mut started: Option<Instant> = None;
     let mut last = Instant::now();
     let mut renames: Renames = Vec::new();
-    let mut touched = false;
+    let mut changes: Vec<String> = Vec::new();
     let mut overflowed = false;
     let mut pending_old: Option<String> = None;
     let root_path = std::path::PathBuf::from(root);
@@ -149,12 +167,12 @@ fn watch_dir_session(
         if dir.wait(POLL) {
             match dir.drain(&mut pending_old) {
                 Ok(batch) => {
-                    if batch.touched || !batch.renames.is_empty() {
+                    if batch.touched || !batch.renames.is_empty() || !batch.changes.is_empty() {
                         let now = Instant::now();
                         started.get_or_insert(now);
                         last = now;
-                        touched |= batch.touched;
                         overflowed |= batch.overflow;
+                        changes.extend(batch.changes);
                         renames.extend(batch.renames.into_iter().map(|(from, to)| {
                             let join =
                                 |name: &str| root_path.join(name).to_string_lossy().to_string();
@@ -168,12 +186,18 @@ fn watch_dir_session(
                     // reconciles the whole root so a missed notification while
                     // the watch was down cannot leave a stale tile.
                     renames.clear();
-                    sink(Vec::new(), true);
+                    sink(Burst {
+                        full: true,
+                        ..Default::default()
+                    });
                     return false;
                 }
             }
             if dir.issue().is_err() {
-                sink(Vec::new(), true);
+                sink(Burst {
+                    full: true,
+                    ..Default::default()
+                });
                 return false;
             }
         }
@@ -184,9 +208,12 @@ fn watch_dir_session(
             if overflowed {
                 log("watch: change queue overflowed — reconciling the whole root");
             }
-            sink(burst, touched);
+            sink(Burst {
+                renames: burst,
+                changes: std::mem::take(&mut changes),
+                full: overflowed,
+            });
             started = None;
-            touched = false;
             overflowed = false;
         }
     }
@@ -198,7 +225,7 @@ fn watch_dir_session(
 fn watch_loop(
     root: &str,
     stop: &AtomicBool,
-    sink: &mut dyn FnMut(Renames, bool),
+    sink: &mut dyn FnMut(Burst),
     log: &mut dyn FnMut(&str),
 ) {
     let mut reported_missing = false;
@@ -214,7 +241,10 @@ fn watch_loop(
                 if recovered {
                     // The folder was missing when the watch started; changes
                     // made while it was away were never queued, so reconcile now.
-                    sink(Vec::new(), true);
+                    sink(Burst {
+                        full: true,
+                        ..Default::default()
+                    });
                 }
                 dir
             }
@@ -253,6 +283,10 @@ struct Batch {
     pub(crate) overflow: bool,
     /// Renames, paired old → new.
     pub(crate) renames: Renames,
+    /// Every changed name relative to the watched root (both sides of a rename).
+    /// The reconcile uses these to rescan only the folder that actually moved,
+    /// instead of reading every folder on the desktop for one file.
+    pub(crate) changes: Vec<String>,
 }
 
 #[cfg(windows)]
@@ -428,6 +462,7 @@ fn parse_batch(buffer: &[u8], bytes: u32, pending: &mut Option<String>) -> Batch
         touched: false,
         overflow: false,
         renames: Vec::new(),
+        changes: Vec::new(),
     };
     let end = (bytes as usize).min(buffer.len());
     if end == 0 {
@@ -439,14 +474,17 @@ fn parse_batch(buffer: &[u8], bytes: u32, pending: &mut Option<String>) -> Batch
     let mut offset = 0usize;
     while let Some((next, action, name)) = parse_notification_entry(buffer, offset, end) {
         if action == FILE_ACTION_RENAMED_OLD_NAME.0 {
+            batch.changes.push(name.clone());
             *pending = Some(name);
         } else if action == FILE_ACTION_RENAMED_NEW_NAME.0 {
+            batch.changes.push(name.clone());
             match pending.take() {
                 Some(old) => batch.renames.push((old, name)),
                 None => batch.touched = true,
             }
         } else if action == FILE_ACTION_ADDED.0 || action == FILE_ACTION_REMOVED.0 {
             *pending = None;
+            batch.changes.push(name);
             batch.touched = true;
         } else if action == FILE_ACTION_MODIFIED.0 {
             *pending = None;
@@ -468,7 +506,9 @@ struct DirWatch;
 #[cfg(not(windows))]
 struct Batch {
     pub(crate) touched: bool,
+    pub(crate) overflow: bool,
     pub(crate) renames: Renames,
+    pub(crate) changes: Vec<String>,
 }
 
 /// Directory watching is Windows-only in this app; elsewhere the loop just
@@ -496,12 +536,12 @@ mod tests {
 
     /// Collect batches until one satisfies `ok`, or the deadline passes.
     fn wait_for(
-        rx: &Receiver<(Renames, bool)>,
+        rx: &Receiver<Burst>,
         timeout: Duration,
-        mut ok: impl FnMut(&(Renames, bool)) -> bool,
-    ) -> Option<(Renames, bool)> {
+        mut ok: impl FnMut(&Burst) -> bool,
+    ) -> Option<Burst> {
         let deadline = Instant::now() + timeout;
-        let mut seen: Vec<(Renames, bool)> = Vec::new();
+        let mut seen: Vec<Burst> = Vec::new();
         while Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(batch) => {
@@ -567,6 +607,15 @@ mod tests {
             batch.renames,
             vec![("before.txt".to_string(), "after.txt".to_string())]
         );
+        // Every changed name is kept, both sides of the rename included: this
+        // is what lets a reconcile rescan one folder instead of all of them.
+        for name in ["added.txt", "before.txt", "after.txt"] {
+            assert!(
+                batch.changes.iter().any(|c| c == name),
+                "{name} missing from {:?}",
+                batch.changes
+            );
+        }
 
         // A lone NEW_NAME is a file moved in from outside, not a pair.
         let lone = chain(&[(FILE_ACTION_RENAMED_NEW_NAME.0, "arrived.txt")]);
@@ -612,8 +661,8 @@ mod tests {
         let thread_stop = stop.clone();
         std::thread::spawn(move || {
             let mut log = |_msg: &str| {};
-            let mut sink = move |renames: Renames, touched: bool| {
-                let _ = tx.send((renames, touched));
+            let mut sink = move |burst: Burst| {
+                let _ = tx.send(burst);
             };
             watch_loop(&root, &thread_stop, &mut sink, &mut log);
         });
@@ -633,8 +682,8 @@ mod tests {
         // Let the queue settle, then rename a known file and insist on the pair.
         let _ = wait_for(&rx, Duration::from_millis(400), |_| false);
         std::fs::write(dir.join("moving.txt"), b"x").expect("file to move");
-        let seen_create = wait_for(&rx, Duration::from_secs(5), |(renames, touched)| {
-            *touched || !renames.is_empty()
+        let seen_create = wait_for(&rx, Duration::from_secs(5), |burst| {
+            !burst.changes.is_empty() || !burst.renames.is_empty()
         });
         assert!(
             seen_create.is_some(),
@@ -642,14 +691,17 @@ mod tests {
         );
 
         std::fs::rename(dir.join("moving.txt"), dir.join("moved.txt")).expect("rename");
-        let paired = wait_for(&rx, Duration::from_secs(5), |(renames, _)| {
-            renames.iter().any(|(from, _)| from.ends_with("moving.txt"))
+        let paired = wait_for(&rx, Duration::from_secs(5), |burst| {
+            burst
+                .renames
+                .iter()
+                .any(|(from, _)| from.ends_with("moving.txt"))
         });
         // The names come off the wire *relative to the watched directory*: the
         // pair has to arrive as full paths, or nothing can match a record — the
         // live version of this shipped once and quietly re-created the floatie
         // at a new spot instead of moving it.
-        let (from, to) = paired.expect("the watch did not pair the rename").0[0].clone();
+        let (from, to) = paired.expect("the watch did not pair the rename").renames[0].clone();
         assert_eq!(std::path::Path::new(&from), dir.join("moving.txt"));
         assert_eq!(std::path::Path::new(&to), dir.join("moved.txt"));
 

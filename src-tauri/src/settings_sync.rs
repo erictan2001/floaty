@@ -306,7 +306,7 @@ pub(crate) fn floaty_confirm_root(root: String, app: AppHandle) -> RootGuard {
     if changed {
         // Adopted now means mirrored now: waiting for the next launch would leave the
         // user looking at the empty desktop they just agreed to.
-        let _ = sync_root(None, app.clone(), true);
+        let _ = sync_root(None, app.clone(), true, None);
     }
     app.emit("floaty-settings-changed", &settings).ok();
     log_line(
@@ -623,7 +623,7 @@ pub(crate) fn floaty_drop_paths(
     }
     // The watcher's own pass: whatever arrived gets a record, the same way a file dropped
     // into the root from Explorer always has.
-    let _ = sync_root(None, app.clone(), true);
+    let _ = sync_root(None, app.clone(), true, None);
     // ...and then the records are placed where the pointer was, cascading so that five
     // files dropped together are not five floaties under one another.
     let placed = place_arrived(&app, &landed, x, y);

@@ -997,17 +997,34 @@ pub(crate) fn floaty_sync_files(
     root: Option<String>,
     app: AppHandle,
 ) -> Result<FilesSyncResult, String> {
-    sync_root(root, app, false)
+    sync_root(root, app, false, None)
+}
+
+/// Did a watcher burst reach this folder? The names are relative to the root
+/// (`Games`, `Games\new.lnk`), so a folder is affected when the first component
+/// is its own name. Case-insensitive like every other path comparison here.
+pub(crate) fn change_touches(dir: &std::path::Path, changed: &[String]) -> bool {
+    let Some(name) = dir.file_name() else {
+        return true;
+    };
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    changed.iter().any(|rel| {
+        rel.split(['\\', '/'])
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(&name))
+    })
 }
 
 /// Mirror the pointed root: bring the desktop in step with what the folder
 /// actually holds — add what is new, refresh what moved, and (the half that
 /// makes this a mirror rather than an importer) take off the desktop what is no
-/// longer there. `quiet` keeps the watcher's no-op passes out of the log.
+/// longer there. `quiet` keeps the watcher's no-op passes out of the log, and
+/// `changed` scopes a watcher pass to the folders its burst named.
 pub(crate) fn sync_root(
     root: Option<String>,
     app: AppHandle,
     quiet: bool,
+    changed: Option<&[String]>,
 ) -> Result<FilesSyncResult, String> {
     let _sync = SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let started = std::time::Instant::now();
@@ -1151,6 +1168,17 @@ pub(crate) fn sync_root(
             let path_str = path.to_string_lossy().to_string();
             on_disk.insert(path_str.to_ascii_lowercase());
             if path.is_dir() {
+                // A watcher burst names what changed, so only that folder's
+                // items can be different. A full sync (`changed` is None) still
+                // reads every folder — that is the sync button, a root change
+                // and every recovery pass.
+                let known_folder = existing_map
+                    .get(&path_str)
+                    .is_some_and(|(_, kind)| kind == "folder");
+                if known_folder && changed.is_some_and(|paths| !change_touches(&path, paths)) {
+                    dirs_count += 1;
+                    continue;
+                }
                 let Ok(mut items) = try_scan_folder_items(&path) else {
                     if !quiet {
                         log_line(
@@ -1451,14 +1479,18 @@ pub(crate) fn apply_root_renames(app: &AppHandle, renames: &[(String, String)]) 
 ///
 /// Runs on the watcher thread, so it does the cheap thing and lets the reconcile
 /// decide what actually changed: move the floaties whose files were renamed,
-/// then re-run the mirror — which is idempotent, so a redundant call costs one
-/// `read_dir` and nothing else.
-pub(crate) fn root_changed(app: &AppHandle, renames: &[(String, String)]) {
+/// then re-run the mirror. `changed` is the burst's relative names when they can
+/// be trusted; the reconcile then only reads the folders they name.
+pub(crate) fn root_changed(
+    app: &AppHandle,
+    renames: &[(String, String)],
+    changed: Option<&[String]>,
+) {
     apply_root_renames(app, renames);
     // The reconcile reports for itself when it moved something, and
     // `apply_root_renames` reports the renames; what needs saying here is only
     // when the mirror could not run at all (a root gone read-only, a drive out).
-    if let Err(err) = sync_root(None, app.clone(), true) {
+    if let Err(err) = sync_root(None, app.clone(), true, changed) {
         log_line(app, &format!("watch: mirror failed: {err}"));
     }
 }
