@@ -21,6 +21,7 @@ export interface Live2dModelEntry {
 
 let cachedModels: Live2dModelEntry[] = [];
 let scanListeners: Array<() => void> = [];
+let autoScannedRoot = "";
 
 export function getCachedModels(): Live2dModelEntry[] {
   return cachedModels;
@@ -255,6 +256,7 @@ export const live2dPlugin: FloatyPlugin = {
     updateCount();
 
     const runScan = async () => {
+      autoScannedRoot = currentRoot;
       await ctx.safe("scan models", () => scanModels(currentRoot));
       updateCount();
       await ctx.refreshWidgets();
@@ -290,8 +292,9 @@ export const live2dPlugin: FloatyPlugin = {
     row.append(label, path, browse, scanBtn);
     card.append(row, count);
 
-    // Initial scan if root folder was already saved
-    if (currentRoot && cachedModels.length === 0) {
+    // Initial scan if root folder was already saved. Once per root: a scan that
+    // finds nothing must not trigger another scan through refreshWidgets().
+    if (currentRoot && cachedModels.length === 0 && autoScannedRoot !== currentRoot) {
       void runScan();
     }
   },
