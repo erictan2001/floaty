@@ -100,9 +100,17 @@ pub(crate) fn fingerprint(bytes: &[u8]) -> String {
     format!("{hash:016x}{:x}", bytes.len())
 }
 
+/// One write at a time. Two resolvers can produce the same icon bytes together
+/// (the same app floated twice, a folder scan racing the background upgrade);
+/// both would write the same temp name, and the loser's rename fails on a file
+/// the winner already moved — which used to turn a perfectly good icon into an
+/// inline data url in the store.
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Write a PNG into the icons folder and return its url. Identical bytes are
 /// one file; an existing file is never rewritten.
 pub fn store_bytes(bytes: &[u8]) -> Option<String> {
+    let _one = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let name = format!("{}.png", fingerprint(bytes));
@@ -503,6 +511,35 @@ mod tests {
         assert_eq!(pixel_size(&first), Some((256, 256)));
         assert!(!is_low_res(&first));
         assert!(!is_missing(&first));
+    }
+
+    /// Two resolvers can finish the same icon at the same time (the same app
+    /// floated twice, a folder scan racing the startup upgrade). The write must
+    /// still be one file, not a lost rename and an inline data url.
+    #[test]
+    fn the_same_icon_stored_at_once_is_one_file_not_an_inline_fallback() {
+        let (dir, _guard) = use_dir("store-race");
+        let bytes = png_bytes(64, 64);
+        let urls: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| store_bytes(&bytes)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap().expect("every writer gets the file"))
+                .collect()
+        });
+        assert!(
+            urls.windows(2).all(|pair| pair[0] == pair[1]),
+            "every writer must get the same url: {urls:?}"
+        );
+        let files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(files.len(), 1, "one icon, one file: {files:?}");
+        assert!(!files.iter().any(|f| f.ends_with(".tmp")));
     }
 
     /// The resolvers build PNG data urls of their own and hand them to code that writes them

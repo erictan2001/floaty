@@ -201,6 +201,12 @@ pub(crate) fn path_stamp(path: &str) -> Option<(u64, u64)> {
 pub(crate) static ICON_CACHE: std::sync::LazyLock<Mutex<HashMap<String, CachedIcon>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// One resolution batch at a time. At startup every app floatie asks for its
+/// icon through `floaty_icon`; without this each call ran its own PowerShell
+/// even though the first was about to fill the cache for all of them. The
+/// cache is the shared result, so a waiting caller finds its icon there.
+static RESOLVE_LOCK: Mutex<()> = Mutex::new(());
+
 pub(crate) fn cache_icon(path: &str, data: &str) {
     if let Ok(mut guard) = ICON_CACHE.lock() {
         guard.insert(
@@ -230,6 +236,9 @@ pub(crate) fn resolve_icons_batch(paths: &[String], force: bool) -> HashMap<Stri
 }
 
 pub(crate) fn resolve_icons_batch_raw(paths: &[String], force: bool) -> HashMap<String, String> {
+    // Single-flight: a caller that waited for the batch ahead of it finds the
+    // icons in ICON_CACHE instead of launching a second resolver.
+    let _flight = RESOLVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut results = HashMap::new();
     let mut needed = Vec::new();
 
