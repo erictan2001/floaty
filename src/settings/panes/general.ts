@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { action, actionRow, el, group, note, textBlock, toggleCard } from "../dom";
 import type { Pane } from "../pane";
+import { acceleratorFrom, isModifierCode, prettyAccelerator } from "../shortcut";
 import { settings, updateSettings } from "../store";
 
 /** What the backend says about the launcher hotkey. */
@@ -174,48 +175,124 @@ export const generalPane: Pane = {
       "One key opens a search over your applications, the files in your pointed folder, and everything already floating on the desktop. Type, then Enter to open the top row — arrow keys move down the list, Escape closes it.",
     );
     const keyRow = el("div", "set-row");
-    const keyInput = el("input", "search");
+    const keyInput = el("input", "key-input");
     keyInput.type = "text";
+    keyInput.readOnly = true;
     keyInput.spellcheck = false;
-    keyInput.value = settings().palette_shortcut;
-    keyInput.placeholder = "Ctrl+Alt+Space";
-    const keyStatus = note("");
+    keyInput.setAttribute("aria-label", "Launcher key");
+    keyInput.title = "Click, then press the combination";
+    let current = settings().palette_shortcut;
+    keyInput.value = prettyAccelerator(current);
+    const keyStatus = el("p", "set-sub set-status");
+    let listening = false;
+
     const describeKey = (state: PaletteState | undefined): void => {
       if (!state) {
         keyStatus.textContent = "the launcher key could not be read";
         return;
       }
+      const shown = prettyAccelerator(state.accelerator);
       keyStatus.textContent = state.live
-        ? `${state.accelerator} is held by floaty — press it anywhere.`
-        : `${state.accelerator} is not registered: another app may already own it. The tray's “Search…” still opens the palette.`;
+        ? `${shown} is held by floaty — press it anywhere.`
+        : `${shown} is not registered: another app may already own it. The tray's “Search…” still opens the palette.`;
     };
-    const commitKey = async (): Promise<void> => {
-      const wanted = keyInput.value.trim();
-      if (!wanted) {
-        keyInput.value = settings().palette_shortcut;
+
+    /** Put the field back to the key in force. */
+    const stopListening = (): void => {
+      listening = false;
+      keyInput.classList.remove("listening");
+      keyInput.value = prettyAccelerator(current);
+    };
+
+    /** Read back what the backend actually holds, rather than assuming. */
+    const refreshKey = (): void => {
+      void invoke<PaletteState>("floaty_palette_state")
+        .then((state) => {
+          current = state?.accelerator ?? current;
+          if (!listening) keyInput.value = prettyAccelerator(current);
+          describeKey(state);
+        })
+        .catch(() => describeKey(undefined));
+    };
+
+    const applyCaptured = async (accelerator: string): Promise<void> => {
+      listening = false;
+      keyInput.classList.remove("listening");
+      keyInput.value = prettyAccelerator(accelerator);
+      await updateSettings({ palette_shortcut: accelerator }, { now: true });
+      const state = await invoke<PaletteState>("floaty_palette_state").catch(() => undefined);
+      current = state?.accelerator ?? settings().palette_shortcut;
+      keyInput.value = prettyAccelerator(current);
+      describeKey(state);
+      keyInput.blur();
+    };
+
+    keyInput.addEventListener("focus", () => {
+      listening = true;
+      keyInput.classList.add("listening");
+      keyInput.value = "press a key…";
+      keyStatus.textContent = "hold Ctrl, Alt or Win with another key — Esc cancels.";
+    });
+    keyInput.addEventListener("blur", () => {
+      if (!listening) return;
+      stopListening();
+      refreshKey();
+    });
+    keyInput.addEventListener("keydown", (e) => {
+      if (!listening) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        stopListening();
+        refreshKey();
+        keyInput.blur();
         return;
       }
-      // The backend keeps the working key when a combination does not parse, so
-      // read back what is actually in force rather than assuming.
-      await updateSettings({ palette_shortcut: wanted }, { now: true });
-      const state = await invoke<PaletteState>("floaty_palette_state").catch(() => undefined);
-      keyInput.value = state?.accelerator ?? settings().palette_shortcut;
-      describeKey(state);
-    };
-    keyInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") void commitKey();
-      if (e.key === "Escape") keyInput.value = settings().palette_shortcut;
+      // Tab and Shift+Tab leave the field. Capturing them would trap focus.
+      if (e.code === "Tab" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        stopListening();
+        refreshKey();
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      if (isModifierCode(e.code)) {
+        // A modifier on its own is not the shortcut yet: show what is held.
+        const held = [
+          e.ctrlKey ? "Ctrl" : "",
+          e.altKey ? "Alt" : "",
+          e.shiftKey ? "Shift" : "",
+          e.metaKey ? "Win" : "",
+        ].filter(Boolean);
+        keyInput.value = held.length ? `${held.join(" + ")} + …` : "press a key…";
+        return;
+      }
+      const captured = acceleratorFrom({
+        code: e.code,
+        ctrl: e.ctrlKey,
+        alt: e.altKey,
+        shift: e.shiftKey,
+        meta: e.metaKey,
+      });
+      if (!captured.ok) {
+        keyStatus.textContent =
+          captured.reason === "modifier"
+            ? "hold Ctrl, Alt or Win as well — a bare key would take that key from every app."
+            : "that key cannot be the launcher key; try a letter, number, F1–F12 or Space.";
+        keyInput.value = "press a key…";
+        return;
+      }
+      void applyCaptured(captured.accelerator);
     });
-    keyInput.addEventListener("blur", () => void commitKey());
     keyRow.append(
-      textBlock("Launcher key", "A key combination, like Ctrl+Alt+Space or Win+Shift+K."),
+      textBlock("Launcher key", "Click, then press the keys — hold Ctrl, Alt or Win."),
       keyInput,
     );
-    void invoke<PaletteState>("floaty_palette_state")
-      .then(describeKey)
-      .catch(() => describeKey(undefined));
+    refreshKey();
     const launcherRow = actionRow();
-    launcherRow.append(action("show the launcher", () => invoke("floaty_show_palette")));
+    launcherRow.append(
+      action("show the launcher", () => invoke("floaty_show_palette"), { cls: "pill ghost" }),
+    );
     launcher.body.append(keyRow, keyStatus, launcherRow);
 
     const arrange = group(

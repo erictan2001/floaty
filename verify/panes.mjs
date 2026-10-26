@@ -60,6 +60,10 @@ export const STUB = `(() => {
   const answer = async (cmd, args) => {
     switch (cmd) {
       case "floaty_get_settings": return settings;
+      case "floaty_set_settings": {
+        Object.assign(settings, args && args.settings ? args.settings : {});
+        return settings;
+      }
       case "floaty_undo_state": return { depth: 2, label: "delete" };
       case "floaty_plugins": return [
         plugin("note", "Note"), plugin("clock", "Clock"),
@@ -130,7 +134,9 @@ export const STUB = `(() => {
       };
       case "floaty_open_log_folder": return null;
       case "floaty_rehome_floaties": return 0;
-      case "floaty_palette_state": return { accelerator: "Ctrl+Alt+Space", live: true, visible: false };
+      case "floaty_palette_state": return {
+        accelerator: settings.palette_shortcut, live: true, visible: false,
+      };
       case "floaty_presence": return {
         hidden: false, quiet: false, reason: null, idle_ms: 42000,
         foreground: "1536x864 at 0,0", foreground_shell: false, foreground_ours: true,
@@ -311,6 +317,38 @@ try {
       `${still ? "ok  " : "FAIL"} motion   scroll/focus before=${edit.before} after=${edit.after} ` +
         `kept=${edit.kept} focused=${edit.focused} redrawn=${edit.redrawn} ` +
         `viewport=${edit.height} content=${edit.content}`,
+    );
+  }
+
+  // The launcher key listens to real keys: click the field, press Ctrl+Alt+K,
+  // and the page must save the accelerator, show it as Win-style text, and let
+  // the field go. A synthetic KeyboardEvent would not prove the keydown path.
+  if (PANES.includes("general")) {
+    await session.send("Page.navigate", { url: `${base}/settings.html?pane=general#/general` });
+    await drawUntil("#/general");
+    await session.evaluate(`(() => {
+      document.querySelector(".key-input").focus();
+      return document.activeElement?.classList.contains("key-input");
+    })()`);
+    await session.key("ctrl+alt+k");
+    await new Promise((r) => setTimeout(r, 400));
+    const capture = await session.evaluate(`(() => {
+      const field = document.querySelector(".key-input");
+      const status = document.querySelector(".set-status");
+      return {
+        value: field?.value ?? null,
+        focused: document.activeElement === field,
+        status: status?.textContent ?? "",
+      };
+    })()`);
+    const captured =
+      capture.value === "Ctrl + Alt + K" &&
+      !capture.focused &&
+      capture.status.includes("is held by floaty");
+    if (!captured) problems.push("general (key capture)");
+    console.log(
+      `${captured ? "ok  " : "FAIL"} general  key capture value=${JSON.stringify(capture.value)} ` +
+        `focused=${capture.focused} status=${JSON.stringify(capture.status)}`,
     );
   }
 } finally {
