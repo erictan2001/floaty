@@ -647,7 +647,10 @@ pub(crate) fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     log_line(app, "creating settings window");
     let w = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Floaty Settings")
-        .inner_size(500.0, 660.0)
+        // Wide enough for the section rail and the pane beside it; still fits a
+        // 1366x768 laptop. The minimum keeps the rail from squeezing the pane.
+        .inner_size(760.0, 680.0)
+        .min_inner_size(560.0, 460.0)
         .transparent(false)
         .decorations(true)
         .resizable(true)

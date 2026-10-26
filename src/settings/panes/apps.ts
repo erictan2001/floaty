@@ -1,7 +1,7 @@
 /**
- * The Apps tab: the shortcuts found on this machine, searchable, one press to
+ * The Apps section: the shortcuts found on this machine, searchable, one press to
  * float one. The scan is the expensive part of the old page — it walks the Start
- * Menu — so it runs when this tab is first opened rather than on every settings
+ * Menu — so it runs when this section is first opened rather than on every settings
  * launch, and its results scroll inside the pane instead of pushing everything
  * else down the page.
  */
@@ -109,7 +109,7 @@ function draw(): void {
   host.append(section.root);
 
   renderResults();
-  // The list is the whole point of the tab, so fill it on the first visit.
+  // The list is the whole point of the section, so fill it on the first visit.
   if (found === null && !scanning) void scan();
 }
 

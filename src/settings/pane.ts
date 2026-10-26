@@ -1,8 +1,8 @@
-/** One screen of the settings window: a tab, a heading, and its own render. */
+/** One section of the settings window: a rail entry, a heading, and its own render. */
 export interface Pane {
-  /** Tab id and hash route (`#/desktop`). */
+  /** Section id and hash route (`#/desktop`). */
   id: string;
-  /** Tab text. */
+  /** Rail label. */
   label: string;
   /** Heading at the top of the pane. */
   title: string;

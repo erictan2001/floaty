@@ -3,7 +3,7 @@
  *
  * One entry per setting: what it is called, its range, and the key it writes.
  * A row is built fresh each time it is asked for, so the same setting may be
- * shown in two places (a plugin's card and the Motion tab) without one of them
+ * shown in two places (a plugin's card and the Motion section) without one of them
  * stealing the other's DOM node — which is how a row used to vanish from a card
  * the moment that card re-rendered.
  */

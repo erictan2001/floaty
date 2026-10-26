@@ -61,14 +61,15 @@ export async function loadSettings(): Promise<void> {
 }
 
 export async function reloadWidgets(): Promise<void> {
-  const list = await safe("load floaties", () => invoke<WidgetRecord[]>("floaty_list"));
-  widgetState = list ?? [];
+  const list = (await safe("load floaties", () => invoke<WidgetRecord[]>("floaty_list"))) ?? [];
+  if (JSON.stringify(list) === JSON.stringify(widgetState)) return;
+  widgetState = list;
   notify();
 }
 
 export async function reloadPlugins(): Promise<void> {
   const list = await safe("load plugins", () => invoke<PluginManifestEntry[]>("floaty_plugins"));
-  if (!list) return;
+  if (!list || JSON.stringify(list) === JSON.stringify(pluginState)) return;
   pluginState = list;
   notify();
 }
@@ -107,7 +108,7 @@ async function flushSettings(): Promise<void> {
   // asked for while the app runs with the one it actually accepted.
   if (stored) {
     const differs = (Object.keys(stored) as (keyof FloatSettings)[]).some(
-      (key) => sent[key] !== stored[key],
+      (key) => JSON.stringify(sent[key]) !== JSON.stringify(stored[key]),
     );
     settingsState = { ...settingsState, ...stored };
     if (differs) notify();
@@ -124,7 +125,7 @@ export async function addFloatie(kind: string): Promise<WidgetRecord | undefined
   return safe("add floatie", () => invoke<WidgetRecord>("floaty_create", { kind }));
 }
 
-/** Float an app by its shortcut path (the Apps tab). */
+/** Float an app by its shortcut path (the Apps section). */
 export async function addLauncher(name: string, path: string): Promise<WidgetRecord | undefined> {
   return safe("float app", () => invoke<WidgetRecord>("floaty_add_launcher", { name, path }));
 }

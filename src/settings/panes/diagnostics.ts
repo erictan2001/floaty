@@ -340,7 +340,7 @@ async function draw(): Promise<void> {
     safe("read diagnostics", () => invoke<DiagnosticsReport>("floaty_diagnostics")),
     safe("read presence", () => invoke<PresenceReport>("floaty_presence")),
   ]);
-  // A tab click or a data change can re-render the pane while this call is in
+  // A section switch or a data change can re-render the pane while this call is in
   // flight, so the answer is only painted onto a host that is still the one asked.
   if (!host || !host.isConnected) return;
   if (!report) {

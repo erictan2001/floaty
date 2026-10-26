@@ -23,8 +23,8 @@ function draw(): void {
 function addGroup(): HTMLElement {
   const off = disabledKinds();
   const group_ = group("New floatie", "A button per plugin that can make one.");
-  // `set-add` softens the pills: filled violet is the tab bar's language, and
-  // five of them next to six tabs read as a second row of navigation.
+  // `set-add` softens the pills: filled violet is the rail's active language,
+  // and a grid of them should read as actions, not as a second navigation.
   const row = actionRow();
   row.classList.add("set-add");
   const entries = manifestEntries().filter((entry) => entry.add_label && !off.has(entry.id));

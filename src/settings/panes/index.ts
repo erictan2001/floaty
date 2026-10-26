@@ -8,19 +8,26 @@ import { generalPane } from "./general";
 import { diagnosticsPane } from "./diagnostics";
 
 /**
- * The tabs of the settings window, in the order they appear.
+ * The sections of the settings rail, and the panes inside them.
  *
- * One pane per question the user arrives with — "what is on my desktop?", "how
- * do I add an app?", "why does it move like that?", "what is installed?" — so
- * the window never shows more than one of them at a time. The first is where a
- * fresh window lands.
+ * A fresh window lands on General. The groups are the questions a person
+ * arrives with: "how should it behave?", "what is on my desktop?", "which
+ * parts are installed/need looking at?".
  */
-export const PANES: Pane[] = [
-  desktopPane,
-  appsPane,
-  filesPane,
-  motionPane,
-  pluginsPane,
-  generalPane,
-  diagnosticsPane,
+export const PANE_GROUPS: Array<{ label: string; panes: Pane[] }> = [
+  {
+    label: "Preferences",
+    panes: [generalPane, motionPane],
+  },
+  {
+    label: "Desktop",
+    panes: [desktopPane, appsPane, filesPane],
+  },
+  {
+    label: "System",
+    panes: [pluginsPane, diagnosticsPane],
+  },
 ];
+
+/** Flat list, in rail order. The first pane is the default. */
+export const PANES: Pane[] = PANE_GROUPS.flatMap((group) => group.panes);

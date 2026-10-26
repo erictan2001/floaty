@@ -5,7 +5,7 @@
  * which meant they were missing entirely whenever that card was not drawn, and
  * impossible to find if you did not know to look inside a plugin. They apply to
  * every desktop item (app icons, file icons and folders alike), so they live in
- * their own tab, one group per thing they change.
+ * their own section, one group per thing they change.
  */
 
 import { card, group } from "../dom";
