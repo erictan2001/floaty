@@ -418,11 +418,24 @@ pub fn manifest(disabled: &[String], approved: impl Fn(&str) -> bool) -> Vec<Plu
 ///
 /// This is the shape check `uninstall` needs, and it is deliberately weaker than
 /// `valid_id`: a plugin whose manifest was broken by hand is exactly the one that
-/// needs removing, so its folder cannot be held to the grammar its manifest is. The
-/// whole of the rule is that the name must not escape the plugins folder — the same
-/// question the installer answers when it writes `plugins_dir/<id>`.
+/// needs removing, so its folder cannot be held to the grammar its manifest is.
+/// The whole of the rule is that the name must be exactly one normal path
+/// component: no separators, no `.`/`..`, and no drive prefix. Joining a name
+/// that passes this can only ever address a direct child of the plugins folder.
 pub(crate) fn is_plugin_folder_name(id: &str) -> bool {
-    !id.is_empty() && !id.contains(['/', '\\']) && !id.contains("..")
+    let mut parts = std::path::Path::new(id).components();
+    matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    )
+}
+
+/// The installer writes a plugin to `plugins/<manifest id>`, so a hand-dropped
+/// folder whose name is anything else would make approval hash one folder and
+/// the page import another.
+fn folder_matches_id(dir: &std::path::Path, id: &str) -> bool {
+    dir.file_name()
+        .is_some_and(|name| name.to_string_lossy() == id)
 }
 
 /// The plugin's `id`, or why it is not usable: 2-32 characters of `a-z`, `0-9`,
@@ -730,6 +743,17 @@ pub fn install_from(dir: &std::path::Path) -> (Vec<InstalledPlugin>, Vec<String>
     for plugin_dir in dirs {
         match read_plugin(&plugin_dir) {
             Ok(plugin) => {
+                if !folder_matches_id(&plugin_dir, &plugin.id) {
+                    rejected.push(format!(
+                        "{}: folder name does not match id {}",
+                        plugin_dir
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                        plugin.id
+                    ));
+                    continue;
+                }
                 if loaded.iter().any(|p: &InstalledPlugin| p.id == plugin.id) {
                     rejected.push(format!("{}: duplicate id", plugin.id));
                     continue;
@@ -1249,6 +1273,31 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 0, "examples/plugins holds no example at all");
+    }
+
+    #[test]
+    fn plugin_folder_names_are_exactly_one_normal_component() {
+        assert!(is_plugin_folder_name("countdown"));
+        assert!(is_plugin_folder_name("My-Plugin_2"));
+        assert!(!is_plugin_folder_name(""));
+        assert!(!is_plugin_folder_name("."));
+        assert!(!is_plugin_folder_name(".."));
+        assert!(!is_plugin_folder_name("a/b"));
+        assert!(!is_plugin_folder_name("a\\b"));
+        assert!(!is_plugin_folder_name("C:"));
+        assert!(!is_plugin_folder_name("C:\\plugins\\x"));
+    }
+
+    #[test]
+    fn a_plugin_folder_name_must_match_its_manifest_id() {
+        assert!(folder_matches_id(
+            std::path::Path::new("C:\\plugins\\countdown"),
+            "countdown"
+        ));
+        assert!(!folder_matches_id(
+            std::path::Path::new("C:\\plugins\\aaa"),
+            "countdown"
+        ));
     }
 
     #[test]

@@ -77,6 +77,15 @@ fn collect_files(dir: &Path, into: &mut Vec<String>) -> Result<(), String> {
     for entry in entries.filter_map(|e| e.ok()) {
         let rel = entry.file_name().to_string_lossy().to_string();
         let kind = entry.file_type().map_err(|e| e.to_string())?;
+        // A junction is a symlink to Rust, and `walk`/`copy_dir` already refuse
+        // one: a fingerprint that skipped it would approve a folder whose real
+        // code lives somewhere else, outside the hash.
+        if kind.is_symlink() {
+            return Err(format!(
+                "{} is a link; plugins are files",
+                entry.path().display()
+            ));
+        }
         if kind.is_dir() {
             let nested = dir.join(&rel);
             let mut inner = Vec::new();
