@@ -295,7 +295,14 @@ pub(crate) fn recover_windows(reason: &str) {
     if now_ms.saturating_sub(last) < 15_000 {
         return;
     }
-    LAST_RESUME_MS.store(now_ms, Ordering::SeqCst);
+    // One recovery, even if the power callback and a window message arrive
+    // together; compare_exchange is the gate, not a check followed by a store.
+    if LAST_RESUME_MS
+        .compare_exchange(last, now_ms, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
 
     let Some(app) = shared_app() else { return };
     let s = load_settings(&app);
