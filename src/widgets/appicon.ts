@@ -48,11 +48,7 @@ function gradientFor(name: string): [string, string] {
   return GRADIENTS[h % GRADIENTS.length] as [string, string];
 }
 
-export function mountLauncher(
-  root: HTMLElement,
-  id: string,
-  kind: string = "app",
-): () => void {
+export function mountLauncher(root: HTMLElement, id: string, kind: string = "app"): () => void {
   watchSettings();
   watchPluginEnabled(kind);
   const wrap = document.createElement("div");
