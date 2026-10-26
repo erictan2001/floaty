@@ -44,6 +44,10 @@ pub fn start(app: &AppHandle, interval_ms: Option<u32>) {
         set_interval(ms);
     }
     CLIENTS.fetch_add(1, Ordering::SeqCst);
+    spawn(app);
+}
+
+fn spawn(app: &AppHandle) {
     if RUNNING.swap(true, Ordering::SeqCst) {
         return; // a sampler is already up
     }
@@ -70,7 +74,10 @@ pub fn ensure_running(app: &AppHandle, interval_ms: Option<u32>) {
     if RUNNING.load(Ordering::SeqCst) || CLIENTS.load(Ordering::SeqCst) == 0 {
         return;
     }
-    start(app, interval_ms);
+    if let Some(ms) = interval_ms {
+        set_interval(ms);
+    }
+    spawn(app);
 }
 
 pub fn set_interval(ms: u32) {

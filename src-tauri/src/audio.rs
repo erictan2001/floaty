@@ -46,6 +46,12 @@ pub fn start(app: &AppHandle, fps: Option<u32>) {
         FPS.store(f.clamp(5, 60), Ordering::Relaxed);
     }
     CLIENTS.fetch_add(1, Ordering::SeqCst);
+    spawn(app);
+}
+
+/// Start the worker if it is not already up. Does not take a client: the
+/// caller already holds one.
+fn spawn(app: &AppHandle) {
     if RUNNING.swap(true, Ordering::SeqCst) {
         return; // a capture thread is already up
     }
@@ -73,7 +79,10 @@ pub fn ensure_running(app: &AppHandle, fps: Option<u32>) {
     if RUNNING.load(Ordering::SeqCst) || CLIENTS.load(Ordering::SeqCst) == 0 {
         return;
     }
-    start(app, fps);
+    if let Some(f) = fps {
+        FPS.store(f.clamp(5, 60), Ordering::Relaxed);
+    }
+    spawn(app);
 }
 
 pub fn set_fps(fps: u32) {
