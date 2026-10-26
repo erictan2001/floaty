@@ -78,12 +78,17 @@ export function syncHitRectsToRust(): void {
 
   const key = rects.map((r) => `${r.id}:${r.x},${r.y},${r.w},${r.h}`).join(";");
   if (key === lastHitRectsKey) return;
-  lastHitRectsKey = key;
 
   // The label says *which* overlay these rects are the click-through region of:
   // there are two of them (the desktop layer and the always-on-top layer), and a
   // region applied to the wrong window blocks the screen or the widgets.
-  invoke("floaty_update_hit_rects", { label: appWin.label, rects }).catch(() => undefined);
+  // Remember the key only after the backend accepted it: a failed first sync
+  // must be retried by the two-second self-heal, not suppressed forever.
+  invoke("floaty_update_hit_rects", { label: appWin.label, rects })
+    .then(() => {
+      lastHitRectsKey = key;
+    })
+    .catch(() => undefined);
 }
 
 let overlayDragging = false;
