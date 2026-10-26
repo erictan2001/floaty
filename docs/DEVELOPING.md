@@ -100,7 +100,7 @@ src/
   main.ts        mounts the routed plugin, heartbeat for ordinary pages
   overlay.ts     the desktop and top overlays: slot layout, mounting, hit rects
   style.css      all widget and settings styling (one --panel-* theme recipe)
-  settings.ts    settings shell: tabs, save plumbing
+  settings.ts    settings shell: rail, panes, save plumbing
   settings/
     api.ts       safe invoke + error banner
     dom.ts       group / row / card builders shared by every pane

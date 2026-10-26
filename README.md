@@ -88,7 +88,7 @@ monitor, so the GPU cost tracks the overlay, not the number of widgets.
 | see what changed in each release | [Changelog](CHANGELOG.md) |
 | publish a version | [Shipping a release](docs/RELEASING.md) |
 
-![The General settings tab](screenshots/settings-general.png)
+![The General settings pane](screenshots/settings-general.png)
 
 ## Known limits and honesty
 

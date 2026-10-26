@@ -35,7 +35,7 @@ resolved from the shell and cached in the record.
 ## Motion and clicks
 
 Motion is one shared setting across every desktop item, collected in the settings
-window's Motion tab:
+window's Motion section:
 
 | Setting | What it does |
 | --- | --- |
@@ -70,12 +70,12 @@ shown, and the window is built once and then only shown and hidden. The tray's
 **Search…** opens the same thing: if another app already owns the key you chose,
 settings says so rather than leaving you with a launcher you cannot reach.
 
-**Tidy the desktop** (General tab) lines the icons up on a grid: a pinned icon
+**Tidy the desktop** (General section) lines the icons up on a grid: a pinned icon
 holds the place it is given, and everything else is stacked up from the floor in
 even columns — a mid-screen slot for an icon that falls would be a place it left
 the moment it was mounted again. Panels and notes keep their places and the grid
 lays itself around them. **Ctrl+Alt+Z** from anywhere, or the undo button in the
-General tab, puts back the last change: a removed floatie, a recycled file (out of
+General section, puts back the last change: a removed floatie, a recycled file (out of
 the Recycle Bin, by name), an ungroup, a grouping, or a tidy. **Ctrl+Shift+Z** — or
 the redo button beside it — replays an undone change, files and all: the same file
 goes back into the same folder, and nothing else moves. Both stacks hold the last
@@ -88,7 +88,7 @@ to claim it from the OS. The launcher's key is configurable; these two are not.
 
 Right-click any floatie for its menu: pin on top (a real second layer, above all
 normal windows, persisted per widget), or remove it. "Stay on the desktop"
-(General tab) keeps floaties visible through Win+D instead of minimising with
+(General section) keeps floaties visible through Win+D instead of minimising with
 everything else.
 
 ## Windows and layers

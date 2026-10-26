@@ -180,7 +180,7 @@ would each read a feed missing the other's key and the release would end up
 single-architecture.
 
 **The update check is manual.** Nothing phones home: no request on launch, no polling while
-it runs. General tab → **Updates** → *check for updates* is the only thing that touches the
+it runs. General section → **Updates** → *check for updates* is the only thing that touches the
 feed, and *install and restart* the only thing that downloads — the archive is verified
 against the public key above and the app restarts into it. A check that could not be made
 says exactly that instead of reporting you as up to date. An update that fails leaves the

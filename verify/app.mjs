@@ -185,7 +185,7 @@ async function health(app) {
     );
   if (expectedTotal !== total)
     problems.push(
-      `${total - expectedTotal} floatie(s) are on no screen at all — run the Diagnostics tab's "bring back off-screen floaties"`,
+      `${total - expectedTotal} floatie(s) are on no screen at all — run the Diagnostics section's "bring back off-screen floaties"`,
     );
   // An empty desktop and an app that has lost its store look the same from here: no records
   // to mount, none drawn, nothing to disagree about. `total` is the app's own count of what

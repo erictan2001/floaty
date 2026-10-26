@@ -57,21 +57,24 @@ on.
 
 ## Settings window
 
-Tray icon → **Settings** (the tray is Settings and Quit). One tab per question you
-arrive with, and the tab lives in the URL hash so a reload stays where you were:
+Tray icon → **Settings** (the tray is Settings and Quit). One section per question you
+arrive with, in a rail down the left; the section lives in the URL hash so a reload
+stays where you were. A fresh window opens on General.
 
-| Tab | Hash | Holds |
-| --- | --- | --- |
-| Desktop | `#/desktop` | what is on your desktop, removal |
-| Apps | `#/apps` | scan and float applications |
-| Files | `#/files` | the root folder and its contents |
-| Motion | `#/motion` | [the Motion table](CONCEPTS.md#motion-and-clicks), plus click behaviour |
-| Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
-| General | `#/general` | stay on desktop, start with Windows, ask before removing, the launcher key, tidy the desktop, undo, check for updates |
-| Diagnostics | `#/diagnostics` | `floaty.log`, the monitors, every window, the heartbeat table, the sizes on disk |
+| Rail section | Section | Hash | Holds |
+| --- | --- | --- | --- |
+| Preferences | General | `#/general` | stay on desktop, start with Windows, ask before removing, the launcher key, tidy the desktop, undo, check for updates |
+| Preferences | Motion | `#/motion` | [the Motion table](CONCEPTS.md#motion-and-clicks), plus click behaviour |
+| Desktop | Desktop | `#/desktop` | what is on your desktop, removal |
+| Desktop | Apps | `#/apps` | scan and float applications |
+| Desktop | Files | `#/files` | the root folder and its contents |
+| System | Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
+| System | Diagnostics | `#/diagnostics` | `floaty.log`, the monitors, every window, the heartbeat table, the sizes on disk |
 
 Edits are applied immediately; slider drags are debounced so a five-step drag is
-one save.
+one save. A refresh from the backend keeps the scroll position, and waits while a
+field has focus, so editing a value does not rebuild the control under the pointer
+or jump the window to the top.
 
 Icons are files, not text in the store. A record's `icon` is an
 `http://asset.localhost/…` url into that folder, which is what an `<img>` loads
