@@ -1,18 +1,18 @@
 /**
- * Plugins: every kind floaty knows — the built-ins and the ones the user
- * installed — with an on/off switch, what the plugin is, and the parameters
- * that belong to that plugin alone (a visualizer's gain, the folder it scans).
+ * Plugins: every kind floaty knows, in two short lists — the built-ins, then the
+ * ones the user installed — with an on/off switch and the settings that belong
+ * to that plugin alone (a visualizer's gain, the folder Live2D scans).
  *
- * Settings that apply to every desktop item live in the Motion section instead;
- * `getSharedRow` still hands a plugin a row for one, which is what keeps a
- * third-party plugin written against the old contract working.
+ * The kind badge is not repeated here: the list is grouped by origin already, and
+ * a plugin's name is what a person looks for. Settings that apply to every
+ * desktop item live in Motion; `getSharedRow` still hands a plugin a row for one.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { pluginFor, type PluginSettingsContext } from "../../widgets/plugin";
 import type { PluginManifestEntry } from "../../widgets/pluginManifest";
 import { safe, showError } from "../api";
-import { action, actionRow, card, chip, el, group, note, switchInput } from "../dom";
+import { action, actionRow, card, el, emptyState, group, switchInput, textBlock } from "../dom";
 import type { Pane } from "../pane";
 import { sharedRow } from "../params";
 import {
@@ -28,29 +28,99 @@ import {
 
 let host: HTMLElement | undefined;
 let status: HTMLElement | undefined;
+/** The last action's news. Kept across a redraw, because reloading the list is
+ *  exactly what the action does — a line that vanished with the reload was a
+ *  line nobody ever read. */
+let message = "";
+
+function say(text: string): void {
+  message = text;
+  if (status?.isConnected) status.textContent = text;
+}
 
 function draw(): void {
   if (!host || !host.isConnected) return;
   host.innerHTML = "";
-  status = undefined;
+  const all = plugins();
+  host.append(
+    tools(),
+    statusLine(),
+    pluginGroup(
+      "Built in",
+      all.filter((entry) => entry.source !== "installed"),
+    ),
+    pluginGroup(
+      "Installed",
+      all.filter((entry) => entry.source === "installed"),
+      "Plugins you added. Removing one recycles its folder; its floaties go with it.",
+    ),
+  );
+}
 
-  // The pane heading already says what this is, so the cards sit straight under
-  // it rather than inside another labelled section.
-  const list = el("div", "set-list");
-  for (const entry of plugins()) list.append(pluginCard(entry));
-  host.append(list, installGroup());
+/** Install, open the folder, rescan: three buttons, no section of their own. */
+function tools(): HTMLElement {
+  const row = actionRow();
+  row.classList.add("set-toolbar");
+  row.append(
+    action("install .zip…", installFromArchive, { busyLabel: "installing…" }),
+    action(
+      "open plugin folder",
+      () => safe("open plugin folder", () => invoke("floaty_open_plugins_dir")),
+      { cls: "pill ghost" },
+    ),
+    action(
+      "rescan",
+      async () => {
+        const rejected = await rescanPlugins();
+        if (rejected === undefined) return;
+        say(
+          rejected.length === 0 ? "all plugin folders loaded" : `rejected: ${rejected.join(" | ")}`,
+        );
+        await reloadPlugins();
+        await reloadWidgets();
+      },
+      { cls: "pill ghost", busyLabel: "rescanning…" },
+    ),
+  );
+  return row;
+}
+
+function statusLine(): HTMLElement {
+  status = el("p", "set-sub set-status", message);
+  return status;
+}
+
+function pluginGroup(
+  title: string,
+  entries: PluginManifestEntry[],
+  noteText?: string,
+): HTMLElement {
+  const section = group(entries.length > 0 ? `${title} (${entries.length})` : title, noteText);
+  if (entries.length === 0) {
+    section.body.append(emptyState("nothing here yet"));
+    return section.root;
+  }
+  for (const entry of entries) section.body.append(pluginCard(entry));
+  return section.root;
 }
 
 function pluginCard(entry: PluginManifestEntry): HTMLElement {
   const item = card(true);
   const head = el("div", "set-row");
-  const origin =
+  const meta =
     entry.source === "installed"
-      ? ` — installed${entry.version ? ` v${entry.version}` : ""}${entry.author ? ` by ${entry.author}` : ""}, api v${entry.api_version}`
+      ? [
+          entry.version ? `v${entry.version}` : "",
+          entry.author ? `by ${entry.author}` : "",
+          `API ${entry.api_version}`,
+        ]
+          .filter(Boolean)
+          .join(" · ")
       : "";
+  const text = textBlock(entry.name, entry.description);
+  if (meta) text.append(el("span", "set-meta", meta));
   head.append(
-    chip(entry.id, entry.id),
-    el("span", "set-name", `${entry.name}${origin}`),
+    text,
     switchInput(entry.enabled, (on, input) => {
       input.disabled = true;
       void setPluginEnabled(entry.id, on).finally(() => {
@@ -58,59 +128,55 @@ function pluginCard(entry: PluginManifestEntry): HTMLElement {
       });
     }),
   );
-  item.append(head, note(entry.description));
-  // Only an installed plugin has a folder to take away: a built-in is floaty
-  // itself, and the switch above is how it is turned off.
+  item.append(head);
+
+  // Only an installed plugin has code to trust and a folder to take away: a
+  // built-in is floaty itself, and the switch above is how it is turned off.
   if (entry.source === "installed") {
-    // Approval is about *code*, not about a switch: an installed plugin runs in
-    // this window with the whole widget api in reach, so it is approved once —
-    // when the user has read what it is — and the approval is tied to the files it
-    // was given for. Anything else in the folder means it is asked about again.
     if (!entry.trusted) {
       item.append(
-        note(
-          "not approved — its widgets will not mount. This happens to a plugin whose files changed after you approved it, or one that was copied into the plugins folder instead of installed from a .zip.",
+        el(
+          "p",
+          "set-sub set-warn",
+          "Not approved — its floaties will not mount until you approve it.",
         ),
       );
     }
+    const plugin = pluginFor(entry.id);
+    addPluginSettings(item, plugin);
+
     const controls = actionRow();
-    if (!entry.trusted) {
-      controls.append(
-        action("approve plugin", () => setPluginTrusted(entry, true), {
-          cls: "pill",
-          busyLabel: "approving…",
-        }),
-      );
-    } else {
-      controls.append(
-        action("withdraw approval", () => setPluginTrusted(entry, false), {
-          cls: "pill",
-          busyLabel: "withdrawing…",
-        }),
-      );
-    }
     controls.append(
+      action(
+        entry.trusted ? "withdraw approval" : "approve plugin",
+        () => setPluginTrusted(entry, !entry.trusted),
+        { cls: "pill ghost", busyLabel: entry.trusted ? "withdrawing…" : "approving…" },
+      ),
       action("remove plugin", () => removePlugin(entry), {
         cls: "pill danger-btn",
         busyLabel: "removing…",
       }),
     );
     item.append(controls);
+    return item;
   }
 
-  const plugin = pluginFor(entry.id);
-  if (plugin?.renderSettings) {
-    const ctx: PluginSettingsContext = {
-      getSettings: settings,
-      getSharedRow: sharedRow,
-      safe,
-      showError,
-      refreshWidgets: reloadWidgets,
-      updateSettings,
-    };
-    void plugin.renderSettings(item, ctx);
-  }
+  addPluginSettings(item, pluginFor(entry.id));
   return item;
+}
+
+/** A plugin's own controls, when it has any. */
+function addPluginSettings(item: HTMLElement, plugin: ReturnType<typeof pluginFor>): void {
+  if (!plugin?.renderSettings) return;
+  const ctx: PluginSettingsContext = {
+    getSettings: settings,
+    getSharedRow: sharedRow,
+    safe,
+    showError,
+    refreshWidgets: reloadWidgets,
+    updateSettings,
+  };
+  void plugin.renderSettings(item, ctx);
 }
 
 /**
@@ -125,9 +191,7 @@ async function setPluginTrusted(entry: PluginManifestEntry, trusted: boolean): P
     invoke<null>("floaty_plugin_trust", { id: entry.id, trusted }),
   );
   if (done === undefined) return;
-  if (status) {
-    status.textContent = trusted ? `approved ${entry.id}` : `approval withdrawn for ${entry.id}`;
-  }
+  say(trusted ? `approved ${entry.id}` : `approval withdrawn for ${entry.id}`);
   await reloadPlugins();
   await reloadWidgets();
 }
@@ -221,9 +285,9 @@ async function installFromArchive(): Promise<void> {
     invoke<PluginInstallReport>("floaty_install_plugin", { path: picked, replace: replaces }),
   );
   if (!done) return;
-  if (status) {
-    status.textContent = `${done.replaced ? "replaced" : "installed"} ${done.name} v${done.version} (${done.files} files)`;
-  }
+  say(
+    `${done.replaced ? "replaced" : "installed"} ${done.name} v${done.version} (${done.files} files)`,
+  );
   await reloadPlugins();
   await reloadWidgets();
 }
@@ -261,57 +325,16 @@ async function removePlugin(entry: PluginManifestEntry): Promise<void> {
     }),
   );
   if (!done) return;
-  if (status) status.textContent = `removed ${done.id} (${done.files} files, floaties and all)`;
+  say(`removed ${done.id} (${done.files} files, floaties and all)`);
   await reloadPlugins();
   await reloadWidgets();
-}
-
-/** Where a third-party plugin comes from, and a way to reload the folder. */
-function installGroup(): HTMLElement {
-  const section = group(
-    "Install your own",
-    "Install a plugin .zip, or drop a folder holding plugin.json and index.js into the plugins folder and press rescan — the module is imported straight from disk. docs/PLUGINS.md describes the format.",
-  );
-  const row = actionRow();
-  row.append(
-    action("open plugin folder", () =>
-      safe("open plugin folder", () => invoke("floaty_open_plugins_dir")),
-    ),
-    action("install from .zip…", installFromArchive, { busyLabel: "installing…" }),
-    action(
-      "rescan plugins",
-      async () => {
-        const rejected = await rescanPlugins();
-        if (rejected === undefined) return;
-        if (status) {
-          status.textContent =
-            rejected.length === 0
-              ? "all plugin folders loaded"
-              : `rejected: ${rejected.join(" | ")}`;
-        }
-        await reloadPlugins();
-        await reloadWidgets();
-      },
-      { busyLabel: "rescanning…" },
-    ),
-  );
-
-  const folder = note("");
-  status = note("");
-  section.body.append(row, folder, status);
-  void invoke<string>("floaty_plugins_dir")
-    .then((dir) => {
-      folder.textContent = dir;
-    })
-    .catch(() => undefined);
-  return section.root;
 }
 
 export const pluginsPane: Pane = {
   id: "plugins",
   label: "Plugins",
   title: "Plugins",
-  hint: "Everything floaty can draw on the desktop. Turning one off hides its floaties and takes its button away — nothing is deleted, and turning it back on brings them home.",
+  hint: "Turning one off hides its floaties and its add button. Nothing is deleted.",
   render(node) {
     host = node;
     draw();

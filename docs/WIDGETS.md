@@ -7,16 +7,16 @@ own, and where every setting and file lives.
 
 Built in (`src-tauri/src/plugins.rs` is the manifest):
 
-| Kind | What it is |
-| --- | --- |
-| `app` | gravity launcher for a real app; icons group into folders |
-| `file` | a loose file in the root; double-click opens it with its default app |
-| `folder` | a group of launchers; click to expand into a launch grid |
-| `note` | sticky note, drag by the top bar, text autosaves |
-| `clock` | clock plus pomodoro timer |
-| `live2d` | animated Live2D companion (pixi + Cubism 2/3/4) |
-| `visualizer` | spectrum bars for system audio (loopback, not the mic) |
-| `sysmon` | CPU, 3D GPU and RAM load with a scrolling graph |
+| Kind         | What it is                                                           |
+| ------------ | -------------------------------------------------------------------- |
+| `app`        | gravity launcher for a real app; icons group into folders            |
+| `file`       | a loose file in the root; double-click opens it with its default app |
+| `folder`     | a group of launchers; click to expand into a launch grid             |
+| `note`       | sticky note, drag by the top bar, text autosaves                     |
+| `clock`      | clock plus pomodoro timer                                            |
+| `live2d`     | animated Live2D companion (pixi + Cubism 2/3/4)                      |
+| `visualizer` | spectrum bars for system audio (loopback, not the mic)               |
+| `sysmon`     | CPU, 3D GPU and RAM load with a scrolling graph                      |
 
 `countdown` and `trail`, in [`examples/plugins`](../examples/plugins), are two
 complete plugins written the third-party way — one that keeps to itself, one that
@@ -38,7 +38,7 @@ Either way the widget is available with the same API and the same settings card 
 a built-in. Installation, the `plugin.json` reference and the module contract are in
 [docs/PLUGINS.md](PLUGINS.md).
 
-An archive is read *before* it is installed: the confirm names the plugin, its
+An archive is read _before_ it is installed: the confirm names the plugin, its
 version, its author, how much of it there is, which plugin api it was written
 against, and — if you already have it — both versions and whether this is an
 upgrade or a downgrade. **Installing is approving**: a plugin's code runs inside
@@ -61,15 +61,14 @@ Tray icon → **Settings** (the tray is Settings and Quit). One section per ques
 arrive with, in a rail down the left; the section lives in the URL hash so a reload
 stays where you were. A fresh window opens on General.
 
-| Rail section | Section | Hash | Holds |
-| --- | --- | --- | --- |
-| Preferences | General | `#/general` | stay on desktop, start with Windows, ask before removing, the launcher key, tidy the desktop, undo, check for updates |
-| Preferences | Motion | `#/motion` | [the Motion table](CONCEPTS.md#motion-and-clicks), plus click behaviour |
-| Desktop | Desktop | `#/desktop` | what is on your desktop, removal |
-| Desktop | Apps | `#/apps` | scan and float applications |
-| Desktop | Files | `#/files` | the root folder and its contents |
-| System | Plugins | `#/plugins` | per-plugin toggles, parameter cards, rescan |
-| System | Diagnostics | `#/diagnostics` | `floaty.log`, the monitors, every window, the heartbeat table, the sizes on disk |
+| Section     | Hash            | Holds                                                                                                                 |
+| ----------- | --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| General     | `#/general`     | stay on desktop, start with Windows, ask before removing, the launcher key, tidy the desktop, undo, check for updates |
+| Desktop     | `#/desktop`     | what is on your desktop, removal, quick add                                                                           |
+| Add         | `#/add`         | scan and float applications, and the root folder and its contents                                                     |
+| Motion      | `#/motion`      | [the Motion table](CONCEPTS.md#motion-and-clicks), plus click behaviour                                               |
+| Plugins     | `#/plugins`     | built-in and installed plugins, their toggles and parameters, install/rescan                                          |
+| Diagnostics | `#/diagnostics` | what the desktop is doing now; monitors, windows, disk and the log, folded under it                                   |
 
 Edits are applied immediately; slider drags are debounced so a five-step drag is
 one save. A refresh from the backend keeps the scroll position, and waits while a
@@ -88,13 +87,13 @@ more are swept.
 
 ## Where things live
 
-| Path | Contents |
-| --- | --- |
-| `%APPDATA%\com.floaty.app\floaty-store.json` | widget records: `id`, `kind`, logical `x`/`y`, and the per-widget `data` (name, target, `pinned`, and an `icon` url) |
-| `%APPDATA%\com.floaty.app\icons\` | one PNG per *distinct* icon, named after its contents, so the same app icon in ten folders is one file |
-| `%APPDATA%\com.floaty.app\floaty-settings.json` | global settings (the keys in the Motion table and the panes) |
-| `%APPDATA%\com.floaty.app\plugins\` | installed third-party plugins |
-| `%APPDATA%\com.floaty.app\floaty.log` | backend log, including forwarded frontend errors |
+| Path                                            | Contents                                                                                                             |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `%APPDATA%\com.floaty.app\floaty-store.json`    | widget records: `id`, `kind`, logical `x`/`y`, and the per-widget `data` (name, target, `pinned`, and an `icon` url) |
+| `%APPDATA%\com.floaty.app\icons\`               | one PNG per _distinct_ icon, named after its contents, so the same app icon in ten folders is one file               |
+| `%APPDATA%\com.floaty.app\floaty-settings.json` | global settings (the keys in the Motion table and the panes)                                                         |
+| `%APPDATA%\com.floaty.app\plugins\`             | installed third-party plugins                                                                                        |
+| `%APPDATA%\com.floaty.app\floaty.log`           | backend log, including forwarded frontend errors                                                                     |
 
 Frontend errors and rejections are forwarded to that log through `floaty_log`, so
 a broken widget says why instead of going quiet.

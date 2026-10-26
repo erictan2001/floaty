@@ -125,7 +125,7 @@ export async function addFloatie(kind: string): Promise<WidgetRecord | undefined
   return safe("add floatie", () => invoke<WidgetRecord>("floaty_create", { kind }));
 }
 
-/** Float an app by its shortcut path (the Apps section). */
+/** Float an app by its shortcut path (the Add section). */
 export async function addLauncher(name: string, path: string): Promise<WidgetRecord | undefined> {
   return safe("float app", () => invoke<WidgetRecord>("floaty_add_launcher", { name, path }));
 }

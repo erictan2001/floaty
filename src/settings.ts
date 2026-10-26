@@ -19,7 +19,7 @@ import { crossCheckPlugins, manifestEntries } from "./widgets/pluginManifest";
 import { startHeartbeat, watchSettings } from "./widgets/lib";
 import { log, mountErrorBar, showError } from "./settings/api";
 import { el } from "./settings/dom";
-import { PANE_GROUPS, PANES } from "./settings/panes";
+import { PANES } from "./settings/panes";
 import { changes, loadSettings, reloadPlugins, reloadWidgets } from "./settings/store";
 import "./style.css";
 
@@ -129,21 +129,16 @@ function buildShell(): void {
 
   const nav = el("nav", "set-nav");
   nav.setAttribute("aria-label", "Settings sections");
-  for (const group of PANE_GROUPS) {
-    const section = el("div", "set-nav-group");
-    section.append(el("div", "set-nav-label", group.label));
-    for (const pane of group.panes) {
-      const tab = el("button", "set-tab", pane.label);
-      tab.type = "button";
-      tab.addEventListener("click", () => {
-        window.clearTimeout(redrawTimer);
-        // Clicking the section already open refreshes it without jumping to the top.
-        show(pane.id, pane.id === active);
-      });
-      tabs.set(pane.id, tab);
-      section.append(tab);
-    }
-    nav.append(section);
+  for (const pane of PANES) {
+    const tab = el("button", "set-tab", pane.label);
+    tab.type = "button";
+    tab.addEventListener("click", () => {
+      window.clearTimeout(redrawTimer);
+      // Clicking the section already open refreshes it without jumping to the top.
+      show(pane.id, pane.id === active);
+    });
+    tabs.set(pane.id, tab);
+    nav.append(tab);
   }
   rail.append(brand, nav);
 

@@ -1,5 +1,5 @@
 /**
- * The Apps section: the shortcuts found on this machine, searchable, one press to
+ * The apps half of Add: the shortcuts found on this machine, searchable, one press to
  * float one. The scan is the expensive part of the old page — it walks the Start
  * Menu — so it runs when this section is first opened rather than on every settings
  * launch, and its results scroll inside the pane instead of pushing everything

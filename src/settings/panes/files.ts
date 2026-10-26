@@ -115,7 +115,7 @@ function draw(): void {
 
   section.body.append(
     note(
-      "Shortcuts and programs become app floaties, everything else a file floatie (double-click opens it with its default app). Dragging an item out of a folder moves it on disk, into the desktop directory. Pointing floaty at a different folder takes the old folder's floaties off the desktop — their files stay where they are.",
+      "Shortcuts become app floaties, everything else a file floatie. Changing the folder takes the old folder's floaties off the desktop — their files stay where they are.",
     ),
   );
   host.append(section.root);

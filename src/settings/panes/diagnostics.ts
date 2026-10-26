@@ -2,11 +2,10 @@
  * What floaty can say about itself: the presence state, the sizes on disk, the
  * monitors, the windows it owns, the heartbeat table, and the end of the log.
  *
- * This pane exists for the moment something is wrong and the window is the only
- * thing still answering. Every number here is one a bug report has needed — which
- * monitors exist and at what scale, where each window actually is, whether a page
- * still believes it is hidden, how big the things on disk have grown — and the log
- * tail is selectable so the one line that matters can be copied out of it.
+ * The top of the pane is what a person checks first — is the desktop hidden or
+ * quiet, and why. Everything a bug report needs but nobody reads by accident is
+ * one click away in a folded row, and the folded row's summary carries the one
+ * number that says whether opening it is worth it.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -128,6 +127,9 @@ interface PresenceReport {
 
 let host: HTMLElement | undefined;
 let status: HTMLElement | undefined;
+/** The last action's news, kept across a redraw so "opened the log folder" is
+ *  still there after the refresh that follows it. */
+let message = "";
 
 /** Sizes in a unit a person reads: 1887436 bytes is not a number anyone can hold. */
 function human(bytes: number): string {
@@ -190,11 +192,41 @@ function pathLine(path: string): HTMLElement {
   return line;
 }
 
-/** A file or folder with its size: what it is, how big, and where. */
-function diskCard(label: string, path: string, detail: string): HTMLElement {
-  const item = card(true);
-  item.append(row(label, detail), pathLine(path));
-  return item;
+/**
+ * One compact labelled value, two or more to a row. `value` is also the tooltip,
+ * because a grid cell ellipsizes what does not fit and the full text still matters.
+ */
+function fact(label: string, value: string, cls = ""): HTMLElement {
+  const box = el("div", "diag-fact");
+  const val = el("b", cls, value);
+  val.title = value;
+  box.append(el("span", "", label), val);
+  return box;
+}
+
+/** A wrapping grid of facts. */
+function facts(items: HTMLElement[]): HTMLElement {
+  const grid = el("div", "diag-grid");
+  grid.append(...items);
+  return grid;
+}
+
+/**
+ * A section that opens on a click: the title and a one-line summary sit in the
+ * closed row, so hiding the detail never hides the number that says it is boring.
+ */
+function fold(title: string, summary: string): { root: HTMLDetailsElement; body: HTMLElement } {
+  const root = el("details", "set-group set-fold");
+  const head = el("summary", "set-fold-head");
+  head.append(el("span", "set-group-title", title), el("span", "diag-summary", summary));
+  const body = el("div", "set-group-body");
+  root.append(head, body);
+  return { root, body };
+}
+
+function say(text: string): void {
+  message = text;
+  if (status?.isConnected) status.textContent = text;
 }
 
 /**
@@ -205,9 +237,9 @@ function diskCard(label: string, path: string, detail: string): HTMLElement {
 async function openLogFolder(): Promise<void> {
   try {
     await invoke("floaty_open_log_folder");
-    if (status?.isConnected) status.textContent = "opened the folder holding floaty.log";
+    say("opened the folder holding floaty.log");
   } catch (err) {
-    if (status?.isConnected) status.textContent = `could not open the log folder: ${String(err)}`;
+    say(`could not open the log folder: ${String(err)}`);
   }
 }
 
@@ -221,15 +253,14 @@ async function openLogFolder(): Promise<void> {
 async function bringBackOffscreen(): Promise<void> {
   try {
     const moved = await invoke<number>("floaty_rehome_floaties");
-    if (status?.isConnected) {
-      status.textContent =
-        moved === 0
-          ? "every floatie is already on a screen"
-          : `brought ${moved} floatie(s) back from a screen that is gone`;
-    }
+    say(
+      moved === 0
+        ? "every floatie is already on a screen"
+        : `brought ${moved} floatie(s) back from a screen that is gone`,
+    );
     if (moved > 0) await draw();
   } catch (err) {
-    if (status?.isConnected) status.textContent = `could not bring them back: ${String(err)}`;
+    say(`could not bring them back: ${String(err)}`);
   }
 }
 
@@ -271,10 +302,7 @@ function foregroundRow(presence: PresenceReport): HTMLElement {
  * taken when the pane draws, not a timer of its own.
  */
 function presenceSection(presence: PresenceReport | null | undefined): HTMLElement {
-  const section = group(
-    "Getting out of the way",
-    "hiding and going quiet are separate answers. Hidden means a fullscreen app is in front and the overlays are off screen; quiet means nobody has touched the machine for a while, so the floaties stay put but stop animating and the audio capture pauses. A maximized window is not fullscreen — it leaves the taskbar visible — so a maximized window does not hide the desktop.",
-  );
+  const section = group("Now");
   if (!presence) {
     section.body.append(
       note("the presence state could not be read: floaty_presence did not answer."),
@@ -284,38 +312,47 @@ function presenceSection(presence: PresenceReport | null | undefined): HTMLEleme
   const screens = presence.screens ?? [];
   const hiddenCount = screens.filter((s) => s.hidden).length;
   const state = presence.hidden ? "hidden" : presence.quiet ? "quiet" : "normal";
-  const facts = card(true);
-  facts.append(
-    // Each screen decides for itself, so "hidden" on a two-screen desktop is only half the
-    // story: say how much of the desktop went away.
-    row(
-      "state",
-      hiddenCount > 0 && screens.length > 1
-        ? `${state} (${hiddenCount} of ${screens.length} screens)`
-        : state,
+  const headline =
+    state === "hidden"
+      ? hiddenCount > 1
+        ? `Hidden on ${hiddenCount} of ${screens.length} screens`
+        : "Hidden — a fullscreen app is in front"
+      : state === "quiet"
+        ? `Quiet — no input for ${uptime(presence.idle_ms)}`
+        : "On screen — nothing is in the way";
+  const item = card(true);
+  const head = el("div", "diag-headline");
+  head.append(el("span", `diag-dot ${state}`), el("span", "set-label", headline));
+
+  const rules = [
+    fact("fullscreen", presence.hide_in_fullscreen ? "hide" : "stays"),
+    fact(
+      "idle quiet",
+      presence.quiet_when_idle
+        ? presence.idle_minutes === 0
+          ? "never"
+          : `after ${presence.idle_minutes} min`
+        : "off",
     ),
-    row("reason", presence.reason ?? "none"),
-    // "2m 14s" reads; a millisecond count does not.
-    row("idle", uptime(presence.idle_ms)),
+  ];
+
+  item.append(
+    head,
+    facts([fact("idle", uptime(presence.idle_ms)), ...rules]),
     foregroundRow(presence),
-    row("hide for a fullscreen app", presence.hide_in_fullscreen ? "on" : "off"),
-    row("go quiet when idle", presence.quiet_when_idle ? "on" : "off"),
-    row("idle after", presence.idle_minutes === 0 ? "never" : `${presence.idle_minutes} min`),
   );
-  section.body.append(facts);
   // One line per desktop layer. A fullscreen app on one screen takes that screen's desktop
   // away and leaves every other screen alone, so this is the field that shows the rule.
   if (screens.length > 1) {
-    const perScreen = card(true);
+    const perScreen = el("div", "diag-grid");
     for (const screen of screens) {
       const what = screen.hidden ? "hidden" : screen.quiet ? "quiet" : "on screen";
       const why = screen.reason ? ` — ${screen.reason}` : "";
-      perScreen.append(
-        row(screen.screen ? `${screen.label} (${screen.screen})` : screen.label, `${what}${why}`),
-      );
+      perScreen.append(fact(screen.screen || screen.label, `${what}${why}`));
     }
-    section.body.append(perScreen);
+    item.append(perScreen);
   }
+  section.body.append(item);
   return section.root;
 }
 
@@ -324,15 +361,20 @@ async function draw(): Promise<void> {
   host.innerHTML = "";
   status = undefined;
 
+  // Refresh is the one action here a person presses on purpose; the maintenance
+  // pair are quiet so the toolbar is not three competing primary buttons.
   const tools = actionRow();
+  tools.classList.add("set-toolbar");
   tools.append(
-    action("open the log folder", openLogFolder),
-    action("bring back off-screen floaties", bringBackOffscreen, { busyLabel: "looking…" }),
     action("refresh", () => draw(), { busyLabel: "reading…" }),
+    action("bring back off-screen floaties", bringBackOffscreen, {
+      cls: "pill ghost",
+      busyLabel: "looking…",
+    }),
+    action("open the log folder", openLogFolder, { cls: "pill ghost" }),
   );
-  const line = note("");
-  status = line;
-  host.append(tools, line);
+  status = el("p", "set-sub set-status", message);
+  host.append(tools, status);
 
   // The two reads are independent, so they go together: one round trip's latency for
   // both, and both ride the same refresh path the toolbar's button drives.
@@ -350,67 +392,39 @@ async function draw(): Promise<void> {
     return;
   }
 
-  const presenceEl = presenceSection(presence);
-
-  const facts = card(true);
-  facts.append(
-    row("version", report.version),
-    row("mode", report.mode),
-    row("os", report.os),
-    row("uptime", uptime(report.started_ms_ago)),
-    row("records", `${report.records}`),
-    row("display", report.display),
-    row("installed plugins", report.installed_plugins.join(", ") || "none"),
+  const app = fold(
+    "This app",
+    `${report.version} · ${report.mode} · up ${uptime(report.started_ms_ago)}`,
   );
-  // Rejections are the one fact here with a cause worth spelling out, so the line
-  // is only drawn when there is something to explain.
+  app.body.append(
+    facts([
+      fact("version", report.version),
+      fact("mode", report.mode),
+      fact("os", report.os),
+      fact("uptime", uptime(report.started_ms_ago)),
+      fact("floaties", String(report.records)),
+      fact("display", report.display),
+    ]),
+  );
+  // The plugin names are a list, not a cell: a grid cell would ellipsize the one
+  // name a bug report is about.
+  app.body.append(row("installed plugins", report.installed_plugins.join(", ") || "none"));
   if (report.rejected_plugins.length > 0) {
-    const rejected = el("div", "diag-stack");
-    rejected.append(
+    app.body.append(
       row("rejected plugins", report.rejected_plugins.join(", "), "diag-val diag-warn"),
       note(
-        "A rejected plugin is a folder under %APPDATA%\\com.floaty.app\\plugins that floaty refused to load: its plugin.json did not parse, its api version is not one this build knows, or its index.js threw while it was imported.",
+        "A rejected folder under the plugins directory could not be loaded: its plugin.json did not parse, its API version is unknown to this build, or its index.js threw while it was imported. The log says which.",
       ),
     );
-    facts.append(rejected);
   }
-  const app = group(
-    "This app",
-    "mode is desktop when floaty draws behind the icons and floating when the overlay is a window of its own; display is whether the screen is on, as floaty last heard from Windows.",
-  );
-  app.body.append(facts);
 
-  const disk = group("On disk");
-  disk.body.append(
-    diskCard(
-      "floaty-store.json",
-      report.store.path,
-      `${human(report.store.bytes)}, ${count(report.store.backups, "backup")}`,
-    ),
-    diskCard(
-      "icons",
-      report.icons.path,
-      `${count(report.icons.files, "file")}, ${human(report.icons.bytes)}`,
-    ),
-    diskCard(
-      "floaty.log",
-      report.log.path,
-      `${human(report.log.bytes)}, ${count(report.log.rotated, "rotated file")}`,
-    ),
-    note(
-      "floaty.log.1 is the previous file: the log rolls over at 1 MB, so the lines from just before a restart are still there.",
-    ),
+  const screens = fold(
+    "Screens & windows",
+    `${count(report.monitors.length, "monitor")} · ${count(report.windows.length, "window")}`,
   );
-
-  const only = report.monitors.length === 1 ? report.monitors[0] : undefined;
-  const monitors = group(
-    "Monitors",
-    only
-      ? `one monitor — the overlay covers ${only.x},${only.y} ${only.width}x${only.height} at ${scaleText(only.scale)}`
-      : "one row per display floaty can see. The desktop covers the union of them, so a floatie can live on any screen and be dragged between them.",
-  );
+  screens.body.append(el("div", "diag-subhead", "Monitors"));
   if (report.monitors.length === 0) {
-    monitors.body.append(note("no monitor was reported, so nothing can be placed on the desktop."));
+    screens.body.append(note("no monitor was reported, so nothing can be placed on the desktop."));
   }
   for (const monitor of report.monitors) {
     const item = card(true);
@@ -425,15 +439,14 @@ async function draw(): Promise<void> {
         `${monitor.x},${monitor.y} ${monitor.width}x${monitor.height} at ${scaleText(monitor.scale)}`,
       ),
     );
-    monitors.body.append(item);
+    screens.body.append(item);
   }
 
-  const windows = group(
-    "Windows",
-    "desktop marks the desktop-layer windows: they are the desktop itself, drawn behind every icon. Anything else is an ordinary window. Positions are physical px, as the app last put them.",
-  );
+  const repairs = new Map(report.repairs.map((repair) => [repair.label, repair.attempts]));
+  const beats = new Map(report.heartbeats.map((beat) => [beat.label, beat]));
+  screens.body.append(el("div", "diag-subhead", "Windows"));
   if (report.windows.length === 0) {
-    windows.body.append(note("floaty owns no windows right now."));
+    screens.body.append(note("floaty owns no windows right now."));
   }
   for (const win of report.windows) {
     const item = card(true);
@@ -447,30 +460,48 @@ async function draw(): Promise<void> {
       el("span", win.layer === "desktop" ? "diag-layer diag-desktop" : "diag-layer", win.layer),
       el("span", "diag-val", `${win.x},${win.y} ${win.width}x${win.height}`),
     );
-    item.append(head, place);
-    windows.body.append(item);
+    const beat = beats.get(win.label);
+    const attempts = repairs.get(win.label) ?? 0;
+    const line = el(
+      "p",
+      "set-sub",
+      [
+        win.layer === "desktop" ? "desktop layer" : "window",
+        beat ? `last beat ${ago(beat.ms_ago)} (${beat.visibility})` : "no heartbeat yet",
+        attempts > 0 ? `repaired ${attempts}×` : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    );
+    item.append(head, place, line);
+    screens.body.append(item);
   }
 
-  const repairs = new Map(report.repairs.map((repair) => [repair.label, repair.attempts]));
-  const beats = group(
-    "Heartbeats",
-    "One row per window: the visibility its page reports, and how long ago its last beat arrived. A page that believes it is hidden while the display is on gets forced visible, then rebuilt — repaired counts how often that has been done to it.",
+  const disk = fold(
+    "On disk",
+    `store ${human(report.store.bytes)} · icons ${human(report.icons.bytes)} · log ${human(report.log.bytes)}`,
   );
-  if (report.heartbeats.length === 0) {
-    beats.body.append(note("no window has beaten yet."));
-  }
-  for (const beat of report.heartbeats) {
-    const item = card(true);
-    const head = el("div", "set-row diag-row");
-    const attempts = repairs.get(beat.label) ?? 0;
-    head.append(el("span", "set-label diag-key", beat.label));
-    if (attempts > 0) head.append(el("span", "diag-mark", `repaired ${attempts}x`));
-    head.append(el("span", "diag-val", `${beat.visibility} — ${ago(beat.ms_ago)}`));
-    item.append(head);
-    beats.body.append(item);
-  }
+  const files = card(true);
+  files.append(
+    row(
+      "floaty-store.json",
+      `${human(report.store.bytes)}, ${count(report.store.backups, "backup")}`,
+    ),
+    pathLine(report.store.path),
+    row("icons", `${count(report.icons.files, "file")}, ${human(report.icons.bytes)}`),
+    pathLine(report.icons.path),
+    row("floaty.log", `${human(report.log.bytes)}, ${count(report.log.rotated, "rotated file")}`),
+    pathLine(report.log.path),
+  );
+  disk.body.append(
+    files,
+    note("the log rolls at 1 MB; floaty.log.1 is the file from before the last roll."),
+  );
 
-  const tail = group("Log tail", "the end of floaty.log, oldest line first");
+  const tail = fold(
+    "Log tail",
+    `${count(report.log.lines.length, "line")} · ${human(report.log.bytes)}`,
+  );
   tail.body.append(
     el(
       "pre",
@@ -479,14 +510,14 @@ async function draw(): Promise<void> {
     ),
   );
 
-  host.append(presenceEl, app.root, disk.root, monitors.root, windows.root, beats.root, tail.root);
+  host.append(presenceSection(presence), app.root, screens.root, disk.root, tail.root);
 }
 
 export const diagnosticsPane: Pane = {
   id: "diagnostics",
   label: "Diagnostics",
   title: "Diagnostics",
-  hint: "What floaty can say about itself: whether the desktop is hidden or quiet, the sizes on disk, the monitors and windows it owns, the heartbeat table, and the end of the log.",
+  hint: "The state a bug report needs: what the desktop is doing now, and the numbers behind it.",
   render(node) {
     host = node;
     void draw();

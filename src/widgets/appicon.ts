@@ -566,7 +566,7 @@ export const appPlugin: FloatyPlugin = {
   // No settings of its own: how an icon falls, floats and answers a click is
   // the same for every desktop item, so it lives in the Motion tab (see
   // `settings/params.ts` for the rows). App icons cannot be added from a
-  // button either — they are floated from the Apps tab or dragged in.
+  // button either — they are floated from the Add section or dragged in.
 };
 
 /**

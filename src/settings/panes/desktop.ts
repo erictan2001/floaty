@@ -70,7 +70,11 @@ function floatieCard(rec: WidgetRecord): HTMLElement {
   item.append(chip(rec.kind, rec.kind));
   const plugin = pluginFor(rec.kind);
   const detail = plugin?.describe?.(rec);
-  item.append(el("span", "set-name", detail ? `${rec.id} — ${detail}` : rec.id));
+  // The id is the store's name for the record, not the user's: keep it as a
+  // tooltip rather than making every row read "app-17 — Arc".
+  const name = el("span", "set-name", detail ?? rec.id);
+  name.title = rec.id;
+  item.append(name);
 
   // The remove button goes in before the plugin's own controls: it is the
   // reference the plugin slots its control in front of (see the plugin docs).

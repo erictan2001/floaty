@@ -77,11 +77,11 @@ Two tiers.
 `check:plugins`, `tsc --noEmit`, `npm test`, `npm run build`, `cargo fmt --check`,
 `cargo clippy -- -D warnings`, `cargo test --lib`, and the two page probes that need
 nothing but a dev server — `verify:panes` and `verify:palette`. `verify:app` is
-deliberately absent: it talks to a *running* floaty over its debug port, and a
+deliberately absent: it talks to a _running_ floaty over its debug port, and a
 pull-request runner has no desktop to put one on.
 
 **Nightly** (`.github/workflows/nightly.yml`) is the slow half: the whole `cargo test`
-suite rather than `--lib` alone, the six probes that drive the *running* app —
+suite rather than `--lib` alone, the six probes that drive the _running_ app —
 `verify:app`, `verify:drag`, `verify:presence`, `verify:redo`, `verify:stranded` and
 `verify:panel-drag` — and a real NSIS installer build, which is measured and thrown away.
 A hosted runner has no desktop to put the app on, so those six report that they could not
@@ -89,7 +89,7 @@ run and are recorded as skipped rather than counted as green; dispatch the workf
 `start_app: true` from a runner that has a desktop to run them for real. The two page
 probes are not repeated here — they already run on every pull request.
 
-![The Diagnostics pane: log tail, monitors, window positions, heartbeats](../screenshots/diagnostics-pane.png)
+![The Diagnostics pane: the desktop's state now, with monitors, windows, disk and the log folded below](../screenshots/diagnostics-pane.png)
 
 ## Project layout
 
@@ -107,7 +107,7 @@ src/
     params.ts    the setting table: key, label, range, unit
     pane.ts      Pane interface
     store.ts     settings cache, debounced saves, widget list reload
-    panes/       desktop, apps, files, motion, plugins, general, diagnostics
+    panes/       general, desktop, add (apps + files), motion, plugins, diagnostics
   widgets/
     plugin.ts        frontend plugin registry + FloatyPlugin interface
     pluginManifest.ts reads the backend manifest
@@ -170,13 +170,13 @@ verify/                        headless probes: the settings panes, the running 
   desktop-layer window policy are all Win32, so there is no cross-platform path.
 - **Release builds are unsigned** unless you sign them, so SmartScreen warns on
   first run and the installer's publisher is unknown. See [Signing](RELEASING.md#signing-it). The
-  *updater* archives are signed with this project's own key, which is a different thing
+  _updater_ archives are signed with this project's own key, which is a different thing
   for a different check — see [Releasing an update](RELEASING.md#releasing-an-update).
 - **Releases are built for ARM64 and x64, and no update is looked for unless you ask.**
   The feed carries a `windows-aarch64` entry and a `windows-x86_64` one, because the
   updater keys its manifest by the triple of the machine asking
-  ([Releasing an update](RELEASING.md#releasing-an-update)); General → **Updates** → *check for
-  updates* is the only request anything makes.
+  ([Releasing an update](RELEASING.md#releasing-an-update)); General → **Updates** → _check for
+  updates_ is the only request anything makes.
 - **The watcher reports names, not contents.** Deliberate: a desktop root is
   usually cloud-synced, where content notifications fire on every write while
   nothing on the desktop depends on a file's contents. Editing a file in place is

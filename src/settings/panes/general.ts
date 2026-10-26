@@ -119,7 +119,7 @@ export const generalPane: Pane = {
 
     const away = group(
       "Get out of the way",
-      "While a fullscreen app is in front — a game, a film — the desktop is not on screen at all, so the floaties step aside rather than draw over it, and come back the moment you leave. And once nobody has touched the machine for a while, floaty settles: the floaties stay exactly where they are, but the motion and the microphone capture stop until you are back. Neither one takes a floatie off the desktop.",
+      "A fullscreen app, or an idle machine, puts the floaties aside. Neither one takes a floatie off the desktop.",
     );
     away.body.append(
       toggleCard(

@@ -31,15 +31,9 @@ const shiny = process.argv.includes("--shot");
 const only = process.argv.slice(3).filter((a) => !a.startsWith("--"));
 
 /** The panes a run covers; `npm run verify:panes -- http://localhost:1420 desktop`. */
-export const PANES = [
-  "desktop",
-  "apps",
-  "files",
-  "motion",
-  "plugins",
-  "general",
-  "diagnostics",
-].filter((pane) => only.length === 0 || only.includes(pane));
+export const PANES = ["general", "desktop", "add", "motion", "plugins", "diagnostics"].filter(
+  (pane) => only.length === 0 || only.includes(pane),
+);
 
 /**
  * The stub. Keep it honest about *shape*: a field a real command returns but this
@@ -137,6 +131,14 @@ export const STUB = `(() => {
       case "floaty_open_log_folder": return null;
       case "floaty_rehome_floaties": return 0;
       case "floaty_palette_state": return { accelerator: "Ctrl+Alt+Space", live: true, visible: false };
+      case "floaty_presence": return {
+        hidden: false, quiet: false, reason: null, idle_ms: 42000,
+        foreground: "1536x864 at 0,0", foreground_shell: false, foreground_ours: true,
+        screens: [
+          { label: "desktop-overlay", screen: "\\\\\\\\.\\\\DISPLAY1", hidden: false, quiet: false, reason: null },
+        ],
+        hide_in_fullscreen: true, quiet_when_idle: true, idle_minutes: 10,
+      };
       case "floaty_sync_files": return { added: 0, removed: 0, refreshed: 0 };
       case "floaty_icon": return "";
       case "plugin:event|listen": return 1;

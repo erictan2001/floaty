@@ -56,20 +56,7 @@ body.settings-page {
 .set-nav {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-}
-.set-nav-group {
-  display: flex;
-  flex-direction: column;
   gap: 2px;
-}
-.set-nav-label {
-  padding: 0 8px 5px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--panel-ink-faint);
 }
 .set-tab {
   border: none;
@@ -230,6 +217,23 @@ body.settings-page {
   color: var(--panel-ink-soft);
   line-height: 1.5;
 }
+/* a status line exists only while it has something to say */
+.set-status:empty {
+  display: none;
+}
+.set-status {
+  margin: 0 0 14px;
+}
+.set-toolbar {
+  margin-bottom: 16px;
+}
+.set-meta {
+  font-size: 11px;
+  color: var(--panel-ink-faint);
+}
+.set-warn {
+  color: #fca5a5;
+}
 .set-name {
   flex: 1;
   min-width: 0;
@@ -297,6 +301,103 @@ body.settings-page {
 }
 .set-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.32);
+}
+/* a folded diagnostics section: the title row is the handle, and its summary is
+   the one number that says whether opening it is worth a click */
+.set-fold > .set-fold-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  list-style: none;
+  cursor: pointer;
+}
+.set-fold > .set-fold-head::-webkit-details-marker {
+  display: none;
+}
+.set-fold > .set-fold-head .set-group-title {
+  margin: 0;
+}
+.set-fold > .set-fold-head:hover .set-group-title {
+  color: var(--panel-ink);
+}
+.set-fold > .set-fold-head::after {
+  content: "▸";
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--panel-ink-faint);
+}
+.set-fold[open] > .set-fold-head::after {
+  content: "▾";
+}
+.set-fold[open] > .set-fold-head {
+  margin-bottom: 8px;
+}
+.set-fold[open] > .set-fold-head .set-group-title {
+  color: var(--panel-ink);
+}
+.diag-summary {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--panel-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 18px;
+}
+.diag-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.diag-fact > span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--panel-ink-faint);
+}
+.diag-fact > b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--panel-ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diag-fact > b.diag-warn {
+  color: #fca5a5;
+}
+.diag-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.diag-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #34d399;
+}
+.diag-dot.quiet {
+  background: #fbbf24;
+}
+.diag-dot.hidden {
+  background: #f87171;
+}
+.diag-subhead {
+  margin: 4px 0 -2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--panel-ink-faint);
 }
 /* on/off switch */
 .set-switch {

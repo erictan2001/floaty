@@ -16,7 +16,7 @@ testing.
 
 | Run | What it does | Needs |
 | --- | --- | --- |
-| `npm run verify:panes` | renders all seven settings panes from the dev server with the Tauri IPC stubbed, one Chrome per run, and fails on an exception, a console error, a pane that drew nothing, or a row wider than the window. It also forces a store notification while a slider is focused and checks that the pane does not redraw under it, keeps its scroll, and redraws once focus leaves | `npm run dev` |
+| `npm run verify:panes` | renders every settings section from the dev server with the Tauri IPC stubbed, one Chrome per run, and fails on an exception, a console error, a pane that drew nothing, or a row wider than the window. It also forces a store notification while a slider is focused and checks that the pane does not redraw under it, keeps its scroll, and redraws once focus leaves | `npm run dev` |
 | `npm run verify:app` | checks the *running* app over its debug port: mounted slots vs records, icons that failed to load, whether the page believes it is visible, console errors | see below |
 | `npm run verify:arrangement` | sends the display-change message Windows sends, to every window, and reads the log back: the windows and pages must refit at once, and the *desktop* must not be rearranged for the reported shape until that shape has stopped changing | the running app |
 | `npm run verify:image-thumbnail` | adds four generated images as real floaties through the same path a dropped photo takes, then reads back the icon each record holds: its own picture at its own proportions within 256px, distinct bytes per file — and deletes the records on the way out | the running app |
