@@ -240,6 +240,9 @@ pub(crate) static LAST_BACKUP: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// used to write its freshly re-synced contents straight over the only good
 /// copy, which turned a recoverable crash into a permanent loss.
 pub(crate) fn refresh_backup(path: &std::path::Path, force: bool) {
+    if STORE_READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
