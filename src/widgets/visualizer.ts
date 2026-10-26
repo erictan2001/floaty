@@ -4,6 +4,7 @@ import {
   addPinMenu,
   appWin,
   currentSettings,
+  isOverlayMode,
   loadRecord,
   onSettings,
   presenceIsQuiet,
@@ -294,7 +295,7 @@ export function mountVisualizer(root: HTMLElement, id: string): void {
     });
 
     resizeCanvas();
-    void appWin.show().catch(() => undefined);
+    if (!isOverlayMode()) void appWin.show().catch(() => undefined);
     // paint one idle frame so the widget is never a blank hole on screen
     draw();
   })();

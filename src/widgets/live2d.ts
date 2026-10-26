@@ -666,7 +666,7 @@ export function mountLive2D(root: HTMLElement, id: string): void {
         await showModel(resolveModelUrl(m)).catch(() => undefined);
       })();
     }).catch(() => undefined);
-    void appWin.show().catch(() => undefined);
+    if (!isOverlayMode()) void appWin.show().catch(() => undefined);
   })();
 
   // Zoom / scale character with mouse wheel and persist to widget record

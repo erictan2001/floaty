@@ -546,7 +546,7 @@ export function mountFolder(root: HTMLElement, id: string): void {
     await listen<string>("floaty-folder-changed", (e) => {
       if (e.payload === id) void reload();
     }).catch(() => undefined);
-    void appWin.show().catch(() => undefined);
+    if (!isOverlayMode()) void appWin.show().catch(() => undefined);
   })();
 
   wrap.addEventListener("click", (e) => {

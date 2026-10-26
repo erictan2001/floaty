@@ -1149,6 +1149,19 @@ fn show_presence_window(window: &tauri::WebviewWindow) {
     let _ = window.show();
 }
 
+/// Hide the same way the window was shown. Tauri's own `hide()` consults a
+/// cached visible flag that a raw `ShowWindow` never updates.
+fn hide_presence_window(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    if is_desktop_layer_label(window.label()) {
+        if let Ok(hwnd) = window.hwnd() {
+            desktop_pin::hide_window(hwnd.0 as isize);
+            return;
+        }
+    }
+    let _ = window.hide();
+}
+
 /// Put the desktop where the decision says it should be, and say so once.
 pub(crate) fn apply_presence(
     app: &AppHandle,
@@ -1170,14 +1183,24 @@ pub(crate) fn apply_presence(
             let before = previous
                 .as_ref()
                 .and_then(|prev| prev.iter().find(|(l, _)| l == label).map(|(_, s)| s));
-            before != Some(state)
+            if before != Some(state) {
+                return true;
+            }
+            // A recreated window keeps the label but starts visible; the cached
+            // decision would otherwise say "already hidden" forever.
+            app.get_webview_window(label)
+                .and_then(|w| w.is_visible().ok())
+                .is_some_and(|visible| visible != !state.hidden)
         })
         .collect();
     for (label, state) in changed {
         if let Some(window) = app.get_webview_window(label) {
+            let visible = window.is_visible().unwrap_or(true);
             if state.hidden {
-                let _ = window.hide();
-            } else {
+                if visible {
+                    hide_presence_window(&window);
+                }
+            } else if !visible {
                 show_presence_window(&window);
             }
             // To this window only, and with its own state: the desktop layers are separate

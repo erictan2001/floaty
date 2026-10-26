@@ -4,6 +4,7 @@ import {
   addPinMenu,
   appWin,
   currentSettings,
+  isOverlayMode,
   loadRecord,
   onSettings,
   removeSelf,
@@ -276,7 +277,7 @@ export function mountSysmon(root: HTMLElement, id: string): void {
     });
 
     scheduleRedraw();
-    void appWin.show().catch(() => undefined);
+    if (!isOverlayMode()) void appWin.show().catch(() => undefined);
   })();
 }
 

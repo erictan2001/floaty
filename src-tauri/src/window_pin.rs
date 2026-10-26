@@ -53,6 +53,7 @@ pub(crate) mod desktop_pin {
     const HWND_BOTTOM: isize = 1;
 
     const SW_SHOWNOACTIVATE: i32 = 4;
+    const SW_HIDE: i32 = 0;
     const WM_ACTIVATE: u32 = 0x0006;
     const WA_ACTIVE: usize = 1;
     const WA_CLICKACTIVE: usize = 2;
@@ -755,6 +756,20 @@ pub(crate) mod desktop_pin {
         }
         if bottom {
             lower_to_bottom(hwnd);
+        }
+    }
+
+    /// Hide a desktop-layer window with the same Win32 path that showed it.
+    ///
+    /// Using Tauri's `hide()` after a raw `ShowWindow` is what made the second
+    /// fullscreen app fail to hide the overlay: Tauri's cached visible flag was
+    /// still false, so it skipped the call.
+    pub fn hide_window(hwnd: isize) {
+        if hwnd == 0 {
+            return;
+        }
+        unsafe {
+            ShowWindow(hwnd, SW_HIDE);
         }
     }
 
