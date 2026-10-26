@@ -214,6 +214,69 @@ pub(crate) fn emit_step_changes(app: &AppHandle, touched: &[String]) {
     }
 }
 
+/// Can every disk op in this step be applied in the requested direction?
+///
+/// Checked before the first write so a merge with one obsolete move leaves the
+/// whole step on the stack instead of half-applied.
+fn preflight(step: &undo::Step, forward: bool) -> Result<(), String> {
+    for op in &step.disk {
+        match (op.action, forward) {
+            (undo::DiskAction::Unrecycle, true) => {
+                if !std::path::Path::new(&op.from).exists() {
+                    return Err(format!("'{}' is not there to remove again", op.from));
+                }
+            }
+            (undo::DiskAction::Unrecycle, false) => {
+                if !shell_ops::in_recycle_bin(&op.from) {
+                    return Err(format!("'{}' is not in the Recycle Bin", op.from));
+                }
+            }
+            (undo::DiskAction::Move, true) => {
+                if !std::path::Path::new(&op.from).exists() {
+                    return Err(format!("'{}' is not there to move", op.from));
+                }
+                if std::path::Path::new(&op.to).exists() {
+                    return Err(format!("'{}' is in the way", op.to));
+                }
+            }
+            (undo::DiskAction::Move, false) => {
+                if !std::path::Path::new(&op.to).exists() {
+                    return Err(format!("'{}' is not there to move back", op.to));
+                }
+                if std::path::Path::new(&op.from).exists() {
+                    return Err(format!("'{}' is in the way", op.from));
+                }
+            }
+            (undo::DiskAction::Discard, true) => {
+                // A removed shortcut has no stored source to make again; a
+                // folder can be recreated, and an existing path is a no-op.
+                if !std::path::Path::new(&op.from).exists() && !op.dir {
+                    return Err(format!(
+                        "'{}' cannot be made again: it was a shortcut or a copy",
+                        op.from
+                    ));
+                }
+            }
+            (undo::DiskAction::Discard, false) => {}
+        }
+    }
+    Ok(())
+}
+
+fn rollback_undo(applied: &[undo::DiskOp]) {
+    for op in applied.iter().rev() {
+        if op.action != undo::DiskAction::Discard {
+            let _ = apply_disk(op);
+        }
+    }
+}
+
+fn rollback_redo(applied: &[undo::DiskOp]) {
+    for op in applied.iter().rev() {
+        let _ = reverse_disk(op);
+    }
+}
+
 /// Undo the last change: the records, and the files they stand for.
 ///
 /// The files go first. If one of them cannot be put back — the Recycle Bin was
@@ -239,12 +302,23 @@ pub(crate) async fn floaty_undo(app: AppHandle) -> Result<undo::UndoReport, Stri
         // ran. It becomes the step that redoes this one.
         let forward = undo::inverse_of(&step, &live_record(&app));
 
+        if let Err(err) = preflight(&step, false) {
+            log_line(&app, &format!("undo: '{}' FAILED: {err}", step.label));
+            undo::restore_top(step);
+            return Err(err);
+        }
+
         let mut files: Vec<String> = Vec::new();
+        let mut applied: Vec<undo::DiskOp> = Vec::new();
         for op in step.disk.iter().rev() {
             match reverse_disk(op) {
-                Ok(what) => files.push(what),
+                Ok(what) => {
+                    applied.push(op.clone());
+                    files.push(what);
+                }
                 Err(err) => {
                     log_line(&app, &format!("undo: '{}' FAILED: {err}", step.label));
+                    rollback_undo(&applied);
                     undo::restore_top(step);
                     return Err(err);
                 }
@@ -318,14 +392,25 @@ pub(crate) async fn floaty_redo(app: AppHandle) -> Result<undo::UndoReport, Stri
         // undo stack — the two keys trade the same step back and forth.
         let back = undo::inverse_of(&step, &live_record(&app));
 
+        if let Err(err) = preflight(&step, true) {
+            log_line(&app, &format!("redo: '{}' FAILED: {err}", step.label));
+            undo::restore_redo_top(step);
+            return Err(err);
+        }
+
         let mut files: Vec<String> = Vec::new();
+        let mut applied: Vec<undo::DiskOp> = Vec::new();
         // Forward order, which is what the action did: the folder a grouping made is created
         // before the items move into it (the undo walks the same list backwards).
         for op in step.disk.iter() {
             match apply_disk(op) {
-                Ok(what) => files.push(what),
+                Ok(what) => {
+                    applied.push(op.clone());
+                    files.push(what);
+                }
                 Err(err) => {
                     log_line(&app, &format!("redo: '{}' FAILED: {err}", step.label));
+                    rollback_redo(&applied);
                     undo::restore_redo_top(step);
                     return Err(err);
                 }

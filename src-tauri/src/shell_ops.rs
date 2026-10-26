@@ -28,6 +28,18 @@ fn in_bin(path: &str) -> bool {
         .any(|(_, _, original, _)| same_path(original, path))
 }
 
+/// Whether the Recycle Bin currently holds this path. A preflight uses it so an
+/// undo does not start moving files it cannot put back.
+#[cfg(windows)]
+pub(crate) fn in_recycle_bin(path: &str) -> bool {
+    in_bin(path)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn in_recycle_bin(_path: &str) -> bool {
+    false
+}
+
 /// Does this machine's Recycle Bin keep what it is given? Asked, not assumed.
 ///
 /// A CI runner (no shell session, no per-volume bin), a volume with the bin disabled,
