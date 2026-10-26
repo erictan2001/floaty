@@ -458,12 +458,15 @@ pub(crate) fn floaty_dropped_inner(
     };
 
     // candidate targets (snapshot under the lock, probe windows after release)
-    let cands: Vec<(String, String)> = store::with(&app, |s| {
+    let mut cands: Vec<(String, String)> = store::with(&app, |s| {
         s.iter()
             .filter(|r| r.id != id && plugins::is_desktop_item(&r.kind))
             .map(|r| (r.id.clone(), r.kind.clone()))
             .collect()
     });
+    // The preview sorts by id; the store is a HashMap, so iterating it here
+    // would pick whichever overlapping tile happens to come first.
+    cands.sort_by(|a, b| a.0.cmp(&b.0));
     let is_overlay = app.get_webview_window("desktop-overlay").is_some();
     let mut hit: Option<(String, String)> = None;
     for (oid, kind) in cands {
