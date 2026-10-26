@@ -11,7 +11,8 @@
  * can be exercised without the app — and without a second floaty fighting over
  * `floaty-store.json`. What it catches that `tsc` cannot: a pane that throws while
  * drawing (an unhandled promise, a field the stub did not answer), a row that
- * overflows a 380px window, a button that disappears when its card re-renders.
+ * overflows the settings window, a button that disappears when its card re-renders,
+ * or a refresh that rebuilds the pane under a control the user is holding.
  *
  * The stub answers the same commands the backend does, with plausible values, and
  * records every call — so an action's invoke *sequence* can be asserted too
@@ -129,7 +130,7 @@ export const STUB = `(() => {
         ],
         windows: [
           { label: "desktop-overlay", visible: true, x: 0, y: 0, width: 2560, height: 1440, layer: "desktop" },
-          { label: "settings", visible: true, x: 320, y: 180, width: 760, height: 720, layer: "window" },
+          { label: "settings", visible: true, x: 320, y: 180, width: 760, height: 680, layer: "window" },
           { label: "palette", visible: false, x: 400, y: 200, width: 620, height: 420, layer: "window" },
         ],
       };
@@ -195,7 +196,7 @@ try {
 // server (or Chrome) cannot be reached, so a failed probe never reads as a failed app.
 let chrome;
 try {
-  chrome = await launchChrome({ inject: STUB, window: "500,900" });
+  chrome = await launchChrome({ inject: STUB, window: "760,680" });
 } catch (err) {
   skip(`could not open ${base} — is \`npm run dev\` running?\n  ${err.message}`);
 }
@@ -257,6 +258,58 @@ try {
       await app.shot(path.join(here, "out", `pane-${pane}.png`));
     }
     results.push({ pane, ...measured, errors });
+  }
+
+  // The pane must not redraw under a control the user is holding. This is the
+  // "the window refreshes and jumps to the top while I drag a slider" report: a
+  // store notification is forced with the store's own `loadSettings`, which
+  // always notifies, and the check is that the focused slider and the scroll
+  // survive it. The deferred draw must land once focus leaves.
+  if (PANES.includes("motion")) {
+    await session.send("Page.navigate", {
+      url: `${base}/settings.html?pane=motion#/motion`,
+    });
+    await drawUntil("#/motion");
+    const edit = await session.evaluate(`(async () => {
+      const body = document.querySelector(".set-body");
+      const slider = document.querySelector(".set-pane-body input[type=range]");
+      slider.focus();
+      // Focus first: focusing an element scrolls it into view, which would undo
+      // a scroll set before it.
+      body.scrollTop = 200;
+      const before = body.scrollTop;
+      // The page's own module URL (Vite can add a ?t= cache stamp), so this is
+      // the same store instance the shell is subscribed to, not a second copy.
+      const url = performance
+        .getEntriesByType("resource")
+        .map((entry) => entry.name)
+        .find((name) => name.includes("/src/settings/store.ts"));
+      const store = await import(url);
+      await store.loadSettings();
+      await new Promise((r) => setTimeout(r, 400));
+      const kept = slider.isConnected && body.scrollTop === before;
+      const focused = document.activeElement === slider;
+      slider.blur();
+      await new Promise((r) => setTimeout(r, 400));
+      const after = document.querySelector(".set-pane-body input[type=range]");
+      return {
+        before,
+        kept,
+        focused,
+        redrawn: !!after && after !== slider,
+        after: body.scrollTop,
+        height: body.clientHeight,
+        content: body.scrollHeight,
+      };
+    })()`);
+    const still =
+      edit.kept && edit.focused && edit.redrawn && edit.after === edit.before && edit.before > 0;
+    if (!still) problems.push("motion (scroll/focus)");
+    console.log(
+      `${still ? "ok  " : "FAIL"} motion   scroll/focus before=${edit.before} after=${edit.after} ` +
+        `kept=${edit.kept} focused=${edit.focused} redrawn=${edit.redrawn} ` +
+        `viewport=${edit.height} content=${edit.content}`,
+    );
   }
 } finally {
   chrome.stop();
