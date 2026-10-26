@@ -139,9 +139,15 @@ export function notifyDragMove(id: string, x: number, y: number): void {
  */
 export function watchDragFocusLoss(): void {
   window.addEventListener("blur", () => {
-    if (overlayDragging) notifyDragging(false);
+    if (overlayDragging) {
+      notifyDragging(false);
+      window.dispatchEvent(new CustomEvent("floaty-cancel-drag"));
+    }
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden && overlayDragging) notifyDragging(false);
+    if (document.hidden && overlayDragging) {
+      notifyDragging(false);
+      window.dispatchEvent(new CustomEvent("floaty-cancel-drag"));
+    }
   });
 }

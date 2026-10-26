@@ -446,10 +446,15 @@ export class Floatie {
           }
           this.moveTo(at, ev, state);
         };
-        const onUp = (up?: PointerEvent) => {
+        let cancelHandler: (() => void) | undefined;
+        const onUp = (up?: PointerEvent, cancelled = false) => {
           window.removeEventListener("pointermove", onMove);
           window.removeEventListener("pointerup", onUp);
           window.removeEventListener("pointercancel", onUp);
+          if (cancelHandler) {
+            window.removeEventListener("floaty-cancel-drag", cancelHandler);
+            cancelHandler = undefined;
+          }
           // One last placement, so a drop just past the edge still lands on the screen the
           // pointer is on rather than on the last position the moves saw. The coordinates
           // must come from the release, or from the last move — never from the press, which
@@ -460,7 +465,7 @@ export class Floatie {
           // off-screen position straight back on top of the repair: the log says "brought
           // back" and the floatie is still gone. Placing first also puts this last position
           // inside the gesture, so the one undo step holds it.
-          if (state.active) {
+          if (state.active && !cancelled) {
             const at = pointerAt(up ?? { clientX: state.lastX, clientY: state.lastY });
             this.moveTo(at, up, state);
           }
@@ -471,7 +476,7 @@ export class Floatie {
           if (!moved) this.drag = null;
           void (async () => {
             try {
-              const gone = opts.onRelease ? await opts.onRelease(up, moved) : false;
+              const gone = !cancelled && opts.onRelease ? await opts.onRelease(up, moved) : false;
               if (moved && !gone) await this.commit();
             } catch {
               /* a module's own release work must not leave the drag open */
@@ -487,6 +492,11 @@ export class Floatie {
             }
           })();
         };
+        const cancel = () => {
+          if (this.drag === state) onUp(undefined, true);
+        };
+        cancelHandler = cancel;
+        window.addEventListener("floaty-cancel-drag", cancel);
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
         window.addEventListener("pointercancel", onUp);

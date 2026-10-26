@@ -294,10 +294,16 @@ export function mountFolder(root: HTMLElement, id: string): () => void {
         }
       };
 
+      let cancelHandler: (() => void) | undefined;
+
       const onUp = (ev: PointerEvent) => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
+        if (cancelHandler) {
+          window.removeEventListener("floaty-cancel-drag", cancelHandler);
+          cancelHandler = undefined;
+        }
         if (captured) {
           try {
             if (b.hasPointerCapture(e.pointerId)) b.releasePointerCapture(e.pointerId);
@@ -356,6 +362,30 @@ export function mountFolder(root: HTMLElement, id: string): () => void {
             .catch(() => undefined);
         }
       };
+
+      cancelHandler = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        window.removeEventListener("floaty-cancel-drag", cancelHandler!);
+        cancelHandler = undefined;
+        if (captured) {
+          try {
+            if (b.hasPointerCapture(e.pointerId)) b.releasePointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+        }
+        if (ghost) {
+          ghost.remove();
+          ghost = null;
+        }
+        b.classList.remove("dragging-out");
+        if (out) notifyDragging(false);
+        out = false;
+        itemDragMoved = false;
+      };
+      window.addEventListener("floaty-cancel-drag", cancelHandler);
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
