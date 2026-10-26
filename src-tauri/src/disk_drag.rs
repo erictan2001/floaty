@@ -963,9 +963,7 @@ pub(crate) fn sync_root(
         Some(r) if !r.trim().is_empty() => {
             let mut s = load_settings(&app);
             s.files_root = r.trim().to_string();
-            if let Ok(json) = serde_json::to_string_pretty(&s) {
-                write_text_atomic(&settings_file(&app), &json);
-            }
+            write_settings(&app, &s);
             s.files_root
         }
         _ => load_settings(&app).files_root,

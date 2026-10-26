@@ -25,9 +25,7 @@ pub(crate) fn set_plugin_enabled(app: &AppHandle, id: &str, enabled: bool) {
     } else if !s.disabled.iter().any(|d| d == id) {
         s.disabled.push(id.to_string());
     }
-    if let Ok(json) = serde_json::to_string_pretty(&s) {
-        write_text_atomic(&settings_file(app), &json);
-    }
+    write_settings(app, &s);
     app.emit("floaty-plugins-changed", &plugin_listing(app))
         .ok();
 }

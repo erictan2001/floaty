@@ -881,9 +881,7 @@ pub(crate) async fn upgrade_low_res_icons(app: &AppHandle) {
     let stamp_pipeline = || {
         let mut settings = load_settings(app);
         settings.icon_pipeline = ICON_PIPELINE;
-        if let Ok(json) = serde_json::to_string_pretty(&settings) {
-            write_text_atomic(&settings_file(app), &json);
-        }
+        write_settings(app, &settings);
         log_line(
             app,
             &format!("icon pipeline: stored icons re-resolved to v{ICON_PIPELINE}"),
