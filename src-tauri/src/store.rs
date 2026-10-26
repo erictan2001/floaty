@@ -217,14 +217,23 @@ pub(crate) fn icons_dir(app: &AppHandle) -> std::path::PathBuf {
 /// The store used to be written in place: being killed mid-write left a
 /// truncated JSON file, which then loaded as "no widgets at all" — that is how
 /// the desktop sometimes came back empty.
-pub(crate) fn write_text_atomic(path: &std::path::Path, text: &str) {
+///
+/// One write at a time, one temp name: the background writer and the exit flush
+/// used to race on the same `.tmp` file, and the loser could delete the winner's
+/// file. Returns false when the caller must keep the change dirty and retry.
+pub(crate) fn write_text_atomic(path: &std::path::Path, text: &str) -> bool {
+    static WRITE_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = path.with_extension("tmp");
     if fs::write(&tmp, text).is_err() {
-        return;
+        let _ = fs::remove_file(&tmp);
+        return false;
     }
     if fs::rename(&tmp, path).is_err() {
         let _ = fs::remove_file(&tmp);
+        return false;
     }
+    true
 }
 
 /// Seconds between backup rotations while the app is running.
@@ -255,6 +264,10 @@ pub(crate) fn refresh_backup(path: &std::path::Path, force: bool) {
 /// Set while a write is outstanding; the writer clears it before writing.
 pub(crate) static STORE_DIRTY: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+/// Set when the store file exists but could not be read. A later save must not
+/// replace the file it could not read with an empty or stale store.
+pub(crate) static STORE_READ_ONLY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Mark the store dirty and let the background writer do the work.
 ///
@@ -268,6 +281,9 @@ pub(crate) static STORE_DIRTY: std::sync::atomic::AtomicBool =
 /// No `AppHandle`: the writer thread reaches the app through `shared_app`, so
 /// every caller reaches this through `with` and needs nothing of its own.
 pub(crate) fn persist() {
+    if STORE_READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     STORE_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
     static WRITER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     WRITER.get_or_init(|| {
@@ -277,7 +293,9 @@ pub(crate) fn persist() {
                 continue;
             }
             if let Some(app) = shared_app() {
-                write_store_now(&app);
+                if !write_store_now(&app) {
+                    STORE_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
             }
         });
     });
@@ -285,7 +303,14 @@ pub(crate) fn persist() {
 
 /// Write the store immediately, on this thread. Used by the background writer and
 /// by the exit path, which cannot wait for a timer.
-pub(crate) fn write_store_now(app: &AppHandle) {
+pub(crate) fn write_store_now(app: &AppHandle) -> bool {
+    if STORE_READ_ONLY.load(std::sync::atomic::Ordering::SeqCst) {
+        log_line(
+            app,
+            "store: not writing — the existing file could not be read; restart when it is free",
+        );
+        return false;
+    }
     // Serialize under the lock, write after releasing it: holding the store
     // mutex across file IO serialized every save/list/create and stalled the
     // settings window while widgets persisted positions in the background.
@@ -298,7 +323,10 @@ pub(crate) fn write_store_now(app: &AppHandle) {
     let store = store_file(app);
     let started = std::time::Instant::now();
     let bytes = json.len();
-    write_text_atomic(&store, &json);
+    if !write_text_atomic(&store, &json) {
+        log_line(app, &format!("store: write failed ({bytes} bytes)"));
+        return false;
+    }
     // never let an empty desktop become the backup
     if json.len() > 4 {
         refresh_backup(&store, false);
@@ -314,6 +342,7 @@ pub(crate) fn write_store_now(app: &AppHandle) {
             ),
         );
     }
+    true
 }
 
 /// Parse a JSON file, falling back to its `.bak` copy when the file is missing
@@ -348,6 +377,20 @@ pub(crate) fn quarantine(path: &std::path::Path) {
 
 pub(crate) fn load_all(app: &AppHandle) -> Vec<WidgetRecord> {
     let path = store_file(app);
+    // A read error is not "the file is missing" and not "the JSON is damaged":
+    // either of those would let the app open an empty store and then write it
+    // over the file it could not read. Keep the file, use a readable backup to
+    // show the desktop, and refuse to write until the next restart.
+    if path.exists() && fs::read_to_string(&path).is_err() {
+        STORE_READ_ONLY.store(true, std::sync::atomic::Ordering::SeqCst);
+        log_line(
+            app,
+            "store: the existing file could not be read; showing the backup read-only",
+        );
+        return read_json_with_backup::<Vec<WidgetRecord>>(&path)
+            .map(|(list, _)| list)
+            .unwrap_or_default();
+    }
     match read_json_with_backup::<Vec<WidgetRecord>>(&path) {
         Some((list, from_backup)) => {
             if from_backup {
