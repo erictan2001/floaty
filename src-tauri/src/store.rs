@@ -118,11 +118,6 @@ impl StoreData {
         self.next
     }
 
-    /// The counter as it stands, without taking a number.
-    pub(crate) fn next_counter(&self) -> u64 {
-        self.next
-    }
-
     /// Move the counter forward, past the ids already on disk (and back, when a merge
     /// or an undo puts a batch of them back).
     pub(crate) fn set_next(&mut self, n: u64) {
@@ -554,7 +549,6 @@ mod tests {
         let mut store = StoreData::default();
         assert_eq!(store.next_number(), 1);
         assert_eq!(store.next_number(), 2);
-        assert_eq!(store.next_counter(), 2);
 
         store.set_next(9);
         assert_eq!(store.next_number(), 10);

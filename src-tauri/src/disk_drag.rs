@@ -18,6 +18,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use tauri::{AppHandle, Emitter, Manager};
 
+/// One reconcile at a time. Two scans can otherwise see the same empty slot,
+/// create two records for one file, or write their id counters over each other.
+static SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ---------- putting dragged items on disk ----------
 
 /// The pointed root: the directory the floaties mirror. `None` when nothing is
@@ -939,6 +943,7 @@ pub(crate) fn sync_root(
     app: AppHandle,
     quiet: bool,
 ) -> Result<FilesSyncResult, String> {
+    let _sync = SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let started = std::time::Instant::now();
     let target_root = match root {
         Some(r) if !r.trim().is_empty() => {
@@ -984,7 +989,7 @@ pub(crate) fn sync_root(
     let mut files_count = 0;
     let mut dirs_count = 0;
 
-    let (mut occupied_positions, existing_map, mut next_id) = store::with(&app, |s| {
+    let (mut occupied_positions, existing_map) = store::with(&app, |s| {
         let occupied: Vec<(i32, i32)> = s.iter().map(|w| (w.x, w.y)).collect();
         let mut map: HashMap<String, (String, String)> = HashMap::new();
         for w in s.iter() {
@@ -998,7 +1003,7 @@ pub(crate) fn sync_root(
                 }
             }
         }
-        (occupied, map, s.next_counter())
+        (occupied, map)
     });
 
     let next_pos = |occupied: &mut Vec<(i32, i32)>| -> (i32, i32) {
@@ -1077,8 +1082,10 @@ pub(crate) fn sync_root(
                     Some(_) => {}
                     None => {
                         let (px, py) = next_pos(&mut occupied_positions);
-                        next_id += 1;
-                        let id = format!("folder-{}", next_id);
+                        // Take the number from the store at the moment the record
+                        // is made: a second create may have taken one since the
+                        // scan began, and a local counter would hand it out twice.
+                        let id = store::with(&app, |s| format!("folder-{}", s.next_number()));
                         let data = serde_json::json!({
                             "name": file_name,
                             "path": path_str,
@@ -1098,10 +1105,9 @@ pub(crate) fn sync_root(
             } else {
                 if !existing_map.contains_key(&path_str) {
                     let (px, py) = next_pos(&mut occupied_positions);
-                    next_id += 1;
                     // launchable entries are apps, everything else is a file
                     let kind = kind_for_path(&path, false);
-                    let id = format!("{kind}-{}", next_id);
+                    let id = store::with(&app, |s| format!("{kind}-{}", s.next_number()));
                     let mut data = serde_json::json!({
                         "name": file_name,
                         "target": path_str,
@@ -1158,7 +1164,6 @@ pub(crate) fn sync_root(
     // nothing here changes the store, so `with` writes nothing.
     let changed = store::with(&app, |s| {
         let mut changed = false;
-        s.set_next(next_id);
         for (fid, items) in &updated_folders {
             if s.edit(fid, |w| set_folder_items(w, items)).is_some() {
                 changed = true;
