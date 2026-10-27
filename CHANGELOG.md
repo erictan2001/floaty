@@ -14,12 +14,63 @@ The plugin API version is a different number with a policy of its own — see
 - **Plugin API version 3 (planned, not yet in this build).** `api.settings()` no longer
   carries `pet_speed`: the pet widget and its setting were removed in 0.2.0, and a plugin
   that read that field now gets `undefined`. This is the break the plugin API policy
-  requires a bump for. The bump to `PLUGIN_API_VERSION = 3` ships with the next app release,
+  requires a bump for. The bump to `PLUGIN_API_VERSION = 3` ships in a later app release,
   together with a one-release window in which a manifest declaring `2` still loads.
+
+## 0.3.0 - 2026-10-27
+
+### Added
+
+- **The settings window has a section rail.** General, Desktop, Add, Motion, Plugins and
+  Diagnostics replace the wrapping tab row. Add holds the application scan and the folder
+  mirror, so there is one place to bring new floaties in.
+- **The launcher key is captured, not typed.** Click the keycap under General and press the
+  combination: held modifiers preview, Esc cancels, and a bare key is refused because a global
+  binding on one key would take it from every application. The Windows key is shown as Win and
+  stored as Super.
+- **Diagnostics opens on the state that matters.** The presence state is at the top; This app,
+  Screens & windows, On disk and Log tail sit behind one-line summaries with their key number.
+  Heartbeats are shown against the window they belong to.
+
+### Changed
+
+- A settings refresh keeps the scroll position and waits while a field has focus, so a save no
+  longer rebuilds the control under the pointer or jumps the window to the top. Settings,
+  floaties and plugins are compared by value before a redraw.
+- Plugins are two compact lists, built in and installed, with the install actions in a toolbar
+  and no repeated kind badge.
 - Plugin trust fingerprints are now SHA-256 (`sha256:<hex>`). Plugins approved under the
   earlier 64-bit hash must be approved again.
 - Widget size limits have one owner, the backend table. The grip floor for the visualizer is
   140×70 (was 160×80 in the widget). The trail example's panel is 182 high, matching its floor.
+
+### Fixed
+
+- Plugin trust is tied to the folder that runs: a folder whose name disagrees with its manifest
+  id is refused, a fingerprint rejects links, and an overly large archive is refused before
+  extraction.
+- Launching goes through the shell rather than `cmd`, so a file name cannot inject a command;
+  a saved path or a drop is resolved before it is checked against the desktop root.
+- Store and settings writes are serialized, keep a last-good backup, and retry a failed write.
+  A file that cannot be read is never replaced with defaults.
+- Folder sync takes new ids under the store lock and runs one reconcile at a time. A failed
+  folder scan keeps its last items, and changing the root takes the old root's floaties off the
+  desktop without touching its files.
+- The folder watcher rescans only the folders its burst names, reconciles once when a missing
+  root returns, and a Live2D scan no longer restarts itself when it finds no models.
+- Undo and redo check every disk operation before the first write and roll back a partial
+  apply. A drag cancelled by focus loss no longer leaves the session or a folder ghost open.
+- Overlay visibility has one owner, the top layer is recognised on every screen, tidy and new
+  placements stay on the screen, a failed hit-region sync retries, and widget mounts dispose
+  their timers, listeners and sampler claims.
+- Sleep recovery runs once, waits for a widget window before respawning it, and revives audio
+  and system sampling without adding a client. Icon resolution is single-flight and icon
+  writes are serialized, so concurrent resolvers share one file instead of racing into inline
+  data URLs.
+
+### Removed
+
+- The unused `tauri-plugin-process` dependency.
 
 ## 0.2.4 - 2026-10-26
 
